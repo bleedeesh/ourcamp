@@ -26,7 +26,7 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-pub use api::API_VERSION;
+pub use oc_proto::API_VERSION;
 use store::Store;
 use tls::Identity;
 
@@ -44,6 +44,30 @@ pub struct Config {
     pub public_port: Option<u16>,
     /// Name of a brand-new camp (ignored once the camp exists).
     pub camp_name: String,
+    /// LiveKit the camp hands out room tokens for.
+    pub livekit: LiveKit,
+}
+
+/// The LiveKit server rooms live on (ADR-0016: `external` mode in M3 step 2).
+#[derive(Clone)]
+pub struct LiveKit {
+    /// Address put into room tokens for clients. Step 3 replaces it with the `/rtc`
+    /// proxy on the camp port.
+    pub url: String,
+    /// API key LiveKit was started with.
+    pub api_key: String,
+    /// Secret for that key; signs room tokens.
+    pub api_secret: String,
+}
+
+// The secret must never reach logs or panic messages.
+impl fmt::Debug for LiveKit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiveKit")
+            .field("url", &self.url)
+            .field("api_key", &self.api_key)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The two links the host hands out.
@@ -150,7 +174,11 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     };
 
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let app = api::router(api::AppState::new(store));
+    let app = api::router(api::AppState::new(
+        store,
+        identity.fingerprint,
+        config.livekit.clone(),
+    ));
     let task = tokio::spawn(serve::serve(listener, tls, app, shutdown_rx));
     Ok(Running {
         local_addr,

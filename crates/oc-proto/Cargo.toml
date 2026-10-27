@@ -1,0 +1,20 @@
+[package]
+name = "oc-proto"
+version = "0.1.0"
+description = "OurCamp camp API: request/response types and the login signature format, shared by server and client."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oc-invite = { path = "../oc-invite" }
+# Ed25519 and SHA-256: `ring` is already in the tree for TLS (ADR-0018).
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

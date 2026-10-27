@@ -25,8 +25,8 @@ use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
-mod base32;
-mod base64url;
+pub mod base32;
+pub mod base64url;
 
 /// URL scheme registered by the desktop client.
 pub const SCHEME: &str = "ourcamp";

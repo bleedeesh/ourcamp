@@ -1,8 +1,10 @@
-//! Unpadded base64url (RFC 4648 §5) for certificate fingerprints.
+//! Unpadded base64url (RFC 4648 §5): fingerprints in links, keys and signatures in the API.
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-pub(crate) fn encode(bytes: &[u8]) -> String {
+/// Encodes bytes as unpadded base64url.
+#[must_use]
+pub fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
     for chunk in bytes.chunks(3) {
         let b = [
@@ -33,7 +35,9 @@ fn value(c: u8) -> Option<u32> {
 
 /// Strict decoder: rejects padding, invalid characters, impossible lengths and
 /// non-canonical trailing bits.
-pub(crate) fn decode(s: &str) -> Option<Vec<u8>> {
+/// Decodes unpadded base64url; `None` if invalid.
+#[must_use]
+pub fn decode(s: &str) -> Option<Vec<u8>> {
     if s.len() % 4 == 1 {
         return None;
     }

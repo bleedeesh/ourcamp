@@ -3121,8 +3121,37 @@ name = "oc-audio"
 version = "0.1.0"
 
 [[package]]
+name = "oc-camp-client"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "getrandom 0.3.4",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "oc-invite",
+ "oc-proto",
+ "oc-tls",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "oc-invite"
 version = "0.1.0"
+
+[[package]]
+name = "oc-proto"
+version = "0.1.0"
+dependencies = [
+ "oc-invite",
+ "ring",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "oc-server"
@@ -3132,9 +3161,13 @@ dependencies = [
  "getrandom 0.3.4",
  "hyper",
  "hyper-util",
+ "livekit-token",
+ "oc-camp-client",
  "oc-invite",
+ "oc-proto",
  "oc-tls",
  "rcgen",
+ "ring",
  "rusqlite",
  "rustls",
  "serde",

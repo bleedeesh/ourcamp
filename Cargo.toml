@@ -4,6 +4,8 @@ members = [
     "crates/oc-audio",
     "crates/oc-invite",
     "crates/oc-tls",
+    "crates/oc-proto",
+    "crates/oc-camp-client",
     "crates/oc-server",
     "apps/desktop/src-tauri",
 ]
@@ -14,6 +16,8 @@ default-members = [
     "crates/oc-audio",
     "crates/oc-invite",
     "crates/oc-tls",
+    "crates/oc-proto",
+    "crates/oc-camp-client",
     "crates/oc-server",
 ]
 

@@ -9,7 +9,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use oc_invite::{InviteKind, Token, CLAIM_TOKEN_BYTES, JOIN_TOKEN_BYTES};
-use rusqlite::{params, Connection, OptionalExtension};
+pub use oc_proto::{Channel, Role};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 /// Channels a new camp starts with. The admin edits them later (M3 window / M5).
 const DEFAULT_CHANNELS: [&str; 3] = ["Лобби", "Катка", "Отошёл (AFK)"];
@@ -35,17 +36,8 @@ impl From<rusqlite::Error> for StoreError {
 /// Result of store operations.
 pub type StoreResult<T> = Result<T, StoreError>;
 
-/// A voice channel ("костёр").
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Channel {
-    /// Stable id, used for the LiveKit room name.
-    pub id: String,
-    /// Display name.
-    pub name: String,
-}
-
 /// Public description of the camp.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Camp {
     /// Display name.
     pub name: String,
@@ -62,13 +54,37 @@ pub struct InviteStatus {
     pub usable: bool,
 }
 
-/// Why a claim key could not be redeemed.
+/// Why a login was refused (the signature is checked before the store is asked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClaimError {
-    /// No claim key with this value.
-    Unknown,
-    /// Somebody already redeemed it.
-    AlreadyUsed,
+pub enum LoginError {
+    /// A new device came without an invite.
+    InviteRequired,
+    /// A new device came with a token the server never issued.
+    InviteInvalid,
+    /// A new device came with the admin key somebody already redeemed.
+    ClaimUsed,
+}
+
+/// A camp member, as a session resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    /// See [`oc_proto::user_id`].
+    pub user_id: String,
+    /// Display name.
+    pub name: String,
+    /// Role in the camp.
+    pub role: Role,
+}
+
+/// Who is logging in.
+#[derive(Debug, Clone, Copy)]
+pub struct Device<'a> {
+    /// Derived from `public_key`.
+    pub user_id: &'a str,
+    /// Ed25519 public key.
+    pub public_key: &'a [u8],
+    /// Display name the user chose.
+    pub name: &'a str,
 }
 
 /// The camp database.
@@ -139,6 +155,27 @@ impl Store {
             insert_invite(&tx, InviteKind::Join)?;
             insert_invite(&tx, InviteKind::ClaimAdmin)?;
             tx.pragma_update(None, "user_version", 1)?;
+            tx.commit()?;
+        }
+        if version < 2 {
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE members (
+                    user_id    TEXT PRIMARY KEY,
+                    public_key BLOB NOT NULL UNIQUE,
+                    name       TEXT NOT NULL,
+                    role       TEXT NOT NULL CHECK (role IN ('member', 'admin')),
+                    joined_at  INTEGER NOT NULL
+                 );
+                 -- Only the SHA-256 of a session token is kept: unlike invites it never
+                 -- has to be shown again (ADR-0018).
+                 CREATE TABLE sessions (
+                    token_hash BLOB PRIMARY KEY,
+                    user_id    TEXT NOT NULL REFERENCES members (user_id) ON DELETE CASCADE,
+                    expires_at INTEGER NOT NULL
+                 );",
+            )?;
+            tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
         Ok(())
@@ -224,27 +261,142 @@ impl Store {
         }))
     }
 
-    /// Redeems the admin claim key — exactly once, even under concurrent requests (the
-    /// check and the update are one statement).
+    /// Admits a device whose signature the caller has verified (ADR-0018):
+    ///
+    /// * a known device is let in (its name updated); an unredeemed admin key promotes it;
+    /// * a new device needs a valid invite; the admin key makes it admin.
+    ///
+    /// One write transaction (`BEGIN IMMEDIATE`): two devices racing for the admin key
+    /// cannot both win.
     ///
     /// # Errors
-    /// `Ok(Err(_))` when the key is unknown or used; `Err` on database failure.
-    pub fn redeem_claim(&self, token: &str) -> StoreResult<Result<(), ClaimError>> {
-        let changed = self.conn.execute(
-            "UPDATE invites SET redeemed_at = ?2
-             WHERE token = ?1 AND kind = 'claim' AND redeemed_at IS NULL",
-            params![token, now()],
+    /// `Ok(Err(_))` when refused; `Err` on database failure.
+    pub fn login(
+        &mut self,
+        device: Device<'_>,
+        invite: Option<&str>,
+    ) -> StoreResult<Result<Role, LoginError>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let known: Option<String> = tx
+            .query_row(
+                "SELECT role FROM members WHERE user_id = ?1",
+                [device.user_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let claimed = match invite {
+            Some(token) => {
+                tx.execute(
+                    "UPDATE invites SET redeemed_at = ?2
+                     WHERE token = ?1 AND kind = 'claim' AND redeemed_at IS NULL",
+                    params![token, now()],
+                )? == 1
+            }
+            None => false,
+        };
+
+        let role = match (known.as_deref(), claimed) {
+            (_, true) | (Some("admin"), false) => Role::Admin,
+            (Some(_), false) => Role::Member,
+            (None, false) => {
+                // New device without a fresh admin key: the invite decides.
+                let kind: Option<String> = match invite {
+                    Some(token) => tx
+                        .query_row("SELECT kind FROM invites WHERE token = ?1", [token], |r| {
+                            r.get(0)
+                        })
+                        .optional()?,
+                    None => return Ok(Err(LoginError::InviteRequired)),
+                };
+                match kind.as_deref() {
+                    Some("join") => Role::Member,
+                    Some(_) => return Ok(Err(LoginError::ClaimUsed)),
+                    None => return Ok(Err(LoginError::InviteInvalid)),
+                }
+            }
+        };
+
+        tx.execute(
+            "INSERT INTO members (user_id, public_key, name, role, joined_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (user_id) DO UPDATE SET name = excluded.name, role = excluded.role",
+            params![
+                device.user_id,
+                device.public_key,
+                device.name,
+                role_str(role),
+                now()
+            ],
         )?;
-        if changed == 1 {
-            return Ok(Ok(()));
-        }
-        Ok(Err(match self.invite_status(token)? {
-            Some(InviteStatus {
-                kind: InviteKind::ClaimAdmin,
-                ..
-            }) => ClaimError::AlreadyUsed,
-            _ => ClaimError::Unknown,
+        tx.commit()?;
+        Ok(Ok(role))
+    }
+
+    /// Stores a session for `user_id`, valid for `ttl_secs`.
+    ///
+    /// # Errors
+    /// On database failure (or an unknown member).
+    pub fn create_session(
+        &self,
+        token_hash: &[u8],
+        user_id: &str,
+        ttl_secs: i64,
+    ) -> StoreResult<()> {
+        // Expired sessions are swept whenever a new one is made: no background job.
+        self.conn
+            .execute("DELETE FROM sessions WHERE expires_at <= ?1", [now()])?;
+        self.conn.execute(
+            "INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?1, ?2, ?3)",
+            params![token_hash, user_id, now().saturating_add(ttl_secs)],
+        )?;
+        Ok(())
+    }
+
+    /// The member behind an unexpired session.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn session_member(&self, token_hash: &[u8]) -> StoreResult<Option<Member>> {
+        let row: Option<(String, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT m.user_id, m.name, m.role
+                 FROM sessions s JOIN members m ON m.user_id = s.user_id
+                 WHERE s.token_hash = ?1 AND s.expires_at > ?2",
+                params![token_hash, now()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(user_id, name, role)| Member {
+            user_id,
+            name,
+            role: if role == "admin" {
+                Role::Admin
+            } else {
+                Role::Member
+            },
         }))
+    }
+
+    /// Whether a channel with this id exists.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn channel_exists(&self, id: &str) -> StoreResult<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM channels WHERE id = ?1", [id], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+}
+
+fn role_str(role: Role) -> &'static str {
+    match role {
+        Role::Member => "member",
+        Role::Admin => "admin",
     }
 }
 
@@ -333,37 +485,146 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn claim_key_works_exactly_once() {
-        let store = Store::open_in_memory("x").unwrap();
-        let claim = store.unclaimed_admin_token().unwrap().unwrap();
-        let status = store.invite_status(claim.as_str()).unwrap().unwrap();
-        assert_eq!(status.kind, InviteKind::ClaimAdmin);
-        assert!(status.usable);
+    fn device(id: &str) -> Device<'_> {
+        Device {
+            user_id: id,
+            public_key: id.as_bytes(),
+            name: "Дима",
+        }
+    }
 
-        assert_eq!(store.redeem_claim(claim.as_str()).unwrap(), Ok(()));
+    fn tokens(store: &Store) -> (String, String) {
+        (
+            store.join_token().unwrap().as_str().to_owned(),
+            store
+                .unclaimed_admin_token()
+                .unwrap()
+                .unwrap()
+                .as_str()
+                .to_owned(),
+        )
+    }
+
+    #[test]
+    fn new_device_needs_a_valid_invite() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        let (join, _) = tokens(&store);
         assert_eq!(
-            store.redeem_claim(claim.as_str()).unwrap(),
-            Err(ClaimError::AlreadyUsed)
+            store.login(device("a"), None).unwrap(),
+            Err(LoginError::InviteRequired)
         );
-        assert!(!store.invite_status(claim.as_str()).unwrap().unwrap().usable);
         assert_eq!(
-            store.unclaimed_admin_token().unwrap(),
-            None,
-            "link no longer shown"
+            store
+                .login(device("a"), Some("0".repeat(16).as_str()))
+                .unwrap(),
+            Err(LoginError::InviteInvalid)
+        );
+        assert_eq!(
+            store.login(device("a"), Some(&join)).unwrap(),
+            Ok(Role::Member)
+        );
+        assert_eq!(
+            store.login(device("a"), None).unwrap(),
+            Ok(Role::Member),
+            "known devices need no invite"
         );
     }
 
     #[test]
-    fn join_invite_cannot_be_used_as_a_claim_and_unknown_tokens_are_unknown() {
-        let store = Store::open_in_memory("x").unwrap();
-        let join = store.join_token().unwrap();
+    fn admin_key_works_exactly_once_and_its_link_disappears() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        let (_, claim) = tokens(&store);
         assert_eq!(
-            store.redeem_claim(join.as_str()).unwrap(),
-            Err(ClaimError::Unknown)
+            store.login(device("host"), Some(&claim)).unwrap(),
+            Ok(Role::Admin)
         );
-        let status = store.invite_status(join.as_str()).unwrap().unwrap();
+        assert_eq!(
+            store.login(device("intruder"), Some(&claim)).unwrap(),
+            Err(LoginError::ClaimUsed)
+        );
+        assert_eq!(store.unclaimed_admin_token().unwrap(), None);
+        assert!(!store.invite_status(&claim).unwrap().unwrap().usable);
+        assert_eq!(
+            store.login(device("host"), Some(&claim)).unwrap(),
+            Ok(Role::Admin),
+            "the admin reopening their own claim link is still let in"
+        );
+    }
+
+    #[test]
+    fn a_member_can_redeem_the_admin_key_later_and_admins_stay_admins() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        let (join, claim) = tokens(&store);
+        store.login(device("a"), Some(&join)).unwrap().unwrap();
+        assert_eq!(
+            store.login(device("a"), Some(&claim)).unwrap(),
+            Ok(Role::Admin)
+        );
+        assert_eq!(store.login(device("a"), None).unwrap(), Ok(Role::Admin));
+        assert_eq!(
+            store.login(device("a"), Some(&join)).unwrap(),
+            Ok(Role::Admin)
+        );
+    }
+
+    #[test]
+    fn racing_for_the_admin_key_has_one_winner() {
+        // Two connections to one file = two server requests in flight.
+        let dir = std::env::temp_dir().join(format!("oc-store-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("camp.db");
+        let claim = tokens(&Store::open(&path, "x").unwrap()).1;
+        let results: Vec<_> = ["a", "b", "c", "d"]
+            .map(|id| {
+                let (path, claim) = (path.clone(), claim.clone());
+                std::thread::spawn(move || {
+                    let mut store = Store::open(&path, "x").unwrap();
+                    store
+                        .conn
+                        .busy_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    store.login(device(id), Some(&claim)).unwrap()
+                })
+            })
+            .map(|t| t.join().unwrap())
+            .into_iter()
+            .collect();
+        let admins = results.iter().filter(|r| **r == Ok(Role::Admin)).count();
+        let refused = results
+            .iter()
+            .filter(|r| **r == Err(LoginError::ClaimUsed))
+            .count();
+        assert_eq!((admins, refused), (1, 3), "{results:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sessions_resolve_to_members_until_they_expire() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        let (join, _) = tokens(&store);
+        store.login(device("a"), Some(&join)).unwrap().unwrap();
+        store.create_session(b"live", "a", 60).unwrap();
+        store.create_session(b"dead", "a", -1).unwrap();
+        let member = store.session_member(b"live").unwrap().unwrap();
+        assert_eq!(
+            (member.user_id.as_str(), member.name.as_str(), member.role),
+            ("a", "Дима", Role::Member)
+        );
+        assert_eq!(store.session_member(b"dead").unwrap(), None);
+        assert_eq!(store.session_member(b"nope").unwrap(), None);
+    }
+
+    #[test]
+    fn invite_status_and_channels() {
+        let store = Store::open_in_memory("x").unwrap();
+        let (join, claim) = tokens(&store);
+        let status = store.invite_status(&join).unwrap().unwrap();
         assert_eq!((status.kind, status.usable), (InviteKind::Join, true));
+        let status = store.invite_status(&claim).unwrap().unwrap();
+        assert_eq!((status.kind, status.usable), (InviteKind::ClaimAdmin, true));
         assert_eq!(store.invite_status("nonexistent").unwrap(), None);
+        assert!(store.channel_exists("c0").unwrap());
+        assert!(!store.channel_exists("lobby").unwrap());
     }
 }
