@@ -1,0 +1,13 @@
+{
+  "name": "ourcamp",
+  "private": true,
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @ourcamp/desktop tauri dev",
+    "test": "pnpm -r test && cargo test",
+    "typecheck": "pnpm -r typecheck",
+    "lint:rust": "cargo clippy --all-targets -- -D warnings && cargo fmt --check"
+  }
+}

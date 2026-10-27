@@ -1,0 +1,15 @@
+[package]
+name = "oc-invite"
+version = "0.1.0"
+description = "OurCamp invite and admin-claim links: parsing, formatting and validation."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Shared by the desktop client and the camp server; kept dependency-free so both can
+# use it without pulling in a URL stack (see docs/decisions/0005-invite-links.md).
+[dependencies]
+
+[lints]
+workspace = true

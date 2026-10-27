@@ -1,0 +1,15 @@
+[package]
+name = "oc-audio"
+version = "0.1.0"
+description = "OurCamp real-time audio core: lock-free mixer with per-source volume, limiter and speech detection."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Intentionally dependency-free: everything here runs on the audio thread and is small
+# enough to own and test ourselves (see docs/decisions/0006-own-audio-mixer.md).
+[dependencies]
+
+[lints]
+workspace = true

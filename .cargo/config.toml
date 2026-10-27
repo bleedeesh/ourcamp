@@ -1,0 +1,8 @@
+# The prebuilt libwebrtc shipped with the LiveKit SDK is compiled against the static
+# MSVC runtime (/MT); linking it into a /MD binary fails with duplicate std symbols.
+# See docs/decisions/0012-windows-static-crt.md.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

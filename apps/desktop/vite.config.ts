@@ -1,0 +1,24 @@
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+// Tauri expects a fixed dev port and must not have the browser opened for it.
+// https://v2.tauri.app/start/frontend/vite/
+const host = process.env.TAURI_DEV_HOST;
+
+export default defineConfig({
+  plugins: [react()],
+  clearScreen: false,
+  server: {
+    port: 5173,
+    strictPort: true,
+    host: host ?? false,
+    hmr: host ? { protocol: "ws", host, port: 5174 } : undefined,
+    watch: { ignored: ["**/src-tauri/**"] },
+  },
+  envPrefix: ["VITE_", "TAURI_ENV_"],
+  build: {
+    // WebView2 (Windows) and WKWebView (macOS 13+) both handle modern syntax.
+    target: "es2022",
+    sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
+  },
+});

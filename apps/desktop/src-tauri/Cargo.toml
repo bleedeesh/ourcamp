@@ -1,0 +1,26 @@
+[package]
+name = "ourcamp-desktop"
+version = "0.1.0"
+description = "OurCamp desktop client"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# `_lib` suffix avoids a name clash with the binary on Windows (cargo#8519).
+name = "ourcamp_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+# Pinned minor: 0.16+ changes the device/config API; upgrade deliberately.
+cpal = "0.15.3"
+oc-audio = { path = "../../../crates/oc-audio" }
+
+[lints]
+workspace = true

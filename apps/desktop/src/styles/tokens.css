@@ -1,0 +1,52 @@
+/*
+ * Design tokens — the single source of colours, type and shape.
+ * Taken from the approved compact-client mockups (docs/design.md).
+ * Neutral blacks without a blue cast; flame colours from the logo mark selection and
+ * primary actions only.
+ */
+:root {
+  /* Surfaces, darkest to lightest */
+  --bg-0: #080808; /* window chrome, bottom panel, inputs */
+  --bg-1: #101010; /* main window body */
+  --bg-2: #151515; /* raised: switcher, cards */
+  --surface: #1f1f1f; /* neutral buttons, menus */
+  --surface-2: #272727;
+  --line: #2a2a2a;
+
+  /* Text */
+  --text: #ededed;
+  --text-2: #cfcfcf;
+  --text-muted: #a8a8a8;
+  --text-faint: #8f8f8f;
+
+  /* Flame — selection and primary actions */
+  --accent: #ff7a3d;
+  --accent-soft: rgba(255, 122, 61, 0.14);
+  --accent-text: #ffb27a;
+  --on-accent: #1a0d05;
+  --admin: #ffb23f;
+
+  /* Semantics */
+  --danger: #f0455a;
+  --danger-soft: rgba(240, 69, 90, 0.16);
+  --online: #3ddc84;
+  --live: #ff4d4d;
+
+  /* Type */
+  --font-ui: "Onest", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-head: "Nunito", var(--font-ui);
+  --font-brand: "Fredoka", var(--font-ui);
+
+  /* Shape */
+  --radius-s: 8px;
+  --radius-m: 10px;
+  --radius-l: 12px;
+  --radius-xl: 14px;
+
+  /* Speaking ring: gap colour is set per context so the ring floats over its background */
+  --ring-gap: var(--bg-1);
+  --ring-speaking: 0 0 0 2px var(--ring-gap), 0 0 0 4px var(--accent), 0 0 14px 3px rgba(255, 122, 61, 0.45);
+  --ring-idle: 0 0 0 2px var(--ring-gap), 0 0 0 4px transparent;
+
+  color-scheme: dark;
+}
