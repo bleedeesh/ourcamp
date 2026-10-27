@@ -13,7 +13,7 @@
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -59,14 +59,56 @@ impl LocalLevel {
     }
 }
 
-/// A running microphone pipeline. [`stop`](Self::stop) returns the output tap so the
-/// next channel can reuse it.
+/// Home of the output tap while no pipeline uses it.
+///
+/// A pipeline borrows the tap through a [`TapLease`] whose `Drop` puts it back, so it
+/// returns however the pipeline ends — stopped, failed to open the device, cancelled
+/// mid-join, or panicked (`Drop` runs during unwinding). Without this, one failure would
+/// leave the engine without an echo reference until restart.
+pub type TapSlot = Arc<Mutex<Option<OutputTap>>>;
+
+struct TapLease {
+    slot: TapSlot,
+    tap: Option<OutputTap>,
+}
+
+impl TapLease {
+    fn take(slot: &TapSlot) -> Option<Self> {
+        let tap = lock_slot(slot).take()?;
+        Some(Self {
+            slot: Arc::clone(slot),
+            tap: Some(tap),
+        })
+    }
+
+    fn tap(&mut self) -> &mut OutputTap {
+        self.tap
+            .as_mut()
+            .expect("tap is present until the lease drops")
+    }
+}
+
+impl Drop for TapLease {
+    fn drop(&mut self) {
+        if let Some(tap) = self.tap.take() {
+            *lock_slot(&self.slot) = Some(tap);
+        }
+    }
+}
+
+fn lock_slot(slot: &TapSlot) -> MutexGuard<'_, Option<OutputTap>> {
+    // An `Option` cannot be left half-updated, so a poisoned lock is still usable.
+    slot.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A running microphone pipeline. Stopping or dropping it closes the device and returns
+/// the output tap to its [`TapSlot`].
 pub struct MicPipeline {
     source: NativeAudioSource,
     muted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     level: Arc<LocalLevel>,
-    thread: Option<JoinHandle<OutputTap>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 struct Shared {
@@ -76,15 +118,16 @@ struct Shared {
 }
 
 impl MicPipeline {
-    /// Opens the default microphone and starts processing.
+    /// Opens the default microphone and starts processing, borrowing the tap in `taps`.
     ///
     /// # Errors
-    /// If the microphone cannot be opened; the tap is handed back with the message.
+    /// If the tap is in use by another pipeline or the microphone cannot be opened.
     pub fn start(
-        tap: OutputTap,
+        taps: &TapSlot,
         output_latency: DeviceLatency,
         muted: bool,
-    ) -> Result<Self, (String, OutputTap)> {
+    ) -> Result<Self, String> {
+        let lease = TapLease::take(taps).ok_or("микрофон уже используется другим каналом")?;
         let shared = Shared {
             muted: Arc::new(AtomicBool::new(muted)),
             stop: Arc::new(AtomicBool::new(false)),
@@ -96,12 +139,10 @@ impl MicPipeline {
             Arc::clone(&shared.level),
         );
         let (ready_tx, ready_rx) = mpsc::channel::<Result<NativeAudioSource, String>>();
-        // The OS refusing a thread means the process is out of resources; the tap inside
-        // the closure could not be recovered anyway.
         let thread = thread::Builder::new()
             .name("oc-mic".into())
-            .spawn(move || run(tap, &output_latency, &shared, &ready_tx))
-            .expect("failed to spawn microphone thread");
+            .spawn(move || run(lease, &output_latency, &shared, &ready_tx))
+            .map_err(|e| format!("не удалось запустить поток микрофона: {e}"))?;
         match ready_rx.recv() {
             Ok(Ok(source)) => Ok(Self {
                 source,
@@ -110,8 +151,15 @@ impl MicPipeline {
                 level,
                 thread: Some(thread),
             }),
-            Ok(Err(message)) => Err((message, join(thread))),
-            Err(_) => Err(("поток микрофона завершился".into(), join(thread))),
+            Ok(Err(message)) => {
+                join(thread);
+                Err(message)
+            }
+            // The thread ended without answering: it panicked (logged by `join`).
+            Err(_) => {
+                join(thread);
+                Err("поток микрофона аварийно завершился".into())
+            }
         }
     }
 
@@ -133,32 +181,32 @@ impl MicPipeline {
         Arc::clone(&self.level)
     }
 
-    /// Closes the microphone and returns the output tap.
-    #[must_use]
-    pub fn stop(mut self) -> OutputTap {
-        self.stop.store(true, Ordering::Relaxed);
-        let thread = self.thread.take().expect("stop called once");
-        thread.thread().unpark();
-        join(thread)
+    /// Closes the microphone; the tap is back in its slot when this returns.
+    pub fn stop(self) {
+        drop(self);
     }
 }
 
 impl Drop for MicPipeline {
     fn drop(&mut self) {
-        // Only reached without `stop()` (app shutdown): close the device, drop the tap.
         if let Some(thread) = self.thread.take() {
             self.stop.store(true, Ordering::Relaxed);
             thread.thread().unpark();
-            let _ = thread.join();
+            join(thread);
         }
     }
 }
 
-fn join(thread: JoinHandle<OutputTap>) -> OutputTap {
-    match thread.join() {
-        Ok(tap) => tap,
-        // A panic in the pipeline is a bug; surface it instead of limping on without AEC.
-        Err(panic) => std::panic::resume_unwind(panic),
+/// Waits for the pipeline thread. A panic there is a bug: it is logged loudly, but the
+/// caller (a UI command) carries on — the lease has already returned the tap.
+fn join(thread: JoinHandle<()>) {
+    if let Err(panic) = thread.join() {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(ToString::to_string)
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".into());
+        eprintln!("[oc-voice] BUG: microphone thread panicked: {message}");
     }
 }
 
@@ -188,18 +236,19 @@ impl Frame {
 }
 
 fn run(
-    mut tap: OutputTap,
+    mut lease: TapLease,
     output_latency: &DeviceLatency,
     shared: &Shared,
     ready: &mpsc::Sender<Result<NativeAudioSource, String>>,
-) -> OutputTap {
+) {
     let mut capture = match input::open(thread::current()) {
         Ok(capture) => capture,
         Err(e) => {
             let _ = ready.send(Err(e.to_string()));
-            return tap;
+            return;
         }
     };
+    let tap = lease.tap();
     eprintln!(
         "[oc-voice] microphone: {} @ {} Hz",
         capture.device_name, capture.sample_rate
@@ -290,5 +339,45 @@ fn run(
         }
     }
     drop(capture);
-    tap
+    // `lease` drops here and puts the tap back.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oc_audio::mixer::{mixer, MixerConfig};
+
+    fn slot() -> TapSlot {
+        let (_control, mut core) = mixer::<u8>(MixerConfig::default_48k_stereo());
+        Arc::new(Mutex::new(Some(core.tap_output(10))))
+    }
+
+    #[test]
+    fn lease_is_exclusive_and_returns_the_tap_on_drop() {
+        let slot = slot();
+        let lease = TapLease::take(&slot).expect("tap available");
+        assert!(lock_slot(&slot).is_none(), "borrowed while leased");
+        assert!(
+            TapLease::take(&slot).is_none(),
+            "a second pipeline cannot take it"
+        );
+        drop(lease);
+        assert!(lock_slot(&slot).is_some(), "back after the lease ends");
+    }
+
+    #[test]
+    fn tap_survives_a_panicking_pipeline_thread() {
+        let slot = slot();
+        let lease = TapLease::take(&slot).unwrap();
+        let thread = thread::spawn(move || {
+            let _lease = lease;
+            panic!("simulated pipeline bug");
+        });
+        join(thread); // logs, does not propagate
+        assert!(lock_slot(&slot).is_some(), "unwinding returned the tap");
+        assert!(
+            TapLease::take(&slot).is_some(),
+            "the next channel can use it"
+        );
+    }
 }

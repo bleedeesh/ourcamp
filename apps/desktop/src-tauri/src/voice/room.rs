@@ -60,6 +60,10 @@ pub struct VoiceRoom {
     room: Arc<Room>,
     mic: LocalAudioTrack,
     events: JoinHandle<()>,
+    /// The runtime the room was connected on. Some synchronous SDK calls (`mute`)
+    /// `tokio::spawn` internally and panic outside a runtime — e.g. on the UI thread,
+    /// where Tauri runs synchronous commands. They enter this handle first.
+    runtime: tokio::runtime::Handle,
 }
 
 impl VoiceRoom {
@@ -115,11 +119,14 @@ impl VoiceRoom {
             room,
             mic: track,
             events,
+            runtime: tokio::runtime::Handle::current(),
         })
     }
 
-    /// Mutes the published microphone; others see it as muted.
+    /// Mutes the published microphone; others see it as muted. Callable from any
+    /// thread.
     pub fn set_mic_muted(&self, muted: bool) {
+        let _runtime = self.runtime.enter();
         if muted {
             self.mic.mute();
         } else {
@@ -247,5 +254,52 @@ async fn play(mut stream: NativeAudioStream, mut input: SourceInput) {
         buf.resize(frame.data.len(), 0.0);
         i16_to_f32(&frame.data, &mut buf);
         input.write(&buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voice::token;
+    use livekit::webrtc::audio_source::AudioSourceOptions;
+
+    struct NoHost;
+
+    impl RoomHost for NoHost {
+        fn voice_started(&self, _: &str) -> Option<SourceInput> {
+            None
+        }
+        fn voice_stopped(&self, _: &str) {}
+        fn members_changed(&self, _: Vec<RemoteMember>) {}
+    }
+
+    /// Regression: Tauri runs synchronous commands on the UI thread, which has no tokio
+    /// runtime; `LocalAudioTrack::mute` spawned onto "no reactor" and aborted the app.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn mic_mute_works_from_a_thread_without_a_runtime() {
+        let access = token::access("test/mute", "mute-test").unwrap();
+        let params = RoomParams {
+            url: access.url,
+            token: access.token,
+            playback_rate: 48_000,
+        };
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let room = tauri::async_runtime::block_on(VoiceRoom::connect(
+            params,
+            source,
+            false,
+            Arc::new(NoHost),
+        ))
+        .expect("connect (is `pnpm livekit` running?)");
+
+        let room = std::thread::spawn(move || {
+            room.set_mic_muted(true);
+            room.set_mic_muted(false);
+            room
+        })
+        .join()
+        .expect("muting outside a runtime must not panic");
+        tauri::async_runtime::block_on(room.close());
     }
 }

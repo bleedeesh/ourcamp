@@ -48,6 +48,13 @@ pnpm dev
    $env:OC_IDENTITY = "artem"; .\target\debug\ourcamp-desktop.exe
    ```
 
+   То же в `cmd.exe` (кавычки обязательны, иначе в имя попадёт пробел):
+
+   ```bat
+   set "OC_IDENTITY=artem"
+   target\debug\ourcamp-desktop.exe
+   ```
+
    С другого компьютера в той же сети: сервер запустить как
    `$env:OC_NODE_IP = "<IP этого ПК>"; pnpm livekit`, а у второго клиента задать
    `$env:OC_LIVEKIT_URL = "ws://<IP этого ПК>:7880"`. Windows может спросить разрешение

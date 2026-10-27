@@ -10,12 +10,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use oc_audio::gain::percent_to_gain;
-use oc_audio::mixer::{Layout, MixerControl, MixerError, OutputTap, SourceInput, SourceStatus};
+use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatus};
 
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
-use crate::voice::mic::{LocalLevel, MicPipeline};
+use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
 use crate::voice::room::{RemoteMember, RoomHost, RoomParams, VoiceRoom};
 use crate::voice::token;
 
@@ -88,8 +88,8 @@ struct Live {
     /// voice arrives — including people who join after us.
     prefs: HashMap<String, Prefs>,
     mic_muted: bool,
-    /// `None` while a microphone pipeline holds it.
-    tap: Option<OutputTap>,
+    /// The mixer's output tap; borrowed by the microphone pipeline while in a channel.
+    taps: TapSlot,
     session: Option<Session>,
     local_level: Option<Arc<LocalLevel>>,
     listener: Option<ParticipantsListener>,
@@ -188,7 +188,7 @@ impl Engine {
                 sources: Vec::new(),
                 prefs: HashMap::new(),
                 mic_muted: false,
-                tap: Some(opened.tap),
+                taps: Arc::new(Mutex::new(Some(opened.tap))),
                 session: None,
                 local_level: None,
                 listener: None,
@@ -269,32 +269,21 @@ impl Engine {
     }
 
     async fn join_room(&self, camp_id: &str, channel_id: &str) -> Result<(), EngineError> {
-        let (tap, output_latency, mic_muted, self_id, playback_rate) = {
-            let mut live = self.lock();
-            let tap = live.tap.take().ok_or("Микрофон уже занят")?;
+        let (taps, output_latency, mic_muted, self_id, playback_rate) = {
+            let live = self.lock();
             (
-                tap,
+                Arc::clone(&live.taps),
                 live.output_latency.clone(),
                 live.mic_muted,
                 live.self_id.clone(),
                 live.output_rate,
             )
         };
-        let access = match token::access(&token::room_name(camp_id, channel_id), &self_id) {
-            Ok(access) => access,
-            Err(e) => {
-                self.lock().tap = Some(tap);
-                return Err(e);
-            }
-        };
-
-        let mic = match MicPipeline::start(tap, output_latency, mic_muted) {
-            Ok(mic) => mic,
-            Err((message, tap)) => {
-                self.lock().tap = Some(tap);
-                return Err(format!("Микрофон: {message}"));
-            }
-        };
+        let access = token::access(&token::room_name(camp_id, channel_id), &self_id)?;
+        // If anything below fails or this future is dropped, dropping `mic` returns the
+        // tap to `taps` (see `TapSlot`).
+        let mic = MicPipeline::start(&taps, output_latency, mic_muted)
+            .map_err(|message| format!("Микрофон: {message}"))?;
         let host: Arc<dyn RoomHost> = Arc::new(Host {
             live: Arc::downgrade(&self.live),
         });
@@ -311,7 +300,7 @@ impl Engine {
                 Ok(())
             }
             Err(e) => {
-                self.lock().tap = Some(mic.stop());
+                mic.stop();
                 Err(e)
             }
         }
@@ -334,7 +323,7 @@ impl Engine {
         };
         if let Some(Session { room, mic }) = session {
             room.close().await;
-            self.lock().tap = Some(mic.stop());
+            mic.stop();
         }
         let mut live = self.lock();
         let result = live.clear_voices().map_err(mixer_error);

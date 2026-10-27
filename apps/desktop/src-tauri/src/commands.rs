@@ -51,12 +51,16 @@ pub async fn voice_join_channel(
     engine(&state)?
         .join_channel(&camp_id, &channel_id, &specs)
         .await
+        .inspect_err(|e| eprintln!("[ourcamp] join {camp_id}/{channel_id}: {e}"))
 }
 
 /// Leaves the current channel.
 #[tauri::command]
 pub async fn voice_leave_channel(state: State<'_, EngineState>) -> Result<(), String> {
-    engine(&state)?.leave_channel().await
+    engine(&state)?
+        .leave_channel()
+        .await
+        .inspect_err(|e| eprintln!("[ourcamp] leave: {e}"))
 }
 
 /// Sets a member's local volume (0–200 %).
