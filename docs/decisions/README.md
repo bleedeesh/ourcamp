@@ -18,5 +18,8 @@
 | [0011](0011-participants-from-engine.md) | Состав костра приходит из движка (`onParticipants`) | принято |
 | [0012](0012-windows-static-crt.md) | Windows: статический CRT (libwebrtc собран с /MT) и короткий путь к проекту | принято |
 | [0013](0013-dev-livekit-in-docker.md) | Локальный LiveKit для разработки — в Docker (`dev/compose.yaml`) | принято |
+| [0014](0014-pinned-signalling-transport.md) | Пиннинг сертификата для LiveKit через свой транспорт сигнализации | принято (M3) |
+| [0015](0015-device-identity.md) | Личность до аккаунтов: ключ устройства Ed25519 + имя | до M4 |
+| [0016](0016-camp-server-shape.md) | Устройство OurCamp Server: один порт, два режима LiveKit, окно + headless | принято (M3) |
 
 Шаблон: Контекст → Решение → Почему → Отвергнутые варианты → Последствия.
