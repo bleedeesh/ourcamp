@@ -15,6 +15,9 @@
 распаковывается глубоко в `target`, а компилятор MSVC не открывает пути длиннее 260 символов.
 Подробности — [ADR-0012](decisions/0012-windows-static-crt.md).
 
+Linux: готовый libwebrtc требует **clang ≥ 21** (`CC=clang-21 CXX=clang++-21`), в Ubuntu 24.04
+его ставят из <https://apt.llvm.org> — см. задачу `voice` в `.github/workflows/ci.yml`.
+
 ## Первый запуск
 
 ```powershell

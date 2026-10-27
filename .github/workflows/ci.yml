@@ -19,7 +19,7 @@ jobs:
     name: Rust core (fmt, clippy, tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -32,7 +32,7 @@ jobs:
     name: Miri (unsafe code in oc-audio)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
@@ -43,11 +43,11 @@ jobs:
     name: Frontend (types, tests, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -66,7 +66,7 @@ jobs:
     # The first build downloads the prebuilt libwebrtc; later runs hit the cache.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -74,7 +74,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -88,22 +88,29 @@ jobs:
     name: Voice against a real LiveKit (ignored tests)
     # Docker is only available on Linux runners; the server is the same compose file
     # developers use (`pnpm livekit`, ADR-0013).
-    runs-on: ubuntu-latest
+    # Pinned (not -latest): the LLVM apt repository below is per Ubuntu codename.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      # The prebuilt libwebrtc for Linux ships Chromium's own libc++, whose headers need
+      # clang >= 21; Ubuntu 24.04 has 18. webrtc-sys picks the compiler from CXX.
+      - name: clang 21 (apt.llvm.org)
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
       - name: System libraries (Tauri/WebKitGTK, ALSA for cpal, GLib headers for libwebrtc)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev \
-            libasound2-dev libglib2.0-dev pkg-config build-essential
+            libasound2-dev libglib2.0-dev pkg-config build-essential clang-21
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: pnpm
@@ -119,6 +126,9 @@ jobs:
           docker compose -f dev/compose.yaml logs
           exit 1
       - run: cargo test -p ourcamp-desktop -- --include-ignored
+        env:
+          CC: clang-21
+          CXX: clang++-21
       - name: LiveKit logs
         if: failure()
         run: docker compose -f dev/compose.yaml logs
