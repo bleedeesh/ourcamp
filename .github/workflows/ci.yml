@@ -36,7 +36,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo miri test -p oc-audio -- ring:: mixer::
+      # Quoted: an unquoted `: ` would start a YAML mapping.
+      - run: "cargo miri test -p oc-audio -- ring:: mixer::"
 
   frontend:
     name: Frontend (types, tests, build)
