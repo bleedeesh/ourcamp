@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the running check pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,7 +50,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ourcamp/desktop typecheck
       - run: pnpm --filter @ourcamp/desktop test
       - run: pnpm --filter @ourcamp/desktop exec vite build
@@ -56,6 +62,8 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # The first build downloads the prebuilt libwebrtc; later runs hit the cache.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -69,7 +77,47 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
+      # Tauri embeds the built frontend at compile time.
       - run: pnpm --filter @ourcamp/desktop exec vite build
       - run: cargo clippy -p ourcamp-desktop --all-targets -- -D warnings
       - run: cargo test -p ourcamp-desktop
+
+  voice:
+    name: Voice against a real LiveKit (ignored tests)
+    # Docker is only available on Linux runners; the server is the same compose file
+    # developers use (`pnpm livekit`, ADR-0013).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries (Tauri/WebKitGTK, ALSA for cpal, GLib headers for libwebrtc)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev \
+            libasound2-dev libglib2.0-dev pkg-config build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ourcamp/desktop exec vite build
+      - name: Start LiveKit
+        run: |
+          docker compose -f dev/compose.yaml up -d
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:7880 >/dev/null && exit 0
+            sleep 1
+          done
+          docker compose -f dev/compose.yaml logs
+          exit 1
+      - run: cargo test -p ourcamp-desktop -- --include-ignored
+      - name: LiveKit logs
+        if: failure()
+        run: docker compose -f dev/compose.yaml logs
