@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! oc-server [--data DIR] [--bind ADDR] [--host HOST] [--port PORT] [--name NAME]
-//!           [--livekit-url URL]
+//!           [--livekit-url URL] [--livekit-key KEY] [--livekit-secret SECRET]
 //! ```
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -11,24 +11,27 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use oc_invite::{Host, DEFAULT_PORT};
-use oc_server::{start, Config};
+use oc_server::{start, Config, LiveKit};
 
+// The LiveKit defaults are those of `livekit-server --dev` (`pnpm livekit`). A camp for
+// real people runs its own LiveKit with generated keys (M3 step 5, `managed` mode).
 const HELP: &str = "\
 OurCamp Server (headless)
 
-  --data DIR         camp data: database + TLS identity   [./camp-data]
-  --bind ADDR        listen address                        [0.0.0.0:7780]
-  --host HOST        address friends use, put into links   [this PC's LAN IPv4]
-  --port PORT        port put into links                   [the bound port]
-  --name NAME        name of a new camp                    [Мой лагерь]
-  --livekit-url URL  LiveKit to use (dev: `pnpm livekit`)   [ws://127.0.0.1:7880]
-  -h, --help         this text
+  --data DIR              camp data: database + TLS identity   [./camp-data]
+  --bind ADDR             listen address                        [0.0.0.0:7780]
+  --host HOST             address friends use, put into links   [this PC's LAN IPv4]
+  --port PORT             port put into links                   [the bound port]
+  --name NAME             name of a new camp                    [Мой лагерь]
+  --livekit-url URL       LiveKit address handed to clients     [ws://127.0.0.1:7880]
+  --livekit-key KEY       LiveKit API key                       [devkey]
+  --livekit-secret SECRET LiveKit API secret                    [secret]
+  -h, --help              this text
 ";
 
 #[derive(Debug)]
 struct Args {
     config: Config,
-    livekit_url: String,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
@@ -37,7 +40,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
     let mut host: Option<Host> = None;
     let mut port: Option<u16> = None;
     let mut name = String::from("Мой лагерь");
-    let mut livekit_url = String::from("ws://127.0.0.1:7880");
+    let mut livekit = LiveKit {
+        url: "ws://127.0.0.1:7880".into(),
+        api_key: "devkey".into(),
+        api_secret: "secret".into(),
+    };
 
     while let Some(flag) = args.next() {
         if flag == "-h" || flag == "--help" {
@@ -50,7 +57,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
             "--host" => host = Some(value()?.parse().map_err(|e| format!("--host: {e}"))?),
             "--port" => port = Some(value()?.parse().map_err(|e| format!("--port: {e}"))?),
             "--name" => name = value()?,
-            "--livekit-url" => livekit_url = value()?,
+            "--livekit-url" => livekit.url = value()?,
+            "--livekit-key" => livekit.api_key = value()?,
+            "--livekit-secret" => livekit.api_secret = value()?,
             other => return Err(format!("unknown argument {other} (see --help)")),
         }
     }
@@ -62,8 +71,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
             public_host: host.unwrap_or_else(lan_address),
             public_port: port,
             camp_name: name,
+            livekit,
         },
-        livekit_url,
     }))
 }
 
@@ -121,6 +130,7 @@ async fn main() -> ExitCode {
 
     let data_dir =
         std::path::absolute(&args.config.data_dir).unwrap_or_else(|_| args.config.data_dir.clone());
+    let livekit_url = args.config.livekit.url.clone();
     let running = match start(args.config).await {
         Ok(running) => running,
         Err(e) => {
@@ -128,7 +138,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    check_livekit(&args.livekit_url).await;
+    check_livekit(&livekit_url).await;
 
     eprintln!("[oc-server] data: {}", data_dir.display());
     eprintln!("[oc-server] listening on {} (TLS)", running.local_addr);
@@ -161,7 +171,8 @@ mod tests {
         let args = parse(&[]).unwrap().unwrap();
         assert_eq!(args.config.bind.port(), DEFAULT_PORT);
         assert_eq!(args.config.public_port, None);
-        assert_eq!(args.livekit_url, "ws://127.0.0.1:7880");
+        assert_eq!(args.config.livekit.url, "ws://127.0.0.1:7880");
+        assert_eq!(args.config.livekit.api_key, "devkey");
     }
 
     #[test]

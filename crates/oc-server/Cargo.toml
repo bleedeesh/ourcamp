@@ -14,6 +14,9 @@ path = "src/main.rs"
 [dependencies]
 oc-invite = { path = "../oc-invite" }
 oc-tls = { path = "../oc-tls" }
+oc-proto = { path = "../oc-proto" }
+livekit-token = "0.3.1"
+ring = "0.17"
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
@@ -27,6 +30,7 @@ getrandom = "0.3"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+oc-camp-client = { path = "../oc-camp-client" }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util"] }
 

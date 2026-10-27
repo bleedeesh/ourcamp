@@ -6,7 +6,9 @@
 const ALPHABET: &[u8; 32] = b"0123456789abcdefghjkmnpqrstvwxyz";
 
 /// Encodes bytes, MSB first, without padding.
-pub(crate) fn encode(bytes: &[u8]) -> String {
+/// Encodes bytes as lower-case Crockford base32 (no padding).
+#[must_use]
+pub fn encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity((bytes.len() * 8).div_ceil(5));
     let mut buffer: u32 = 0;
     let mut bits = 0u32;
@@ -42,7 +44,9 @@ fn value(c: u8) -> Option<u32> {
 
 /// Decodes text produced by [`encode`]. Returns `None` on invalid characters or
 /// non-zero padding bits (which would mean the text was not produced by `encode`).
-pub(crate) fn decode(s: &str) -> Option<Vec<u8>> {
+/// Decodes Crockford base32, case-insensitively, mapping look-alikes; `None` if invalid.
+#[must_use]
+pub fn decode(s: &str) -> Option<Vec<u8>> {
     if s.is_empty() {
         return None;
     }

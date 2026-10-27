@@ -1,35 +1,55 @@
-//! HTTP API of the camp (`/api/v1`). Clients reach it over the pinned TLS port.
-//!
-//! Step 1 of M3 exposes what needs no identity: the camp's public description and
-//! whether an invite is still good. Signing in and room tokens arrive in step 2.
+//! HTTP API of the camp (`/api/v1`, ADR-0018). Clients reach it over the pinned TLS port.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use oc_invite::InviteKind;
-use serde::Serialize;
+use livekit_token::{AccessToken, VideoGrants};
+use oc_invite::{Fingerprint, InviteKind};
+use oc_proto::{
+    login_message, user_id, verify, CampInfo, Challenge, ErrorBody, ErrorCode, InviteInfo,
+    InviteKindDto, LoginRequest, LoginResponse, RoomToken, API_VERSION, PUBLIC_KEY_LEN,
+};
 
-use crate::store::{canonical_token, Camp, Store, StoreResult};
+use crate::store::{canonical_token, Device, LoginError, Store, StoreResult};
+use crate::LiveKit;
 
-/// Bumped on breaking changes; clients refuse servers they do not understand.
-pub const API_VERSION: u32 = 1;
+/// A nonce must be signed and sent back within this time.
+const NONCE_TTL: Duration = Duration::from_secs(60);
+/// Outstanding nonces kept at most; beyond that challenges are refused until some expire
+/// (a flood of challenge requests cannot grow memory without bound).
+const MAX_NONCES: usize = 4096;
+/// Session lifetime (ADR-0018).
+const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+/// Room token lifetime; LiveKit refreshes it for connected clients.
+const ROOM_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
+/// Longest display name, in characters.
+const MAX_NAME_CHARS: usize = 32;
 
 /// State shared by request handlers.
 #[derive(Clone)]
 pub struct AppState {
     store: Arc<Mutex<Store>>,
+    nonces: Arc<Mutex<HashMap<String, Instant>>>,
+    fingerprint: Fingerprint,
+    livekit: Arc<LiveKit>,
 }
 
 impl AppState {
-    /// Wraps the store.
+    /// Everything the handlers need.
     #[must_use]
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, fingerprint: Fingerprint, livekit: LiveKit) -> Self {
         Self {
             store: Arc::new(Mutex::new(store)),
+            nonces: Arc::default(),
+            fingerprint,
+            livekit: Arc::new(livekit),
         }
     }
 
@@ -37,42 +57,80 @@ impl AppState {
     /// workers that serve every other connection.
     async fn with_store<R: Send + 'static>(
         &self,
-        f: impl FnOnce(&Store) -> StoreResult<R> + Send + 'static,
+        f: impl FnOnce(&mut Store) -> StoreResult<R> + Send + 'static,
     ) -> Result<R, ApiError> {
         let store = Arc::clone(&self.store);
         tokio::task::spawn_blocking(move || {
             // A panic mid-query cannot leave SQLite inconsistent (transactions roll back).
-            let store = store.lock().unwrap_or_else(PoisonError::into_inner);
-            f(&store)
+            let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+            f(&mut store)
         })
         .await
-        .map_err(|_| ApiError::Internal)?
+        .map_err(|_| ApiError(ErrorCode::Internal))?
         .map_err(|e| {
             eprintln!("[oc-server] {e}");
-            ApiError::Internal
+            ApiError(ErrorCode::Internal)
         })
+    }
+
+    fn issue_nonce(&self) -> Option<String> {
+        let mut nonces = self.nonces.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        nonces.retain(|_, issued| now.duration_since(*issued) < NONCE_TTL);
+        if nonces.len() >= MAX_NONCES {
+            return None;
+        }
+        let nonce = oc_proto::encode_bytes(&random::<32>());
+        nonces.insert(nonce.clone(), now);
+        Some(nonce)
+    }
+
+    /// Removes the nonce whether or not it is still valid: each one is tried once.
+    fn take_nonce(&self, nonce: &str) -> bool {
+        let mut nonces = self.nonces.lock().unwrap_or_else(PoisonError::into_inner);
+        nonces
+            .remove(nonce)
+            .is_some_and(|issued| issued.elapsed() < NONCE_TTL)
     }
 }
 
-/// Errors as the client sees them: a status and a stable machine-readable code.
-#[derive(Debug)]
-enum ApiError {
-    NotFound,
-    Internal,
+fn random<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    // The OS CSPRNG failing is unrecoverable for a server that issues secrets.
+    getrandom::fill(&mut bytes).expect("operating system random number generator");
+    bytes
 }
 
-#[derive(Serialize)]
-struct ErrorBody {
-    error: &'static str,
+fn sha256(bytes: &[u8]) -> Vec<u8> {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .to_vec()
 }
+
+/// An error as the client sees it: a status and an [`ErrorCode`].
+#[derive(Debug)]
+struct ApiError(ErrorCode);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, error) = match self {
-            Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
-            Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+        let status = match self.0 {
+            ErrorCode::BadRequest => StatusCode::BAD_REQUEST,
+            ErrorCode::BadSignature | ErrorCode::NonceInvalid | ErrorCode::Unauthorized => {
+                StatusCode::UNAUTHORIZED
+            }
+            ErrorCode::InviteRequired | ErrorCode::InviteInvalid => StatusCode::FORBIDDEN,
+            ErrorCode::ClaimUsed => StatusCode::CONFLICT,
+            ErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, Json(ErrorBody { error })).into_response()
+        (status, Json(ErrorBody { error: self.0 })).into_response()
+    }
+}
+
+/// Malformed JSON gets the same error shape as everything else.
+impl From<JsonRejection> for ApiError {
+    fn from(_: JsonRejection) -> Self {
+        Self(ErrorCode::BadRequest)
     }
 }
 
@@ -81,47 +139,157 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/camp", get(camp))
         .route("/api/v1/invites/{token}", get(invite))
+        .route("/api/v1/auth/challenge", post(challenge))
+        .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/channels/{id}/token", post(room_token))
         .with_state(state)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CampResponse {
-    api_version: u32,
-    #[serde(flatten)]
-    camp: Camp,
-}
-
-async fn camp(State(state): State<AppState>) -> Result<Json<CampResponse>, ApiError> {
-    let camp = state.with_store(Store::camp).await?;
-    Ok(Json(CampResponse {
+async fn camp(State(state): State<AppState>) -> Result<Json<CampInfo>, ApiError> {
+    let camp = state.with_store(|s| s.camp()).await?;
+    Ok(Json(CampInfo {
         api_version: API_VERSION,
-        camp,
+        name: camp.name,
+        channels: camp.channels,
     }))
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InviteResponse {
-    kind: &'static str,
-    usable: bool,
 }
 
 async fn invite(
     State(state): State<AppState>,
     Path(token): Path<String>,
-) -> Result<Json<InviteResponse>, ApiError> {
+) -> Result<Json<InviteInfo>, ApiError> {
     // Lenient like the link parser (case, look-alikes), then an exact lookup.
-    let token = canonical_token(&token).ok_or(ApiError::NotFound)?;
+    let token = canonical_token(&token).ok_or(ApiError(ErrorCode::NotFound))?;
     let status = state
         .with_store(move |s| s.invite_status(token.as_str()))
         .await?
-        .ok_or(ApiError::NotFound)?;
-    Ok(Json(InviteResponse {
+        .ok_or(ApiError(ErrorCode::NotFound))?;
+    Ok(Json(InviteInfo {
         kind: match status.kind {
-            InviteKind::Join => "join",
-            InviteKind::ClaimAdmin => "claim",
+            InviteKind::Join => InviteKindDto::Join,
+            InviteKind::ClaimAdmin => InviteKindDto::Claim,
         },
         usable: status.usable,
+    }))
+}
+
+async fn challenge(State(state): State<AppState>) -> Result<Json<Challenge>, ApiError> {
+    let nonce = state.issue_nonce().ok_or(ApiError(ErrorCode::Internal))?;
+    Ok(Json(Challenge { nonce }))
+}
+
+async fn login(
+    State(state): State<AppState>,
+    body: Result<Json<LoginRequest>, JsonRejection>,
+) -> Result<Json<LoginResponse>, ApiError> {
+    let Json(req) = body?;
+    let bad = || ApiError(ErrorCode::BadRequest);
+    let public_key: [u8; PUBLIC_KEY_LEN] = oc_proto::decode_bytes(&req.public_key)
+        .and_then(|k| k.try_into().ok())
+        .ok_or_else(bad)?;
+    let signature = oc_proto::decode_bytes(&req.signature).ok_or_else(bad)?;
+    let name = req.name.trim().to_owned();
+    if name.is_empty()
+        || name.chars().count() > MAX_NAME_CHARS
+        || name.chars().any(char::is_control)
+    {
+        return Err(bad());
+    }
+
+    // Nonce first: whatever happens next, this nonce cannot be tried again.
+    if !state.take_nonce(&req.nonce) {
+        return Err(ApiError(ErrorCode::NonceInvalid));
+    }
+    if !verify(
+        &public_key,
+        &login_message(&state.fingerprint, &req.nonce),
+        &signature,
+    ) {
+        return Err(ApiError(ErrorCode::BadSignature));
+    }
+
+    let id = user_id(&public_key);
+    // A token that does not even parse can still be passed through: for a new device
+    // it is simply not found (`invite_invalid`), for a known one it is irrelevant.
+    let invite = req
+        .invite
+        .map(|t| canonical_token(&t).map_or(t, |c| c.as_str().to_owned()));
+    let session = random::<32>();
+    let session_hash = sha256(&session);
+    let (user_id, role) = {
+        let id = id.clone();
+        state
+            .with_store(move |s| {
+                let device = Device {
+                    user_id: &id,
+                    public_key: &public_key,
+                    name: &name,
+                };
+                let role = match s.login(device, invite.as_deref())? {
+                    Ok(role) => role,
+                    Err(e) => return Ok(Err(e)),
+                };
+                s.create_session(&session_hash, &id, SESSION_TTL_SECS)?;
+                Ok(Ok((id, role)))
+            })
+            .await?
+            .map_err(|e| {
+                ApiError(match e {
+                    LoginError::InviteRequired => ErrorCode::InviteRequired,
+                    LoginError::InviteInvalid => ErrorCode::InviteInvalid,
+                    LoginError::ClaimUsed => ErrorCode::ClaimUsed,
+                })
+            })?
+    };
+    Ok(Json(LoginResponse {
+        session: oc_proto::encode_bytes(&session),
+        user_id,
+        role,
+    }))
+}
+
+async fn room_token(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<RoomToken>, ApiError> {
+    let unauthorized = || ApiError(ErrorCode::Unauthorized);
+    let session = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(oc_proto::decode_bytes)
+        .ok_or_else(unauthorized)?;
+    let hash = sha256(&session);
+    let (member, exists) = {
+        let channel = channel.clone();
+        state
+            .with_store(move |s| Ok((s.session_member(&hash)?, s.channel_exists(&channel)?)))
+            .await?
+    };
+    let member = member.ok_or_else(unauthorized)?;
+    if !exists {
+        return Err(ApiError(ErrorCode::NotFound));
+    }
+
+    let token = AccessToken::with_api_key(&state.livekit.api_key, &state.livekit.api_secret)
+        .with_identity(&member.user_id)
+        .with_name(&member.name)
+        .with_ttl(ROOM_TOKEN_TTL)
+        .with_grants(VideoGrants {
+            room_join: true,
+            room: channel,
+            can_publish: Some(true),
+            can_subscribe: Some(true),
+            ..VideoGrants::default()
+        })
+        .to_jwt()
+        .map_err(|e| {
+            eprintln!("[oc-server] room token: {e}");
+            ApiError(ErrorCode::Internal)
+        })?;
+    Ok(Json(RoomToken {
+        url: state.livekit.url.clone(),
+        token,
     }))
 }
