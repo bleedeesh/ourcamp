@@ -21,5 +21,6 @@
 | [0014](0014-pinned-signalling-transport.md) | Пиннинг сертификата для LiveKit через свой транспорт сигнализации | принято (M3) |
 | [0015](0015-device-identity.md) | Личность до аккаунтов: ключ устройства Ed25519 + имя | до M4 |
 | [0016](0016-camp-server-shape.md) | Устройство OurCamp Server: один порт, два режима LiveKit, окно + headless | принято (M3) |
+| [0017](0017-server-building-blocks.md) | Из чего собран сервер: rustls/ring, oc-tls, rusqlite bundled, свой цикл TLS, токены в базе | принято |
 
 Шаблон: Контекст → Решение → Почему → Отвергнутые варианты → Последствия.

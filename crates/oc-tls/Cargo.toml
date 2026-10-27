@@ -1,0 +1,21 @@
+[package]
+name = "oc-tls"
+version = "0.1.0"
+description = "OurCamp TLS: trust exactly the camp certificate whose fingerprint is in the invite link."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oc-invite = { path = "../oc-invite" }
+# `ring` backend only: the default `aws-lc-rs` needs cmake + NASM on Windows, and `ring`
+# is what the rest of the tree (LiveKit, Tauri) already links.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = "0.17"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+
+[lints]
+workspace = true

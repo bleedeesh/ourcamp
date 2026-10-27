@@ -83,6 +83,16 @@ impl fmt::Display for Host {
     }
 }
 
+/// Parses a host as written in a link: `192.0.2.15`, `[2001:db8::7]`, `camp.example`.
+/// The camp server uses it for its configured public address.
+impl FromStr for Host {
+    type Err = InviteError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s.trim())
+    }
+}
+
 impl Host {
     fn parse(s: &str) -> Result<Self, InviteError> {
         if let Some(inner) = s.strip_prefix('[') {
@@ -141,7 +151,12 @@ impl Token {
         &self.0
     }
 
-    fn parse(s: &str, kind: InviteKind) -> Result<Self, InviteError> {
+    /// Parses a token of the given kind, as typed or pasted by a person: case and the
+    /// Crockford look-alikes (`O`→`0`, `I`/`L`→`1`) are normalised, length is checked.
+    ///
+    /// # Errors
+    /// [`InviteError::InvalidToken`] for bad characters or the wrong length.
+    pub fn parse(s: &str, kind: InviteKind) -> Result<Self, InviteError> {
         let bytes = base32::decode(s).ok_or(InviteError::InvalidToken)?;
         if bytes.len() != kind.token_bytes() {
             return Err(InviteError::InvalidToken);
@@ -350,6 +365,23 @@ mod tests {
             token: Token::from_bytes(&[0xA5; JOIN_TOKEN_BYTES]),
             fingerprint: fp(),
         }
+    }
+
+    #[test]
+    fn host_parses_like_in_links() {
+        assert_eq!(
+            " 192.0.2.15 ".parse::<Host>(),
+            Ok(Host::Ipv4(Ipv4Addr::new(192, 0, 2, 15)))
+        );
+        assert_eq!(
+            "[2001:db8::7]".parse::<Host>(),
+            Ok(Host::Ipv6("2001:db8::7".parse().unwrap()))
+        );
+        assert_eq!(
+            "Camp.Example".parse::<Host>(),
+            Ok(Host::Domain("camp.example".into()))
+        );
+        assert_eq!("999.1.1.1".parse::<Host>(), Err(InviteError::InvalidHost));
     }
 
     #[test]

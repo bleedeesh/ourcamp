@@ -29,7 +29,10 @@
 ## Состояние: M0, M1, M2 готовы (M2 проверен Димой на слух; CI зелёный на Windows, macOS, Linux)
 - `crates/oc-audio` — lock-free микшер (громкость, mute, deafen, лимитер, детектор речи),
   отвод выхода для AEC (`OutputTap`), `pcm` (f32↔i16), 53 теста.
-- `crates/oc-invite` — формат ссылок + ключ админа, пиннинг сертификата, 15 тестов.
+- `crates/oc-invite` — формат ссылок + ключ админа, пиннинг сертификата, 16 тестов.
+- `crates/oc-tls` — проверка сертификата по отпечатку + подписи рукопожатия (ADR-0014), 4 теста.
+- `crates/oc-server` — M3 шаг 1: headless-сервер (`pnpm server`), SQLite, TLS 7780,
+  самоподписанный сертификат, ссылки, `/api/v1/camp`, `/api/v1/invites/{token}` (ADR-0017), 14 тестов.
 - `apps/desktop/src-tauri`: `audio/` — устройства (`output.rs`, `input.rs`), `Engine`
   (режимы livekit / `OC_VOICE=synthetic`, громкости в `prefs`); `voice/` — `mic.rs`
   (поток микрофона: APM AEC3+NS+AGC → `NativeAudioSource`), `room.rs` (LiveKit, ADR-0008),
@@ -48,7 +51,8 @@
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-0014–0016). Первый шаг — `oc-server` headless.
+M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-0014–0017). Шаг 1 готов; дальше шаг 2 —
+ключ устройства, вход по подписи, токены комнат от сервера.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 
