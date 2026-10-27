@@ -26,7 +26,7 @@
 - Звук: Opus 48 кГц моно 64 кбит/с VBR, FEC + RED, DTX off; AEC3 → шумодав
   (DeepFilterNet/RNNoise) → AGC. ADR-0008.
 
-## Состояние: M0 и M2 готовы и проверены Димой на Windows (двое говорят через LiveKit в Docker)
+## Состояние: M0, M1, M2 готовы (M2 проверен Димой на слух; CI зелёный на Windows, macOS, Linux)
 - `crates/oc-audio` — lock-free микшер (громкость, mute, deafen, лимитер, детектор речи),
   отвод выхода для AEC (`OutputTap`), `pcm` (f32↔i16), 53 теста.
 - `crates/oc-invite` — формат ссылок + ключ админа, пиннинг сертификата, 15 тестов.
@@ -39,7 +39,7 @@
 - `apps/desktop/src` — состав костра из движка (`domain/roster.ts`), 28 тестов.
 - Сборка на Windows: статический CRT (`.cargo/config.toml`), короткий путь (ADR-0012).
 - Node в среде агента — через nvs: `%LOCALAPPDATA%\nvs\node\24.21.0\x64` (не в PATH).
-- Ещё не сделано: CI (`.github/workflows/ci.yml`, вкл. Miri) ни разу не запускался.
+- CI зелёный (6 задач, вкл. Miri и тесты с LiveKit в Docker). Linux-сборке нужен clang ≥ 21.
   Remote: github.com/bleedeesh/ourcamp (приватный). Известные пробелы M2: нет статуса «подключаемся /
   переподключаемся» в UI; смена устройства — только перезапуском (M7).
 - Для M3: `livekit` с фичами по умолчанию собирается **без TLS** (только `ws://`);
@@ -48,7 +48,7 @@
   `#[ignore]`-тесты с настоящим LiveKit. Репозиторий приватный: macOS-минуты ×10.
 
 ## Дальше
-M1 — CI (нужен GitHub-репозиторий), затем M3 — сервер лагеря.
+M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-0014–0016). Первый шаг — `oc-server` headless.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 
