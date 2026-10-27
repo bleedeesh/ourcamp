@@ -6,6 +6,8 @@
 mod audio;
 mod commands;
 mod levels;
+mod participants;
+mod voice;
 
 use audio::engine::Engine;
 use commands::EngineState;
@@ -25,6 +27,7 @@ pub fn run() {
         .manage(engine)
         .setup(move |app| {
             if let Some(engine) = for_levels {
+                participants::forward(app.handle().clone(), &engine);
                 levels::spawn(app.handle().clone(), engine);
             }
             Ok(())

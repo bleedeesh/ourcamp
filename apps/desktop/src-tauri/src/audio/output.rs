@@ -6,18 +6,22 @@
 
 use std::fmt;
 use std::hash::Hash;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, SampleRate, StreamConfig};
 use oc_audio::meter::SpeechDetectorConfig;
-use oc_audio::mixer::{mixer, Layout, MixerConfig, MixerControl, MixerCore};
+use oc_audio::mixer::{mixer, Layout, MixerConfig, MixerControl, MixerCore, OutputTap};
 use oc_audio::SAMPLE_RATE;
 
 /// Frames processed per mixer call when the device has more than two channels and the
 /// stereo mix has to be spread into a wider frame. Allocated once per stream.
 const WIDE_SCRATCH_FRAMES: usize = 4096;
+/// How much of the final mix the echo-cancellation tap can hold if the microphone
+/// pipeline is not reading (not in a channel, or stalled).
+const TAP_CAPACITY_MS: u32 = 500;
 
 /// Why the output device could not be opened.
 #[derive(Debug)]
@@ -48,12 +52,32 @@ fn backend<E: fmt::Display>(e: E) -> OutputError {
     OutputError::Backend(e.to_string())
 }
 
+/// Time from the callback filling a buffer to that buffer reaching the speaker, in
+/// milliseconds, as last reported by the driver. Feeds the echo canceller's delay hint.
+#[derive(Clone, Default)]
+pub struct DeviceLatency(Arc<AtomicU32>);
+
+impl DeviceLatency {
+    /// Latest measurement (0 until the driver reports one).
+    #[must_use]
+    pub fn ms(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn store(&self, latency: Option<std::time::Duration>) {
+        if let Some(d) = latency {
+            self.0.store(d.as_millis() as u32, Ordering::Relaxed);
+        }
+    }
+}
+
 /// A running output stream. Dropping it stops the stream.
 pub struct Output {
     stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
     sample_rate: u32,
     device_name: String,
+    latency: DeviceLatency,
 }
 
 impl Output {
@@ -68,6 +92,12 @@ impl Output {
     pub fn device_name(&self) -> &str {
         &self.device_name
     }
+
+    /// Live output latency.
+    #[must_use]
+    pub fn latency(&self) -> DeviceLatency {
+        self.latency.clone()
+    }
 }
 
 impl Drop for Output {
@@ -80,56 +110,83 @@ impl Drop for Output {
     }
 }
 
+/// What [`open`] hands back: the mixer's control half, the echo-cancellation tap of
+/// its final output, and the stream itself.
+pub struct Opened<K> {
+    /// Control half of the mixer running in the device callback.
+    pub mixer: MixerControl<K>,
+    /// Mono copy of everything played (ADR-0009).
+    pub tap: OutputTap,
+    /// The running stream.
+    pub output: Output,
+}
+
 /// Opens the default output device and starts mixing into it.
 ///
 /// # Errors
 /// See [`OutputError`].
-pub fn open<K>() -> Result<(MixerControl<K>, Output), OutputError>
+pub fn open<K>() -> Result<Opened<K>, OutputError>
 where
     K: Eq + Hash + Clone + Send + 'static,
 {
-    let (ready_tx, ready_rx) =
-        mpsc::channel::<Result<(MixerControl<K>, u32, String), OutputError>>();
+    type Ready<K> = Result<(MixerControl<K>, OutputTap, u32, String), OutputError>;
+    let (ready_tx, ready_rx) = mpsc::channel::<Ready<K>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let latency = DeviceLatency::default();
 
-    let thread = thread::Builder::new()
-        .name("oc-audio-output".into())
-        .spawn(move || {
-            let started = start_stream::<K>();
-            let stream = match started {
-                Ok((stream, control, rate, name)) => {
-                    let _ = ready_tx.send(Ok((control, rate, name)));
-                    stream
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(e));
-                    return;
-                }
-            };
-            // Park until the owning `Output` is dropped (sender closed).
-            let _ = stop_rx.recv();
-            drop(stream);
-        })
-        .map_err(backend)?;
+    let thread = {
+        let latency = latency.clone();
+        thread::Builder::new()
+            .name("oc-audio-output".into())
+            .spawn(move || {
+                let stream = match start_stream::<K>(latency) {
+                    Ok(started) => {
+                        let _ = ready_tx.send(Ok((
+                            started.control,
+                            started.tap,
+                            started.rate,
+                            started.name,
+                        )));
+                        started.stream
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                // Park until the owning `Output` is dropped (sender closed).
+                let _ = stop_rx.recv();
+                drop(stream);
+            })
+            .map_err(backend)?
+    };
 
-    let (control, sample_rate, device_name) = ready_rx
+    let (mixer, tap, sample_rate, device_name) = ready_rx
         .recv()
         .map_err(|_| OutputError::Backend("поток вывода звука завершился".into()))??;
 
-    Ok((
-        control,
-        Output {
+    Ok(Opened {
+        mixer,
+        tap,
+        output: Output {
             stop: Some(stop_tx),
             thread: Some(thread),
             sample_rate,
             device_name,
+            latency,
         },
-    ))
+    })
 }
 
-type Started<K> = (cpal::Stream, MixerControl<K>, u32, String);
+struct Started<K> {
+    stream: cpal::Stream,
+    control: MixerControl<K>,
+    tap: OutputTap,
+    rate: u32,
+    name: String,
+}
 
-fn start_stream<K: Eq + Hash + Clone>() -> Result<Started<K>, OutputError> {
+fn start_stream<K: Eq + Hash + Clone>(latency: DeviceLatency) -> Result<Started<K>, OutputError> {
     let host = cpal::default_host();
     let device = host.default_output_device().ok_or(OutputError::NoDevice)?;
     let name = device.name().unwrap_or_else(|_| "unknown".into());
@@ -147,12 +204,14 @@ fn start_stream<K: Eq + Hash + Clone>() -> Result<Started<K>, OutputError> {
         speech: SpeechDetectorConfig::voice(rate),
         ..MixerConfig::default_48k_stereo()
     };
-    let (control, core) = mixer::<K>(mixer_config);
+    let (control, mut core) = mixer::<K>(mixer_config);
+    // Installed before the core moves into the callback: the tap allocates.
+    let tap = core.tap_output(TAP_CAPACITY_MS);
 
     let stream = device
         .build_output_stream(
             &config,
-            render_callback(core, channels),
+            render_callback(core, channels, latency),
             // Device errors (unplugged headset, driver reset) are logged for now;
             // device switching and UI reporting arrive with the settings window (M7).
             |err| eprintln!("[oc-audio] output stream error: {err}"),
@@ -160,7 +219,13 @@ fn start_stream<K: Eq + Hash + Clone>() -> Result<Started<K>, OutputError> {
         )
         .map_err(backend)?;
     stream.play().map_err(backend)?;
-    Ok((stream, control, rate, name))
+    Ok(Started {
+        stream,
+        control,
+        tap,
+        rate,
+        name,
+    })
 }
 
 /// Prefers f32 / 48 kHz / stereo (Opus's native rate: no resampling of voice), then the
@@ -174,15 +239,14 @@ fn choose_config(device: &cpal::Device) -> Result<StreamConfig, OutputError> {
         .min_by_key(|r| (r.channels() != 2, r.channels()))
         .map(|r| r.with_sample_rate(SampleRate(SAMPLE_RATE)));
 
-    let supported = match preferred {
-        Some(config) => config,
-        None => {
-            let default = device.default_output_config().map_err(backend)?;
-            if default.sample_format() != SampleFormat::F32 {
-                return Err(OutputError::UnsupportedFormat);
-            }
-            default
+    let supported = if let Some(config) = preferred {
+        config
+    } else {
+        let default = device.default_output_config().map_err(backend)?;
+        if default.sample_format() != SampleFormat::F32 {
+            return Err(OutputError::UnsupportedFormat);
         }
+        default
     };
     Ok(supported.config())
 }
@@ -192,13 +256,16 @@ fn choose_config(device: &cpal::Device) -> Result<StreamConfig, OutputError> {
 fn render_callback(
     mut core: MixerCore,
     channels: usize,
+    latency: DeviceLatency,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     let mut scratch = if channels > 2 {
         vec![0.0_f32; WIDE_SCRATCH_FRAMES * 2]
     } else {
         Vec::new()
     };
-    move |data: &mut [f32], _info: &cpal::OutputCallbackInfo| {
+    move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+        let ts = info.timestamp();
+        latency.store(ts.playback.duration_since(&ts.callback));
         if channels <= 2 {
             core.process(data);
             return;

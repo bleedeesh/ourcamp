@@ -21,6 +21,13 @@ serde = { version = "1", features = ["derive"] }
 # Pinned minor: 0.16+ changes the device/config API; upgrade deliberately.
 cpal = "0.15.3"
 oc-audio = { path = "../../../crates/oc-audio" }
+# Voice (M2). The SDK downloads a prebuilt libwebrtc on first build; on Windows it
+# needs the static CRT (.cargo/config.toml, ADR-0012). Pinned: upgrade deliberately.
+livekit = "=0.9.7"
+# Dev-only room tokens until the camp server exists (ADR-0010).
+livekit-token = "0.3.1"
+tokio = { version = "1", features = ["sync"] }
+futures-util = { version = "0.3", default-features = false }
 
 [lints]
 workspace = true

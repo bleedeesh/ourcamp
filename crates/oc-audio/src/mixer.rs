@@ -6,6 +6,7 @@
 //! decoder thread ──SourceInput──► ring ─┘        │ per-source gain ramp, level, speech
 //!                                                ▼
 //!                                   Σ ─► master gain ─► limiter ─► device
+//!                                                                  └─► OutputTap (mono, AEC reference)
 //!
 //! UI thread ──MixerControl──► atomics (gain, mute) + command queue (add/remove)
 //! ```
@@ -27,6 +28,7 @@ use std::sync::Arc;
 use crate::gain::{sanitize, AtomicGain, GainRamp};
 use crate::limiter::Limiter;
 use crate::meter::{rms_dbfs, SpeechDetector, SpeechDetectorConfig, SILENCE_DB};
+use crate::pcm::downmix_to_mono;
 use crate::ring::{ring_buffer, Consumer, Producer};
 
 /// Channel layout of a source.
@@ -223,8 +225,43 @@ pub struct MixerControl<K> {
     master_muted: bool,
 }
 
+/// Mono copy of the final mix — exactly what reaches the device — read by the
+/// microphone pipeline as the echo canceller's reference signal
+/// (docs/decisions/0009-mic-processing-webrtc-apm.md).
+pub struct OutputTap {
+    consumer: Consumer,
+    sample_rate: u32,
+}
+
+impl OutputTap {
+    /// Rate of the tapped samples (the device rate).
+    #[must_use]
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Samples ready to read.
+    #[must_use]
+    pub fn available(&self) -> usize {
+        self.consumer.available()
+    }
+
+    /// Reads up to `out.len()` samples and returns how many were read.
+    pub fn read(&mut self, out: &mut [f32]) -> usize {
+        self.consumer.pop_slice(out)
+    }
+
+    /// Drops the oldest samples so that at most `keep` remain. Used when the reader
+    /// stalled: a stale reference is worse for the echo canceller than a gap.
+    pub fn discard_older_than(&mut self, keep: usize) {
+        let excess = self.consumer.available().saturating_sub(keep);
+        self.consumer.skip(excess);
+    }
+}
+
 /// Audio-thread half of the mixer. Move it into the device callback.
 pub struct MixerCore {
+    sample_rate: u32,
     channels: usize,
     max_block_frames: usize,
     max_latency_samples: [usize; 2],
@@ -239,6 +276,7 @@ pub struct MixerCore {
     scratch: Vec<f32>,
     master: GainRamp,
     limiter: Limiter,
+    tap: Option<Producer>,
 }
 
 /// Creates a connected mixer pair.
@@ -259,6 +297,7 @@ pub fn mixer<K: Eq + Hash + Clone>(config: MixerConfig) -> (MixerControl<K>, Mix
     let ramp_len = GainRamp::len_for(config.gain_ramp_ms, config.sample_rate);
 
     let core = MixerCore {
+        sample_rate: config.sample_rate,
         channels: config.output.channels(),
         max_block_frames: config.max_block_frames,
         max_latency_samples: [latency_frames, latency_frames * 2],
@@ -273,6 +312,7 @@ pub fn mixer<K: Eq + Hash + Clone>(config: MixerConfig) -> (MixerControl<K>, Mix
             config.limiter_release_ms,
             config.sample_rate,
         ),
+        tap: None,
     };
     let control = MixerControl {
         config,
@@ -444,6 +484,23 @@ impl MixerCore {
         self.channels
     }
 
+    /// Starts copying the final mix (mono) into a buffer of `capacity_ms`; replaces any
+    /// earlier tap. Allocates, so call it before the core moves to the audio thread.
+    /// If the reader falls behind, new samples are dropped rather than blocking.
+    ///
+    /// # Panics
+    /// Panics if `capacity_ms` is zero.
+    pub fn tap_output(&mut self, capacity_ms: u32) -> OutputTap {
+        assert!(capacity_ms > 0, "tap capacity must be > 0");
+        let samples = (u64::from(self.sample_rate) * u64::from(capacity_ms) / 1000) as usize;
+        let (producer, consumer) = ring_buffer(samples.max(1));
+        self.tap = Some(producer);
+        OutputTap {
+            consumer,
+            sample_rate: self.sample_rate,
+        }
+    }
+
     /// Fills `out` (interleaved) with the next block of mixed audio.
     ///
     /// Real-time safe: no locks, no allocation, no deallocation.
@@ -546,6 +603,13 @@ impl MixerCore {
             }
         }
         self.limiter.process_interleaved(out, self.channels);
+
+        if let Some(tap) = &mut self.tap {
+            // `scratch` is free again once every source has been mixed.
+            let mono = &mut self.scratch[..frames];
+            downmix_to_mono(out, self.channels, mono);
+            tap.push_slice(mono);
+        }
     }
 }
 
@@ -830,6 +894,77 @@ mod tests {
             "monotonic fade"
         );
         assert_eq!(left[63], 0.0);
+    }
+
+    #[test]
+    fn tap_receives_mono_copy_of_final_output() {
+        let (mut ctl, mut core) = mixer(test_config());
+        let mut tap = core.tap_output(100);
+        assert_eq!(tap.sample_rate(), 48_000);
+        let mut voice = ctl.add_source("lena", Layout::Mono, 0.5).unwrap();
+        let mut stream = ctl.add_source("stream", Layout::Stereo, 1.0).unwrap();
+        voice.write(&[0.4, 0.8]);
+        stream.write(&[0.2, 0.0, 0.0, 0.2]);
+        let mut out = [0.0_f32; 4];
+        core.process(&mut out);
+        let mut mono = [0.0_f32; 4];
+        assert_eq!(tap.read(&mut mono), 2, "one tap sample per output frame");
+        assert!(approx(mono[0], (out[0] + out[1]) / 2.0), "{out:?} {mono:?}");
+        assert!(approx(mono[1], (out[2] + out[3]) / 2.0), "{out:?} {mono:?}");
+    }
+
+    #[test]
+    fn tap_follows_master_mute_and_limiter() {
+        let cfg = MixerConfig {
+            limiter_ceiling_db: -6.0,
+            ..test_config()
+        };
+        let (mut ctl, mut core) = mixer(cfg);
+        let mut tap = core.tap_output(100);
+        let mut a = ctl.add_source("a", Layout::Mono, 2.0).unwrap();
+        a.write(&[0.9; 64]);
+        let mut out = vec![0.0_f32; 128];
+        core.process(&mut out);
+        let mut mono = vec![0.0_f32; 64];
+        tap.read(&mut mono);
+        let ceiling = 10.0_f32.powf(-6.0 / 20.0);
+        assert!(
+            mono.iter().all(|s| s.abs() <= ceiling + 1e-5),
+            "reference is post-limiter"
+        );
+
+        ctl.set_master_muted(true).unwrap();
+        a.write(&[0.9; 64]);
+        core.process(&mut out);
+        tap.read(&mut mono);
+        assert!(
+            mono.iter().all(|&s| s == 0.0),
+            "deafened: nothing is played, nothing to cancel"
+        );
+    }
+
+    #[test]
+    fn stalled_tap_reader_never_blocks_the_mixer() {
+        let (mut ctl, mut core) = mixer(test_config());
+        let mut tap = core.tap_output(1); // 48 samples (rounded up to 64)
+        let mut a = ctl.add_source("a", Layout::Mono, 1.0).unwrap();
+        for _ in 0..10 {
+            a.write(&[0.1; 48]);
+            core.process(&mut [0.0; 96]);
+        }
+        assert_eq!(tap.available(), 64, "full, newer samples dropped");
+        tap.discard_older_than(16);
+        assert_eq!(tap.available(), 16);
+    }
+
+    #[test]
+    fn mixer_without_tap_is_unaffected() {
+        let (mut ctl, mut core) = mixer(test_config());
+        let mut a = ctl.add_source("a", Layout::Mono, 1.0).unwrap();
+        a.write(&[0.5]);
+        let mut out = [0.0_f32; 2];
+        core.process(&mut out);
+        assert_eq!(out, [0.5, 0.5]);
     }
 
     #[test]

@@ -17,5 +17,6 @@
 | [0010](0010-dev-room-tokens.md) | Токены комнаты до M3 подписывает клиент (только debug) | временно, до M3 |
 | [0011](0011-participants-from-engine.md) | Состав костра приходит из движка (`onParticipants`) | принято |
 | [0012](0012-windows-static-crt.md) | Windows: статический CRT (libwebrtc собран с /MT) и короткий путь к проекту | принято |
+| [0013](0013-dev-livekit-in-docker.md) | Локальный LiveKit для разработки — в Docker (`dev/compose.yaml`) | принято |
 
 Шаблон: Контекст → Решение → Почему → Отвергнутые варианты → Последствия.

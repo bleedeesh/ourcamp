@@ -1,0 +1,18 @@
+# Local voice infrastructure for development (ADR-0013). Start: `pnpm livekit`.
+#
+# Only the SFU runs here; the desktop client stays on the host (it needs the real
+# microphone, speakers and a window).
+services:
+  livekit:
+    # Pinned: upgrade deliberately, together with the Rust SDK if the protocol changes.
+    image: livekit/livekit-server:v1.13.9
+    # --dev: API key `devkey`, secret `secret` (the client signs its own tokens, ADR-0010).
+    # --node-ip: the address put into ICE candidates. Inside Docker the server only
+    # sees its container IP, which the host cannot reach; 127.0.0.1 works for clients
+    # on this machine. For a second computer on the LAN: OC_NODE_IP=<this PC's IP>.
+    command: --dev --bind 0.0.0.0 --node-ip ${OC_NODE_IP:-127.0.0.1}
+    ports:
+      - "7880:7880" # signalling (WebSocket) + HTTP API
+      - "7881:7881" # WebRTC over TCP (fallback when UDP is blocked)
+      - "7882:7882/udp" # WebRTC over UDP; dev mode muxes every peer onto this one port
+    restart: unless-stopped

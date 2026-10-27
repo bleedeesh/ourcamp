@@ -1,7 +1,7 @@
 //! Tauri commands called by `src/engine/tauri-engine.ts`.
 //!
 //! Names and argument shapes are the contract with the frontend; Tauri maps the JS
-//! camelCase keys (`userId`) to these snake_case parameters.
+//! camelCase keys (`userId`) to these `snake_case` parameters.
 
 // Tauri injects `State` and deserialized arguments by value.
 #![allow(clippy::needless_pass_by_value)]
@@ -31,10 +31,12 @@ pub struct JoinMember {
     mic_muted: bool,
 }
 
-/// Starts playing the given members (replacing any previous channel).
+/// Joins a voice channel (leaving any previous one). Resolves once connected.
 #[tauri::command]
-pub fn voice_join_channel(
+pub async fn voice_join_channel(
     state: State<'_, EngineState>,
+    camp_id: String,
+    channel_id: String,
     members: Vec<JoinMember>,
 ) -> Result<(), String> {
     let specs: Vec<MemberSpec> = members
@@ -46,13 +48,15 @@ pub fn voice_join_channel(
             remote_mic_muted: m.mic_muted,
         })
         .collect();
-    engine(&state)?.join_channel(&specs)
+    engine(&state)?
+        .join_channel(&camp_id, &channel_id, &specs)
+        .await
 }
 
-/// Stops playing the current channel.
+/// Leaves the current channel.
 #[tauri::command]
-pub fn voice_leave_channel(state: State<'_, EngineState>) -> Result<(), String> {
-    engine(&state)?.leave_channel()
+pub async fn voice_leave_channel(state: State<'_, EngineState>) -> Result<(), String> {
+    engine(&state)?.leave_channel().await
 }
 
 /// Sets a member's local volume (0–200 %).

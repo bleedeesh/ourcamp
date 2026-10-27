@@ -19,7 +19,7 @@ import { isTauri, TauriEngine } from "./engine/tauri-engine.ts";
 import { App } from "./ui/App.tsx";
 import { VoiceProvider } from "./ui/voice-context.tsx";
 
-const engine = isTauri() ? new TauriEngine() : new DemoEngine();
+const engine = isTauri() ? new TauriEngine() : new DemoEngine(DEMO_SELF_ID);
 const voice = new VoiceController(engine, new VolumeBook(window.localStorage), DEMO_CAMP, DEMO_SELF_ID);
 voice.start();
 

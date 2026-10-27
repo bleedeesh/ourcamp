@@ -1,5 +1,6 @@
 import { createStore, type Store } from "../lib/store.ts";
-import type { MemberLevel, VoiceEngine } from "../engine/engine.ts";
+import type { MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
+import { applyRoster } from "./roster.ts";
 import type { Camp, UserId } from "./types.ts";
 import type { VolumeBook, VolumePrefs } from "./volume.ts";
 
@@ -39,6 +40,9 @@ export class VoiceController {
   /** Mic state before deafening, restored on undeafen (deafen implies mute). */
   #micBeforeDeafen = false;
   #unsubscribeLevels: (() => void) | null = null;
+  #unsubscribeParticipants: (() => void) | null = null;
+  /** Members whose saved volume the engine already has for the current channel. */
+  #volumesSent = new Set<UserId>();
 
   constructor(engine: VoiceEngine, volumes: VolumeBook, camp: Camp, selfId: UserId) {
     this.#engine = engine;
@@ -56,14 +60,17 @@ export class VoiceController {
     });
   }
 
-  /** Starts listening to engine level updates. Idempotent. */
+  /** Starts listening to engine level and membership updates. Idempotent. */
   start(): void {
     this.#unsubscribeLevels ??= this.#engine.onLevels((levels) => this.#applyLevels(levels));
+    this.#unsubscribeParticipants ??= this.#engine.onParticipants((update) => this.#applyParticipants(update));
   }
 
   dispose(): void {
     this.#unsubscribeLevels?.();
     this.#unsubscribeLevels = null;
+    this.#unsubscribeParticipants?.();
+    this.#unsubscribeParticipants = null;
   }
 
   async join(channelId: string): Promise<void> {
@@ -74,6 +81,7 @@ export class VoiceController {
 
     const remote = channel.memberIds.filter((id) => id !== selfId);
     const prefs = Object.fromEntries(remote.map((id) => [id, this.#volumes.get(id)]));
+    this.#volumesSent = new Set(remote);
     this.store.patch({ channelId, speaking: {}, prefs: { ...this.store.get().prefs, ...prefs }, error: null });
     await this.#run(
       () =>
@@ -178,6 +186,26 @@ export class VoiceController {
 
   #setPrefs(userId: UserId, prefs: VolumePrefs): void {
     this.store.update((s) => ({ ...s, prefs: { ...s.prefs, [userId]: prefs } }));
+  }
+
+  #applyParticipants(update: ParticipantsUpdate): void {
+    const { camp, channelId } = this.store.get();
+    // Leaving announces an empty room. Until the camp server reports presence (M3)
+    // the last known list is the best information we have, so keep it.
+    if (channelId === null) return;
+    this.store.patch({ camp: applyRoster(camp, channelId, update), selfId: update.selfId });
+
+    // People who arrived after we joined: the engine has no saved volume for them yet.
+    for (const { userId } of update.members) {
+      if (this.#volumesSent.has(userId)) continue;
+      this.#volumesSent.add(userId);
+      const prefs = this.#volumes.get(userId);
+      this.#setPrefs(userId, prefs);
+      void this.#run(async () => {
+        await this.#engine.setVolume(userId, prefs.volume);
+        await this.#engine.setLocalMute(userId, prefs.muted);
+      });
+    }
   }
 
   #applyLevels(levels: readonly MemberLevel[]): void {

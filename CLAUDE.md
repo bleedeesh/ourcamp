@@ -26,20 +26,24 @@
 - Звук: Opus 48 кГц моно 64 кбит/с VBR, FEC + RED, DTX off; AEC3 → шумодав
   (DeepFilterNet/RNNoise) → AGC. ADR-0008.
 
-## Состояние: M0 готов и проверен на Windows (Дима запустил, всё работает)
-- `crates/oc-audio` — lock-free микшер (громкость, mute, deafen, лимитер, детектор речи), 45 тестов.
+## Состояние: M0 проверен Димой; M2 написан (ветка `m2-voice`), на слух ещё не проверен
+- `crates/oc-audio` — lock-free микшер (громкость, mute, deafen, лимитер, детектор речи),
+  отвод выхода для AEC (`OutputTap`), `pcm` (f32↔i16), 53 теста.
 - `crates/oc-invite` — формат ссылок + ключ админа, пиннинг сертификата, 15 тестов.
-- `apps/desktop` — главное окно, меню громкости участника (сохраняется в localStorage),
-  вывод звука; вместо собеседников — **синтетические голоса** (`src-tauri/src/audio/synthetic.rs`).
-- Участники/каналы — демо (`src/domain/demo-camp.ts`).
-- Ещё не сделано: CI (`.github/workflows/ci.yml`, вкл. Miri)
-  ни разу не запускался; `pnpm typecheck` не прогонялся в среде разработки.
+- `apps/desktop/src-tauri`: `audio/` — устройства (`output.rs`, `input.rs`), `Engine`
+  (режимы livekit / `OC_VOICE=synthetic`, громкости в `prefs`); `voice/` — `mic.rs`
+  (поток микрофона: APM AEC3+NS+AGC → `NativeAudioSource`), `room.rs` (LiveKit, ADR-0008),
+  `token.rs` (dev-токены, ADR-0010). Событие `voice://participants` (ADR-0011).
+- `apps/desktop/src` — состав костра из движка (`domain/roster.ts`), 28 тестов.
+- Сборка на Windows: статический CRT (`.cargo/config.toml`), короткий путь (ADR-0012).
+- Node в среде агента — через nvs: `%LOCALAPPDATA%\nvs\node\24.21.0\x64` (не в PATH).
+- Ещё не сделано: CI (`.github/workflows/ci.yml`, вкл. Miri) ни разу не запускался;
+  разговор двоих через LiveKit (`pnpm livekit`, Docker) не проверен (`docs/development.md`, «Голос (M2)»).
 
-## Следующий шаг: M2 — настоящий голос
-LiveKit Rust SDK; захват микрофона (cpal → AEC3 → шумодав → AGC); публикация/подписка;
-удалённые дорожки → `SourceInput` микшера вместо синтетики; локальный livekit-server
-для разработки. Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`)
-не менять без необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
+## Дальше
+Проверить M2 на слух (эхо, задержка, громкость новичков), затем M3 — сервер лагеря.
+Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
+необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 
 ## Как работать с Димой
 - Фронтендер (Vue 3/Nuxt/TS, теперь React); Rust осваивает — объяснять неочевидное в Rust.
@@ -49,5 +53,5 @@ LiveKit Rust SDK; захват микрофона (cpal → AEC3 → шумод�
   заменять новой записью). Заглушки помечать этапом roadmap («arrives in M2»).
 
 ## Команды
-`pnpm dev` · `pnpm test` · `pnpm typecheck` · `pnpm lint:rust` (clippy pedantic, -D warnings + fmt).
+`pnpm livekit` (LiveKit в Docker) · `pnpm dev` · `pnpm test` · `pnpm typecheck` · `pnpm lint:rust` (clippy pedantic, -D warnings + fmt).
 Тесты TS — `node --test` (Node ≥ 22.18, только «стираемый» TS, импорты с `.ts`).

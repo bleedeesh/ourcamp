@@ -34,6 +34,7 @@ pub mod gain;
 pub mod limiter;
 pub mod meter;
 pub mod mixer;
+pub mod pcm;
 pub mod ring;
 
 /// Sample rate used throughout OurCamp (Opus's native rate).

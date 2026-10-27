@@ -12,7 +12,8 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: host ?? false,
-    hmr: host ? { protocol: "ws", host, port: 5174 } : undefined,
+    // Omitted (not `undefined`) without a host: `exactOptionalPropertyTypes` is on.
+    ...(host ? { hmr: { protocol: "ws", host, port: 5174 } } : {}),
     watch: { ignored: ["**/src-tauri/**"] },
   },
   envPrefix: ["VITE_", "TAURI_ENV_"],

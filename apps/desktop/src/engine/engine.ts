@@ -8,6 +8,24 @@ export interface MemberLevel {
   readonly speaking: boolean;
 }
 
+/** A remote member of the joined channel, as the voice room reports them. */
+export interface RemoteParticipant {
+  readonly userId: UserId;
+  /** Display name carried by the room (used for people the camp does not know yet). */
+  readonly name: string;
+  readonly micMuted: boolean;
+}
+
+/**
+ * Who is in the joined channel (ADR-0011). Always the complete list, so a missed
+ * update never leaves the UI out of sync.
+ */
+export interface ParticipantsUpdate {
+  /** The local user's id as the room knows it. */
+  readonly selfId: UserId;
+  readonly members: readonly RemoteParticipant[];
+}
+
 export interface JoinRequest {
   readonly campId: string;
   readonly channelId: string;
@@ -36,4 +54,6 @@ export interface VoiceEngine {
   setDeafened(deafened: boolean): Promise<void>;
   /** Subscribes to level updates; returns an unsubscribe function. */
   onLevels(listener: (levels: readonly MemberLevel[]) => void): () => void;
+  /** Subscribes to channel membership updates; returns an unsubscribe function. */
+  onParticipants(listener: (update: ParticipantsUpdate) => void): () => void;
 }

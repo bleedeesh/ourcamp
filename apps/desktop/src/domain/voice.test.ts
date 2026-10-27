@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { JoinRequest, MemberLevel, VoiceEngine } from "../engine/engine.ts";
+import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
 import type { Camp } from "./types.ts";
 import { VoiceController } from "./voice.ts";
 import { VolumeBook, type KeyValueStorage } from "./volume.ts";
@@ -51,6 +51,14 @@ class FakeEngine implements VoiceEngine {
   }
   emit(levels: MemberLevel[]) {
     this.#listener?.(levels);
+  }
+  #participants: ((u: ParticipantsUpdate) => void) | null = null;
+  onParticipants(listener: (u: ParticipantsUpdate) => void) {
+    this.#participants = listener;
+    return () => (this.#participants = null);
+  }
+  announce(update: ParticipantsUpdate) {
+    this.#participants?.(update);
   }
 }
 
@@ -163,6 +171,56 @@ test("speaking updates only touch the store when the speaker set changes", () =>
   engine.emit([{ userId: "lena", levelDb: -60, speaking: false }]);
   assert.equal(renders, 2);
   assert.deepEqual(voice.store.get().speaking, {});
+});
+
+test("the room's member list replaces the channel's and adopts the room's self id", async () => {
+  const { engine, voice } = setup();
+  await voice.join("lobby");
+  engine.announce({
+    selfId: "me",
+    members: [
+      { userId: "lena", name: "lena", micMuted: true },
+      { userId: "zhenya", name: "Женя", micMuted: false },
+    ],
+  });
+  const { camp, selfId } = voice.store.get();
+  assert.deepEqual(camp.channels[0]?.memberIds, ["lena", "zhenya"]);
+  assert.equal(camp.members["lena"]?.micMuted, true);
+  assert.equal(camp.members["zhenya"]?.name, "Женя");
+  assert.equal(selfId, "me");
+
+  engine.announce({ selfId: "artem", members: [] });
+  assert.equal(voice.store.get().selfId, "artem", "identity comes from the room");
+});
+
+test("people who join later get their saved volume; known ones are not resent", async () => {
+  const { engine, volumes, voice } = setup();
+  volumes.setVolume("zhenya", 40);
+  volumes.setMuted("zhenya", true);
+  await voice.join("lobby");
+  engine.calls = [];
+  const update = {
+    selfId: "me",
+    members: [
+      { userId: "artem", name: "artem", micMuted: false },
+      { userId: "zhenya", name: "Женя", micMuted: false },
+    ],
+  };
+  engine.announce(update);
+  engine.announce(update);
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(engine.calls, ["volume:zhenya:40", "localMute:zhenya:true"]);
+  assert.deepEqual(voice.prefsOf("zhenya"), { volume: 40, muted: true });
+});
+
+test("membership updates outside a channel are ignored", async () => {
+  const { engine, voice } = setup();
+  await voice.join("lobby");
+  engine.announce({ selfId: "me", members: [{ userId: "lena", name: "lena", micMuted: false }] });
+  await voice.leave();
+  engine.announce({ selfId: "me", members: [] });
+  assert.deepEqual(voice.store.get().camp.channels[0]?.memberIds, ["lena"], "last known list kept");
 });
 
 test("volume menu cannot be opened for yourself", () => {
