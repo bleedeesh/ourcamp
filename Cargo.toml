@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/oc-audio",
     "crates/oc-invite",
+    "crates/oc-tls",
+    "crates/oc-server",
     "apps/desktop/src-tauri",
 ]
 # `cargo test` / `cargo clippy` at the root build only the platform-independent crates.
@@ -11,6 +13,8 @@ members = [
 default-members = [
     "crates/oc-audio",
     "crates/oc-invite",
+    "crates/oc-tls",
+    "crates/oc-server",
 ]
 
 [workspace.package]

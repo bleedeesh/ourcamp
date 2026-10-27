@@ -8,6 +8,7 @@
     "dev": "pnpm --filter @ourcamp/desktop tauri dev",
     "livekit": "docker compose -f dev/compose.yaml up",
     "livekit:down": "docker compose -f dev/compose.yaml down",
+    "server": "cargo run -p oc-server -- --data target/camp-data",
     "test": "pnpm -r test && cargo test",
     "typecheck": "pnpm -r typecheck",
     "lint:rust": "cargo clippy --all-targets -- -D warnings && cargo fmt --check"
