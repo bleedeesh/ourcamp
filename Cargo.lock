@@ -3124,11 +3124,14 @@ version = "0.1.0"
 name = "oc-camp-client"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
+ "futures-util",
  "getrandom 0.3.4",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "livekit-net",
  "oc-invite",
  "oc-proto",
  "oc-tls",
@@ -3137,6 +3140,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -3158,9 +3162,11 @@ name = "oc-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "futures-util",
  "getrandom 0.3.4",
  "hyper",
  "hyper-util",
+ "livekit-net",
  "livekit-token",
  "oc-camp-client",
  "oc-invite",
@@ -3174,6 +3180,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite",
 ]
 
 [[package]]
@@ -3238,6 +3245,9 @@ dependencies = [
  "livekit",
  "livekit-token",
  "oc-audio",
+ "oc-camp-client",
+ "oc-invite",
+ "oc-server",
  "serde",
  "tauri",
  "tauri-build",

@@ -33,8 +33,9 @@
 - `crates/oc-tls` — проверка сертификата по отпечатку + подписи рукопожатия (ADR-0014), 4 теста.
 - `crates/oc-proto` — общий язык API: JSON-типы, коды ошибок, подписываемое сообщение входа, `userId`.
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
-  пиннингом через `oc-tls` (hyper), вход, токены комнат. Им ходят сквозные тесты сервера.
-- `crates/oc-server` — M3 шаги 1–2: headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
+  пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
+  `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
+- `crates/oc-server` — M3 шаги 1–3 (прокси `/rtc` → LiveKit на loopback, ADR-0019): headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
   сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018), 26 тестов.
 - `apps/desktop/src-tauri`: `audio/` — устройства (`output.rs`, `input.rs`), `Engine`
   (режимы livekit / `OC_VOICE=synthetic`, громкости в `prefs`); `voice/` — `mic.rs`
@@ -54,8 +55,8 @@
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-0014–0017). Шаги 1–2 готовы; дальше шаг 3 —
-свой `WsClient` для LiveKit с пиннингом и прокси `/rtc` на сервере.
+M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-0014–0017). Шаги 1–3 готовы; дальше шаг 4 —
+ссылка `ourcamp://` в приложении, каналы и присутствие с сервера, вход вместо dev-токенов.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

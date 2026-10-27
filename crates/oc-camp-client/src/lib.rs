@@ -14,12 +14,15 @@
 //! let key = DeviceKey::load_or_create("device.key".as_ref())?;
 //! let camp = CampClient::new(&invite);
 //! let session = camp.login(&key, "Дима", Some(invite.token.as_str())).await?;
-//! let room = camp.room_token(&session, "c0").await?; // → LiveKit url + token
+//! oc_camp_client::transport::install(oc_camp_client::transport::PlainLoopback::Deny); // once
+//! let room = camp.room_token(&session, "c0").await?;
+//! // livekit::Room::connect(&camp.voice_url(), &room.token, Default::default())
 //! # Ok(()) }
 //! ```
 
 mod device;
 mod http;
+pub mod transport;
 
 use std::fmt;
 use std::io;
@@ -159,7 +162,16 @@ impl CampClient {
         })
     }
 
-    /// LiveKit address and token for a channel.
+    /// Where this camp's voice server is: the camp itself (`/rtc` on the same port,
+    /// ADR-0019). Also pins the camp's certificate for the LiveKit transport, so the SDK
+    /// will connect there and nowhere else (see [`transport`]).
+    #[must_use]
+    pub fn voice_url(&self) -> String {
+        transport::pin(&self.http.authority, self.fingerprint);
+        format!("wss://{}", self.http.authority)
+    }
+
+    /// LiveKit token for a channel (connect it to [`voice_url`](Self::voice_url)).
     ///
     /// # Errors
     /// [`ErrorCode::Unauthorized`] for an expired session, [`ErrorCode::NotFound`] for an

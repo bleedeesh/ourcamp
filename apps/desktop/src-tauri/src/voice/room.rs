@@ -302,4 +302,59 @@ mod tests {
         .expect("muting outside a runtime must not panic");
         tauri::async_runtime::block_on(room.close());
     }
+
+    /// The whole M3 path: camp server (in-process) → login with a device key → room token →
+    /// `wss://` to the camp port, pinned, proxied by `/rtc` to the real LiveKit. The SDK's own
+    /// transport has no TLS at all, so connecting proves it uses ours (ADR-0019).
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn voice_goes_through_the_camp_server_over_pinned_tls() {
+        use oc_camp_client::transport::{install, PlainLoopback};
+        use oc_camp_client::{CampClient, DeviceKey};
+
+        install(PlainLoopback::Allow);
+        tauri::async_runtime::block_on(async {
+            let data_dir = std::env::temp_dir().join(format!("oc-e2e-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&data_dir);
+            let camp = oc_server::start(oc_server::Config {
+                data_dir: data_dir.clone(),
+                bind: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
+                public_host: oc_invite::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+                public_port: None,
+                camp_name: "E2E".into(),
+                livekit: oc_server::LiveKit {
+                    url: "ws://127.0.0.1:7880".into(),
+                    api_key: "devkey".into(),
+                    api_secret: "secret".into(),
+                },
+            })
+            .await
+            .unwrap();
+
+            let client = CampClient::new(&camp.links.join);
+            let session = client
+                .login(
+                    &DeviceKey::generate(),
+                    "E2E",
+                    Some(camp.links.join.token.as_str()),
+                )
+                .await
+                .unwrap();
+            let token = client.room_token(&session, "c0").await.unwrap().token;
+            let params = RoomParams {
+                url: client.voice_url(),
+                token,
+                playback_rate: 48_000,
+            };
+            assert!(params.url.starts_with("wss://127.0.0.1:"), "{}", params.url);
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let room = VoiceRoom::connect(params, source, false, Arc::new(NoHost))
+                .await
+                .expect("voice through the camp (is `pnpm livekit` running?)");
+            assert_eq!(room.room.name(), "c0");
+            room.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(data_dir);
+        });
+    }
 }
