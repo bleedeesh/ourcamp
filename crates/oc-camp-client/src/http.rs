@@ -1,41 +1,85 @@
-//! Minimal JSON-over-HTTPS client: one pinned TLS connection per request (logins and
-//! token requests are rare), HTTP/1.1 via `hyper`, bodies via `serde_json`.
+//! Minimal HTTPS: one pinned TLS connection per request (logins, token requests and
+//! LiveKit's `validate` probe are rare), HTTP/1.1 via `hyper`.
 
 use std::io;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST};
-use hyper::{Method, Request};
+use hyper::{HeaderMap, Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use oc_invite::Fingerprint;
 use oc_proto::ErrorBody;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::net::TcpStream;
+use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::{rustls, TlsConnector};
+use tokio_rustls::TlsConnector;
 
 use crate::ClientError;
 
 /// Connect + TLS + request + response must finish within this.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// Responses are small JSON; refuse anything that is not.
+/// Responses are small; refuse anything that is not.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
+/// TCP + TLS to `authority`, trusting only the certificate with `fingerprint`.
+pub(crate) async fn connect_pinned(
+    authority: &str,
+    fingerprint: Fingerprint,
+) -> io::Result<TlsStream<TcpStream>> {
+    let tcp = TcpStream::connect(authority).await?;
+    tcp.set_nodelay(true)?;
+    // The name is only sent as SNI; the pin replaces name checks (ADR-0014).
+    let name = ServerName::try_from("ourcamp").expect("static name");
+    TlsConnector::from(oc_tls::client_config(fingerprint))
+        .connect(name, tcp)
+        .await
+}
+
+/// One request over a fresh pinned connection; returns status, headers and body.
+pub(crate) async fn send(
+    authority: &str,
+    fingerprint: Fingerprint,
+    request: Request<Full<Bytes>>,
+) -> io::Result<(StatusCode, HeaderMap, Bytes)> {
+    let exchange = async {
+        let tls = connect_pinned(authority, fingerprint).await?;
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .map_err(io::Error::other)?;
+        // Drives the connection; ends when the response is read and the request dropped.
+        tokio::spawn(connection);
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(io::Error::other)?;
+        let (parts, body) = response.into_parts();
+        let bytes = http_body_util::Limited::new(body, MAX_RESPONSE_BYTES)
+            .collect()
+            .await
+            .map_err(io::Error::other)?
+            .to_bytes();
+        Ok((parts.status, parts.headers, bytes))
+    };
+    tokio::time::timeout(REQUEST_TIMEOUT, exchange)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "camp timed out"))?
+}
+
+/// JSON API client for one camp.
 pub(crate) struct Client {
-    authority: String,
-    tls: TlsConnector,
+    pub(crate) authority: String,
+    fingerprint: Fingerprint,
 }
 
 impl Client {
     pub(crate) fn new(authority: String, fingerprint: Fingerprint) -> Self {
-        let config: Arc<rustls::ClientConfig> = oc_tls::client_config(fingerprint);
         Self {
             authority,
-            tls: TlsConnector::from(config),
+            fingerprint,
         }
     }
 
@@ -61,30 +105,6 @@ impl Client {
         bearer: Option<&str>,
         body: Bytes,
     ) -> Result<T, ClientError> {
-        tokio::time::timeout(REQUEST_TIMEOUT, self.exchange(method, path, bearer, body))
-            .await
-            .map_err(|_| {
-                ClientError::Io(io::Error::new(io::ErrorKind::TimedOut, "camp timed out"))
-            })?
-    }
-
-    async fn exchange<T: DeserializeOwned>(
-        &self,
-        method: Method,
-        path: &str,
-        bearer: Option<&str>,
-        body: Bytes,
-    ) -> Result<T, ClientError> {
-        let tcp = TcpStream::connect(self.authority.as_str()).await?;
-        // The name is only sent as SNI; the pin replaces name checks (ADR-0014).
-        let name = ServerName::try_from("ourcamp").expect("static name");
-        let tls = self.tls.connect(name, tcp).await?;
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
-            .await
-            .map_err(io::Error::other)?;
-        // Drives the connection; ends when the response is read and the request dropped.
-        tokio::spawn(connection);
-
         let mut request = Request::builder()
             .method(method)
             .uri(path)
@@ -96,16 +116,7 @@ impl Client {
         let request = request
             .body(Full::new(body))
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let response = sender
-            .send_request(request)
-            .await
-            .map_err(io::Error::other)?;
-        let status = response.status();
-        let bytes = http_body_util::Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
-            .collect()
-            .await
-            .map_err(|e| ClientError::Protocol(e.to_string()))?
-            .to_bytes();
+        let (status, _, bytes) = send(&self.authority, self.fingerprint, request).await?;
 
         if status.is_success() {
             serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))

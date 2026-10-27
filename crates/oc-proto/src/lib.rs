@@ -149,11 +149,10 @@ pub struct LoginResponse {
 
 // ---- voice ----
 
-/// `POST /api/v1/channels/{id}/token`.
+/// `POST /api/v1/channels/{id}/token`. The voice server is the camp itself:
+/// `wss://<the address the API was reached at>`, path `/rtc` (ADR-0019).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomToken {
-    /// LiveKit address.
-    pub url: String,
     /// LiveKit access token (JWT).
     pub token: String,
 }

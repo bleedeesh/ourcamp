@@ -351,7 +351,11 @@ async fn members_get_a_livekit_token_for_one_channel() {
         .await
         .unwrap();
     let room = client.room_token(&session, "c0").await.unwrap();
-    assert_eq!(room.url, LIVEKIT_URL);
+    assert_eq!(
+        client.voice_url(),
+        format!("wss://127.0.0.1:{}", camp.running.local_addr.port()),
+        "voice goes through the camp itself"
+    );
 
     let claims = livekit_token::TokenVerifier::with_api_key("devkey", "secret")
         .verify(&room.token)
@@ -378,4 +382,146 @@ async fn room_tokens_need_a_valid_session() {
         .unwrap();
     assert_eq!((status, &body["error"]), (401, &json!("unauthorized")));
     camp.stop().await;
+}
+
+// ---- step 3: /rtc proxy and the pinned LiveKit transport ----
+
+/// Stands in for LiveKit: accepts one WebSocket, first sends back the request path and
+/// `Host` it saw, then echoes every binary frame.
+async fn fake_livekit() -> String {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut seen = String::new();
+                #[allow(
+                    clippy::result_large_err,
+                    reason = "the error type is fixed by tungstenite's handshake callback"
+                )]
+                let callback = |req: &Request, resp: Response| {
+                    let host = req
+                        .headers()
+                        .get("host")
+                        .and_then(|h| h.to_str().ok())
+                        .unwrap_or("");
+                    seen = format!("{} host={host}", req.uri());
+                    Ok(resp)
+                };
+                let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(tcp, callback).await else {
+                    return;
+                };
+                let _ = ws.send(Message::Binary(seen.into_bytes().into())).await;
+                while let Some(Ok(msg)) = ws.next().await {
+                    if msg.is_binary() && ws.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    format!("ws://{addr}")
+}
+
+async fn camp_with_upstream(upstream: &str) -> Camp {
+    let dir = data_dir();
+    let mut cfg = config(dir.clone());
+    cfg.livekit.url = upstream.to_owned();
+    Camp {
+        running: start(cfg).await.unwrap(),
+        dir,
+    }
+}
+
+async fn signal(
+    url: String,
+) -> Result<std::sync::Arc<dyn livekit_net::WsConnection>, livekit_net::TransportError> {
+    oc_camp_client::transport::install(oc_camp_client::transport::PlainLoopback::Deny);
+    let client = livekit_net::ws_client().expect("transport registered");
+    Ok(client.connect(url, Vec::new(), 5_000).await?.connection)
+}
+
+#[tokio::test]
+async fn signalling_reaches_livekit_through_the_pinned_camp_port() {
+    let upstream = fake_livekit().await;
+    let camp = camp_with_upstream(&upstream).await;
+    let voice = camp.client().voice_url(); // pins the camp for the transport
+
+    let conn = signal(format!("{voice}/rtc/v1?access_token=t&sdk=rust"))
+        .await
+        .unwrap();
+    let first = String::from_utf8(conn.recv().await.unwrap().unwrap()).unwrap();
+    let upstream_authority = upstream.trim_start_matches("ws://");
+    assert_eq!(
+        first,
+        format!("/rtc/v1?access_token=t&sdk=rust host={upstream_authority}"),
+        "path and query preserved, Host rewritten to LiveKit"
+    );
+    conn.send(b"signal".to_vec()).await.unwrap();
+    assert_eq!(
+        conn.recv().await.unwrap().unwrap(),
+        b"signal",
+        "frames flow both ways"
+    );
+    conn.close().await;
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn the_transport_refuses_a_camp_pinned_to_another_certificate() {
+    let upstream = fake_livekit().await;
+    let camp = camp_with_upstream(&upstream).await;
+    let authority = format!("127.0.0.1:{}", camp.running.local_addr.port());
+    oc_camp_client::transport::pin(&authority, Fingerprint([7; 32]));
+    let err = signal(format!("wss://{authority}/rtc"))
+        .await
+        .err()
+        .expect("must refuse");
+    assert!(format!("{err:?}").contains("certificate"), "{err:?}");
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn only_signalling_is_exposed_not_the_rest_of_livekit() {
+    let upstream = fake_livekit().await;
+    let camp = camp_with_upstream(&upstream).await;
+    let (addr, pin) = (camp.running.local_addr, camp.running.fingerprint);
+    let (status, _) = raw(
+        addr,
+        pin,
+        "POST",
+        "/twirp/livekit.RoomService/ListRooms",
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, 404, "LiveKit's admin API stays on loopback");
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn livekit_down_is_a_bad_gateway_not_a_hang() {
+    // A port nothing listens on.
+    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let upstream = format!("ws://{}", free.local_addr().unwrap());
+    drop(free);
+    let camp = camp_with_upstream(&upstream).await;
+    let (addr, pin) = (camp.running.local_addr, camp.running.fingerprint);
+    let (status, _) = raw(addr, pin, "GET", "/rtc/validate", None).await.unwrap();
+    assert_eq!(status, 502);
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn a_livekit_url_with_tls_or_without_port_is_rejected_at_startup() {
+    let mut cfg = config(data_dir());
+    cfg.livekit.url = "wss://127.0.0.1:7880".into();
+    let err = start(cfg).await.err().expect("must refuse");
+    assert!(err.to_string().contains("ws://host:port"), "{err}");
 }

@@ -8,7 +8,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
@@ -39,13 +39,21 @@ pub struct AppState {
     nonces: Arc<Mutex<HashMap<String, Instant>>>,
     fingerprint: Fingerprint,
     livekit: Arc<LiveKit>,
+    /// `host:port` of LiveKit, validated at startup (`ws://` only: it is on loopback).
+    livekit_authority: Arc<str>,
 }
 
 impl AppState {
     /// Everything the handlers need.
     #[must_use]
-    pub fn new(store: Store, fingerprint: Fingerprint, livekit: LiveKit) -> Self {
+    pub fn new(
+        store: Store,
+        fingerprint: Fingerprint,
+        livekit: LiveKit,
+        livekit_authority: &str,
+    ) -> Self {
         Self {
+            livekit_authority: Arc::from(livekit_authority),
             store: Arc::new(Mutex::new(store)),
             nonces: Arc::default(),
             fingerprint,
@@ -71,6 +79,11 @@ impl AppState {
             eprintln!("[oc-server] {e}");
             ApiError(ErrorCode::Internal)
         })
+    }
+
+    /// Where `/rtc` requests are forwarded.
+    pub fn livekit_authority(&self) -> &str {
+        &self.livekit_authority
     }
 
     fn issue_nonce(&self) -> Option<String> {
@@ -142,6 +155,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/channels/{id}/token", post(room_token))
+        .route("/rtc", any(crate::rtc::proxy))
+        .route("/rtc/{*rest}", any(crate::rtc::proxy))
         .with_state(state)
 }
 
@@ -288,8 +303,5 @@ async fn room_token(
             eprintln!("[oc-server] room token: {e}");
             ApiError(ErrorCode::Internal)
         })?;
-    Ok(Json(RoomToken {
-        url: state.livekit.url.clone(),
-        token,
-    }))
+    Ok(Json(RoomToken { token }))
 }

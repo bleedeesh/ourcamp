@@ -17,6 +17,13 @@ use commands::EngineState;
 /// # Panics
 /// If Tauri fails to start (missing webview runtime, invalid config).
 pub fn run() {
+    // Before any room connects: LiveKit signalling goes only to pinned camps (ADR-0019).
+    // Debug builds also reach the local `pnpm livekit` over plain ws:// on loopback.
+    oc_camp_client::transport::install(if cfg!(debug_assertions) {
+        oc_camp_client::transport::PlainLoopback::Allow
+    } else {
+        oc_camp_client::transport::PlainLoopback::Deny
+    });
     let engine: EngineState = Engine::start();
     if let Err(reason) = &engine {
         eprintln!("[ourcamp] {reason}");
