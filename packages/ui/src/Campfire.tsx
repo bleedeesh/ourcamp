@@ -1,19 +1,21 @@
 /**
  * The OurCamp campfire mark. Same geometry as the brand sheet (docs/design.md).
  * `simple` drops the outline, log ends and sparks for sizes ≤ 24 px where they turn to
- * mush; `dim` renders an extinguished (empty channel) fire.
+ * mush; `dim` renders an extinguished (empty channel) fire; `server` adds the server
+ * badge of the server window's app icon (ADR-0032).
  */
 interface CampfireProps {
   size: number;
   simple?: boolean;
   dim?: boolean;
+  server?: boolean;
   label?: string;
 }
 
 // Night palette (ADR-0024): violet flame, dusk logs.
 const INK = "#1B1633";
 
-export function Campfire({ size, simple = false, dim = false, label }: CampfireProps) {
+export function Campfire({ size, simple = false, dim = false, server = false, label }: CampfireProps) {
   const outline = simple ? {} : { stroke: INK, strokeWidth: 1.6, strokeLinejoin: "round" as const };
   const a11y = label ? { role: "img", "aria-label": label } : { "aria-hidden": true };
   return (
@@ -49,6 +51,20 @@ export function Campfire({ size, simple = false, dim = false, label }: CampfireP
           <circle cx="48" cy="11" r="1.7" fill="#C4BBFF" />
           <circle cx="15.5" cy="14" r="1.2" fill="#C4BBFF" />
           <circle cx="51.5" cy="20" r="1" fill="#C4BBFF" />
+        </>
+      )}
+      {server && (
+        // Two rack units with lit lamps, as in apps/server/app-icon.svg.
+        <>
+          <rect x="39" y="40" width="24" height="23" rx="6" fill="#8B7CF6" stroke={INK} strokeWidth="1.6" />
+          <rect x="43" y="44.5" width="16" height="6" rx="2" fill={INK} />
+          <rect x="43" y="52.5" width="16" height="6" rx="2" fill={INK} />
+          {!simple && (
+            <>
+              <circle cx="46.3" cy="47.5" r="1.3" fill="#3DDC84" />
+              <circle cx="46.3" cy="55.5" r="1.3" fill="#3DDC84" />
+            </>
+          )}
         </>
       )}
     </svg>

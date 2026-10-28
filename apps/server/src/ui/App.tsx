@@ -23,7 +23,7 @@ function TitleBar() {
   return (
     <header className="titlebar" data-tauri-drag-region>
       <span className="titlebar__brand" data-tauri-drag-region>
-        <Campfire size={14} simple />
+        <Campfire size={14} simple server />
         <span className="titlebar__name" data-tauri-drag-region>
           OurCamp Server
         </span>
@@ -214,7 +214,7 @@ export function App({ api }: { api: ServerApi }) {
       <TitleBar />
       <main className="app__body">
         <section className={`status status--${phase.kind}`}>
-          <Campfire size={44} />
+          <Campfire size={44} server />
           <div className="status__text">
             {phase.kind === "running" ? (
               <CampName name={status.campName} api={api} />
