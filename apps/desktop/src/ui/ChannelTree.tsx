@@ -87,7 +87,6 @@ function MemberRow({ userId }: { userId: UserId }) {
         <Avatar member={member} size={24} speaking={speaking && !micMuted && !deafened} />
         <span className="member__name" data-speaking={speaking || undefined}>
           {member.name}
-          {isSelf && <span className="member__you"> (вы)</span>}
         </span>
         {member.isAdmin && <Icon name="crown" size={14} label="Админ лагеря" className="member__admin" />}
         {!isSelf && (localMuted || volume !== DEFAULT_VOLUME) && (

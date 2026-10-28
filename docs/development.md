@@ -202,8 +202,8 @@ LiveKit (`livekit-keys.json`) и две ссылки:
 
 ## Иконки
 
-`apps/desktop/app-icon.png` — исходник 1024×1024. Для macOS/Linux-пакетов:
-`pnpm --filter @ourcamp/desktop tauri icon app-icon.png` сгенерирует все форматы.
+`apps/desktop/app-icon.svg` — исходник (палитра «Ночь», ADR-0024). Для macOS/Linux-пакетов:
+`pnpm --filter @ourcamp/desktop tauri icon app-icon.svg` сгенерирует все форматы (окну сервера — те же файлы).
 
 ## Соглашения
 
