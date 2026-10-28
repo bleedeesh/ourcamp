@@ -64,6 +64,10 @@ pub struct Channel {
     pub id: String,
     /// Display name.
     pub name: String,
+    /// The system AFK campfire: always there, cannot be removed; whoever sits there has
+    /// mic and sound off (ADR-0025). Absent in older camps' answers = `false`.
+    #[serde(default)]
+    pub afk: bool,
 }
 
 /// `GET /api/v1/camp`.

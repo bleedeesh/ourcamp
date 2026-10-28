@@ -402,6 +402,42 @@ impl Camps {
         Ok(invite.to_string())
     }
 
+    /// Whether `id` is the open camp (the one voice can be in).
+    pub fn is_current(&self, id: &str) -> bool {
+        self.lock().current.as_deref() == Some(id)
+    }
+
+    /// Leaves a camp: the camp forgets you, then this device forgets the camp. Returns
+    /// whether the camp heard it; when it is unreachable the camp is still dropped from
+    /// the list here, and the camp keeps you as a member until you leave again.
+    ///
+    /// # Errors
+    /// Unknown camp, or the camp list cannot be saved.
+    pub async fn leave(&self, id: &str) -> Result<bool, CampError> {
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        let told = match client.leave(&camp.session()).await {
+            Ok(()) => true,
+            // The session expired: log in again (no invite — the camp knows this device)
+            // and leave with the new one. "Invite required" means we are no member any
+            // more: nothing left to tell.
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let name = self.lock().display_name.clone();
+                match client.login(&self.key, &name, None).await {
+                    Ok(session) => client.leave(&session).await.is_ok(),
+                    Err(ClientError::Api(ErrorCode::InviteRequired)) => true,
+                    Err(_) => false,
+                }
+            }
+            Err(e) => {
+                eprintln!("[ourcamp] leave {id}: {}", describe(e));
+                false
+            }
+        };
+        self.forget(id)?;
+        Ok(told)
+    }
+
     /// Where live camp state goes.
     pub fn set_state_listener(&self, listener: StateListener) {
         *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
@@ -755,6 +791,31 @@ mod tests {
             );
 
             camps.forget(&opened.id).unwrap();
+            let _ = fs::remove_dir_all(dir);
+            let _ = fs::remove_dir_all(server_dir);
+        });
+    }
+
+    #[test]
+    fn leaving_tells_the_camp_and_drops_it_here_even_when_it_is_down() {
+        tauri::async_runtime::block_on(async {
+            let (server, server_dir) = camp("leave").await;
+            let dir = temp_dir("leave");
+            let camps = Camps::load(&dir).unwrap();
+            let link = server.links.join.to_string();
+            let opened = camps.join(&link, "Лена").await.unwrap();
+            assert!(camps.is_current(&opened.id));
+
+            assert!(camps.leave(&opened.id).await.unwrap(), "the camp heard it");
+            assert!(camps.list().camps.is_empty());
+            assert_eq!(camps.list().current, None);
+
+            // Back with the invite, then the camp goes down: leaving still works here.
+            let again = camps.join(&link, "Лена").await.unwrap();
+            server.stop().await;
+            assert!(!camps.leave(&again.id).await.unwrap(), "unreachable");
+            assert!(camps.list().camps.is_empty(), "gone from the list anyway");
+
             let _ = fs::remove_dir_all(dir);
             let _ = fs::remove_dir_all(server_dir);
         });

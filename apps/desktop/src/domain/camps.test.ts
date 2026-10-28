@@ -14,8 +14,8 @@ const opened = (id: string, name: string, offline = false): OpenCamp => ({
   id,
   name,
   channels: [
-    { id: "c0", name: "Лобби" },
-    { id: "c1", name: "Катка" },
+    { id: "c0", name: "Лобби", afk: false },
+    { id: "c1", name: "Катка", afk: false },
   ],
   self: { userId: "me", name: "Дима", isAdmin: id === "own" },
   offline,
@@ -48,8 +48,13 @@ class FakeCampApi implements CampApi {
     if (this.failOpen) return Promise.reject(new Error(this.failOpen));
     return Promise.resolve(opened(id, id === "vk" ? "Вечерний кооп" : "Свой"));
   }
-  forget(): Promise<void> {
-    return Promise.resolve();
+  /** What `leave` answers: the camp heard it (`true`) or was unreachable. */
+  leaveTold = true;
+  leave(id: string): Promise<boolean> {
+    this.calls.push(`leave:${id}`);
+    const camps = this.list_.camps.filter((c) => c.id !== id);
+    this.list_ = { ...this.list_, camps, current: this.list_.current === id ? null : this.list_.current };
+    return Promise.resolve(this.leaveTold);
   }
   invite(id: string): Promise<string> {
     this.calls.push(`invite:${id}`);
@@ -260,4 +265,49 @@ test("live state of the open camp reaches the tree; other camps and outages are 
   api.emitLive(live("vk", false, false));
   assert.equal(camps.store.get().offline, true);
   assert.deepEqual(voice.store.get().camp.channels[1]?.memberIds, ["bob"], "last known state kept while offline");
+});
+
+test("leaving asks first, leaves voice, then opens the next camp", async () => {
+  const { api, camps, engine, voice } = setup();
+  api.list_ = {
+    displayName: "Дима",
+    camps: [
+      { id: "vk", name: "Вечерний кооп", role: "member" },
+      { id: "own", name: "Свой", role: "admin" },
+    ],
+    current: "vk",
+  };
+  await camps.start();
+  await voice.join("c0");
+  camps.toggleSwitcher();
+  camps.askLeave();
+  assert.equal(camps.store.get().leaveAsk, true);
+  camps.cancelLeave();
+  assert.equal(camps.store.get().leaveAsk, false, "changed their mind");
+  assert.equal(camps.store.get().currentId, "vk");
+
+  camps.askLeave();
+  await camps.leave();
+  assert.ok(engine.calls.includes("leave"), "out of the campfire first");
+  assert.ok(api.calls.includes("leave:vk"));
+  const state = camps.store.get();
+  assert.deepEqual(
+    state.camps.map((c) => c.id),
+    ["own"],
+  );
+  assert.equal(state.currentId, "own", "the next camp opens");
+  assert.equal(state.notice, "Вы покинули лагерь «Вечерний кооп»");
+  assert.equal(state.switcherOpen || state.leaveAsk, false);
+});
+
+test("leaving the last camp shows the first-run screen; an unreachable camp is said so", async () => {
+  const { api, camps } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  api.leaveTold = false;
+  await camps.leave();
+  const state = camps.store.get();
+  assert.equal(state.view, "empty");
+  assert.equal(state.currentId, null);
+  assert.match(state.notice ?? "", /убран из списка.*числитесь участником/);
 });

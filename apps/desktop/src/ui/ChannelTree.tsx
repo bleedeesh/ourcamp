@@ -29,9 +29,14 @@ function ChannelNode({ channel }: { channel: Channel }) {
         type="button"
         className="channel__row"
         aria-current={current ? "true" : undefined}
+        title={channel.afk ? "Отошёл: микрофон и звук выключаются, пока вы здесь" : undefined}
         onClick={() => void voice.join(channel.id)}
       >
-        <Campfire size={20} simple={!lit} dim={!lit} />
+        {channel.afk ? (
+          <Icon name="moon" size={20} className="channel__afk" />
+        ) : (
+          <Campfire size={20} simple={!lit} dim={!lit} />
+        )}
         <span className="channel__name">{channel.name}</span>
         {lit && <span className="channel__count">{memberIds.length}</span>}
       </button>
@@ -87,7 +92,6 @@ function MemberRow({ userId }: { userId: UserId }) {
         <Avatar member={member} size={24} speaking={speaking && !micMuted && !deafened} />
         <span className="member__name" data-speaking={speaking || undefined}>
           {member.name}
-          {isSelf && <span className="member__you"> (вы)</span>}
         </span>
         {member.isAdmin && <Icon name="crown" size={14} label="Админ лагеря" className="member__admin" />}
         {!isSelf && (localMuted || volume !== DEFAULT_VOLUME) && (

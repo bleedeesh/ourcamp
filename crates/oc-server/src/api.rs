@@ -9,7 +9,7 @@ use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpg
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
@@ -172,6 +172,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/invites/{token}", get(invite))
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
+        .route("/api/v1/members/me", delete(leave))
         .route("/api/v1/channels/{id}/token", post(room_token))
         .route("/api/v1/events", get(events))
         .route("/rtc", any(crate::rtc::proxy))
@@ -305,6 +306,23 @@ async fn current_invite(
     Ok(Json(CurrentInvite {
         token: token.as_str().to_owned(),
     }))
+}
+
+/// `DELETE /api/v1/members/me`: the member leaves the camp. Their sessions end with it;
+/// coming back takes a new invite. The next presence snapshot no longer lists them.
+async fn leave(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
+    let hash = session_hash(&headers)?;
+    let left = state
+        .with_store(move |s| match s.session_member(&hash)? {
+            Some(member) => s.remove_member(&member.user_id),
+            None => Ok(false),
+        })
+        .await?;
+    if left {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError(ErrorCode::Unauthorized))
+    }
 }
 
 async fn room_token(

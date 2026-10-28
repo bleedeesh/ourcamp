@@ -223,6 +223,17 @@ impl CampClient {
         })
     }
 
+    /// Leaves the camp: the camp forgets this member and all their sessions. Coming back
+    /// takes a new invite.
+    ///
+    /// # Errors
+    /// [`ErrorCode::Unauthorized`] for an expired session (log in again and repeat).
+    pub async fn leave(&self, session: &Session) -> Result<(), ClientError> {
+        self.http
+            .delete_authorized("/api/v1/members/me", &session.token)
+            .await
+    }
+
     /// LiveKit token for a channel (connect it to [`voice_url`](Self::voice_url)).
     ///
     /// # Errors

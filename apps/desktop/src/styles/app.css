@@ -238,10 +238,6 @@
   color: #fff;
 }
 
-.member__you {
-  color: var(--text-faint);
-}
-
 .member__admin {
   color: var(--admin);
   flex-shrink: 0;
@@ -515,7 +511,7 @@
   margin-top: -6px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 0 0 4px rgba(255, 122, 61, 0.25);
+  box-shadow: 0 0 0 4px rgba(139, 124, 246, 0.25);
 }
 
 .volume-slider:disabled::-webkit-slider-runnable-track {
@@ -824,4 +820,49 @@
   height: 1px;
   margin: 4px 6px;
   background: var(--line);
+}
+
+/* Leaving a camp: the menu asks before it happens. */
+.camp-menu--confirm {
+  gap: 8px;
+  padding: 14px;
+}
+
+.camp-menu__question {
+  margin: 0;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.camp-menu__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.camp-menu__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.camp-menu__actions .wide-button {
+  height: 38px;
+}
+
+.wide-button--danger {
+  background: var(--danger-soft);
+  color: #ff8a98; /* --danger lightened to 4.5:1 on its soft background */
+}
+
+/* The AFK campfire (ADR-0025): a moon instead of a fire. */
+.channel__afk {
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.channel__row[aria-current="true"] .channel__afk {
+  color: var(--accent-text);
 }

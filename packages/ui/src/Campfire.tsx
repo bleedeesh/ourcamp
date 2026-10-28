@@ -10,7 +10,8 @@ interface CampfireProps {
   label?: string;
 }
 
-const INK = "#3A2116";
+// Night palette (ADR-0024): violet flame, dusk logs.
+const INK = "#1B1633";
 
 export function Campfire({ size, simple = false, dim = false, label }: CampfireProps) {
   const outline = simple ? {} : { stroke: INK, strokeWidth: 1.6, strokeLinejoin: "round" as const };
@@ -23,31 +24,31 @@ export function Campfire({ size, simple = false, dim = false, label }: CampfireP
       className={dim ? "campfire campfire--dim" : "campfire"}
       {...a11y}
     >
-      <rect x="10" y="46" width="44" height="9" rx="4.5" fill="#9A5532" transform="rotate(-16 32 50.5)" {...outline} />
-      <rect x="10" y="46" width="44" height="9" rx="4.5" fill="#9A5532" transform="rotate(16 32 50.5)" {...outline} />
+      <rect x="10" y="46" width="44" height="9" rx="4.5" fill="#3E3470" transform="rotate(-16 32 50.5)" {...outline} />
+      <rect x="10" y="46" width="44" height="9" rx="4.5" fill="#3E3470" transform="rotate(16 32 50.5)" {...outline} />
       {!simple && (
         <>
-          <circle cx="15.4" cy="55.2" r="4.3" fill="#D9945E" {...outline} />
-          <circle cx="15.4" cy="55.2" r="1.7" fill="#9A5532" />
-          <circle cx="48.6" cy="55.2" r="4.3" fill="#D9945E" {...outline} />
-          <circle cx="48.6" cy="55.2" r="1.7" fill="#9A5532" />
+          <circle cx="15.4" cy="55.2" r="4.3" fill="#6E62B8" {...outline} />
+          <circle cx="15.4" cy="55.2" r="1.7" fill="#3E3470" />
+          <circle cx="48.6" cy="55.2" r="4.3" fill="#6E62B8" {...outline} />
+          <circle cx="48.6" cy="55.2" r="1.7" fill="#3E3470" />
         </>
       )}
       <path
         d="M32 5C36.5 13 46.5 20 46.5 33C46.5 42 40 48.5 32 48.5C24 48.5 17.5 42 17.5 33C17.5 26 21.5 21.5 25 16.5C26 22.5 28 25 30.2 25C29 18 30 11 32 5Z"
-        fill="#FF6B35"
+        fill="#8B7CF6"
         {...outline}
       />
       <path
         d="M32 18C35 24 40 28 40 36C40 42 36.5 46 32 46C27.5 46 24 42 24 36C24 31 27 28 29 25C30 29 31 30 32.5 30C31.5 26 31 22 32 18Z"
-        fill="#FFA62B"
+        fill="#B3A8FF"
       />
-      <path d="M32 30C34 33 36 35.5 36 39C36 42.5 34.2 45 32 45C29.8 45 28 42.5 28 39C28 35.5 30 33 32 30Z" fill="#FFE066" />
+      <path d="M32 30C34 33 36 35.5 36 39C36 42.5 34.2 45 32 45C29.8 45 28 42.5 28 39C28 35.5 30 33 32 30Z" fill="#ECE8FF" />
       {!simple && (
         <>
-          <circle cx="48" cy="11" r="1.7" fill="#FFB23F" />
-          <circle cx="15.5" cy="14" r="1.2" fill="#FFB23F" />
-          <circle cx="51.5" cy="20" r="1" fill="#FFB23F" />
+          <circle cx="48" cy="11" r="1.7" fill="#C4BBFF" />
+          <circle cx="15.5" cy="14" r="1.2" fill="#C4BBFF" />
+          <circle cx="51.5" cy="20" r="1" fill="#C4BBFF" />
         </>
       )}
     </svg>

@@ -13,8 +13,8 @@
 - Локальная громкость каждого участника 0–200 % и отдельно громкость звука стрима.
 - Макеты (13 экранов, кликабельный прототип): https://claude.ai/artifact/A9mZCWav7VeKur4eVfdwgA
   — страница «Компактный клиент». Тема: нейтральный чёрный/тёмно-серый **без синевы**,
-  оранжевый из логотипа (#FF7A3D) — только выбранное и главные действия. Логотип —
-  мультяшный костёр (`apps/desktop/src/ui/Campfire.tsx`). Шрифты Onest / Nunito 800 / Fredoka.
+  фиолетовый «Ночь» (#8B7CF6, ADR-0024) — только выбранное и главные действия. Логотип —
+  мультяшный костёр в той же палитре (`packages/ui/src/Campfire.tsx`, иконки — `apps/desktop/app-icon.svg`). Шрифты Onest / Nunito 800 / Fredoka.
   Скроллбары кастомные (`styles/base.css`).
 
 ## Стек (ADR-0002, 0004)
@@ -35,8 +35,9 @@
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
   пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
   `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
-- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
-  сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018).
+- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v3: участники, роли, костёр AFK — ADR-0025,
+  сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018),
+  выход из лагеря `DELETE /api/v1/members/me`.
   `livekit/` — свой LiveKit (`managed` по умолчанию, ADR-0022): ключ в `livekit-keys.json`, конфиг через
   окружение, перезапуск, job object (Windows) / сторож на `sh` (unix). Бинарник — `pnpm livekit:fetch`
   (`dev/bin`, хеши в `dev/fetch-livekit.ts`); `tests/managed.rs` — `#[ignore]`, нужен бинарник.
@@ -69,8 +70,9 @@
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — по шагам из `docs/roadmap.md` (ADR-0014–0023). Готовы шаги 1–5; шаг 6 (окно сервера, ADR-0023) — в ветке `m3-server-window`:
-осталась проверка вживую.
+M3: готовы шаги 1–6 (ADR-0014–0025). Порядок дальше — раздел «После проверки M3 Димой» в
+`docs/roadmap.md`: мелочи ✅ (выход из лагеря, AFK, бренд «Ночь»), затем управление лагерем в окне
+сервера (роли владелец/админ/модератор, каналы Voice/Chat), затем шаг 7 (порты), короткие ссылки — M4.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

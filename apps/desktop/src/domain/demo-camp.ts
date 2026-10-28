@@ -31,9 +31,9 @@ export const DEMO_CAMP: Camp = {
     kirill: m("kirill", "Кирилл", "#7FD1C7", { deafened: true }),
   },
   channels: [
-    { id: "lobby", name: "Лобби", memberIds: ["artem", "lena", "max"] },
-    { id: "katka", name: "Катка", memberIds: ["olya", "kirill"] },
-    { id: "afk", name: "Отошёл (AFK)", memberIds: [] },
-    { id: "quiet", name: "Тихий час", memberIds: [] },
+    { id: "lobby", name: "Лобби", afk: false, memberIds: ["artem", "lena", "max"] },
+    { id: "katka", name: "Катка", afk: false, memberIds: ["olya", "kirill"] },
+    { id: "afk", name: "AFK", afk: true, memberIds: [] },
+    { id: "quiet", name: "Тихий час", afk: false, memberIds: [] },
   ],
 };

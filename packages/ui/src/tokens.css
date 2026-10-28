@@ -1,7 +1,7 @@
 /*
  * Design tokens — the single source of colours, type and shape.
  * Taken from the approved compact-client mockups (docs/design.md).
- * Neutral blacks without a blue cast; flame colours from the logo mark selection and
+ * Neutral blacks without a blue cast; the night violet of the logo marks selection and
  * primary actions only.
  */
 :root {
@@ -19,11 +19,11 @@
   --text-muted: #a8a8a8;
   --text-faint: #8f8f8f;
 
-  /* Flame — selection and primary actions */
-  --accent: #ff7a3d;
-  --accent-soft: rgba(255, 122, 61, 0.14);
-  --accent-text: #ffb27a;
-  --on-accent: #1a0d05;
+  /* Night violet (ADR-0024) — selection and primary actions */
+  --accent: #8b7cf6;
+  --accent-soft: rgba(139, 124, 246, 0.16);
+  --accent-text: #b3a8ff;
+  --on-accent: #0f0b26;
   --admin: #ffb23f;
 
   /* Semantics */
@@ -45,7 +45,7 @@
 
   /* Speaking ring: gap colour is set per context so the ring floats over its background */
   --ring-gap: var(--bg-1);
-  --ring-speaking: 0 0 0 2px var(--ring-gap), 0 0 0 4px var(--accent), 0 0 14px 3px rgba(255, 122, 61, 0.45);
+  --ring-speaking: 0 0 0 2px var(--ring-gap), 0 0 0 4px var(--accent), 0 0 14px 3px rgba(139, 124, 246, 0.45);
   --ring-idle: 0 0 0 2px var(--ring-gap), 0 0 0 4px transparent;
 
   color-scheme: dark;

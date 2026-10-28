@@ -772,3 +772,56 @@ async fn the_host_sees_the_camp_state_without_a_client() {
     );
     camp.stop().await;
 }
+
+// ---- leaving a camp ----
+
+#[tokio::test]
+async fn a_member_who_leaves_is_forgotten_and_needs_a_new_invite() {
+    let camp = Camp::start().await;
+    let client = camp.client();
+    let key = DeviceKey::generate();
+    let session = client
+        .login(&key, "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut state = camp.running.camp_state();
+    let seen = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.wait_for(|s| s.members.iter().any(|m| m.user_id == session.user_id)),
+    )
+    .await
+    .expect("she shows up first")
+    .is_ok();
+    assert!(seen);
+
+    client.leave(&session).await.unwrap();
+
+    assert_eq!(
+        api_error(client.events(&session).await.map(|_| ())),
+        ErrorCode::Unauthorized,
+        "the session ended with the membership"
+    );
+    assert_eq!(
+        api_error(client.leave(&session).await),
+        ErrorCode::Unauthorized,
+        "leaving twice is not a thing"
+    );
+    let gone = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.wait_for(|s| s.members.iter().all(|m| m.user_id != session.user_id)),
+    )
+    .await
+    .expect("the next snapshot drops her")
+    .is_ok();
+    assert!(gone);
+    assert_eq!(
+        api_error(client.login(&key, "Лена", None).await),
+        ErrorCode::InviteRequired,
+        "the same device comes back only with an invite"
+    );
+    client
+        .login(&key, "Лена", Some(&camp.join()))
+        .await
+        .expect("and with one, it does");
+    camp.stop().await;
+}

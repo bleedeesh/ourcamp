@@ -168,10 +168,23 @@ pub async fn camp_open(
     Ok(camp)
 }
 
-/// Removes a camp from this device.
+/// Leaves a camp — first its voice, when it is the open one. `true`: the camp heard it;
+/// `false`: it was unreachable and is only gone from this device.
 #[tauri::command]
-pub fn camp_forget(state: State<'_, CampsState>, id: String) -> Result<(), String> {
-    camps(&state)?.forget(&id)
+pub async fn camp_leave(
+    camps_state: State<'_, CampsState>,
+    engine_state: State<'_, EngineState>,
+    id: String,
+) -> Result<bool, String> {
+    let camps = camps(&camps_state)?;
+    if camps.is_current(&id) {
+        if let Ok(engine) = engine(&engine_state) {
+            if let Err(e) = engine.leave_channel().await {
+                eprintln!("[ourcamp] leave voice: {e}");
+            }
+        }
+    }
+    camps.leave(&id).await
 }
 
 /// The camp's friends link, to copy.

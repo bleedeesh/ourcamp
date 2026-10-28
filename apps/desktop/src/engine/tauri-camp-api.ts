@@ -23,8 +23,8 @@ export class TauriCampApi implements CampApi {
     return invoke("camp_open", { id });
   }
 
-  forget(id: string): Promise<void> {
-    return invoke("camp_forget", { id });
+  leave(id: string): Promise<boolean> {
+    return invoke<boolean>("camp_leave", { id });
   }
 
   invite(id: string): Promise<string> {

@@ -107,6 +107,17 @@ impl Client {
             .await
     }
 
+    /// `DELETE` with a session; success has no body (`204`).
+    pub(crate) async fn delete_authorized(
+        &self,
+        path: &str,
+        bearer: &str,
+    ) -> Result<(), ClientError> {
+        self.exchange(Method::DELETE, path, Some(bearer), Bytes::new())
+            .await
+            .map(drop)
+    }
+
     async fn request<T: DeserializeOwned>(
         &self,
         method: Method,
@@ -114,6 +125,18 @@ impl Client {
         bearer: Option<&str>,
         body: Bytes,
     ) -> Result<T, ClientError> {
+        let bytes = self.exchange(method, path, bearer, body).await?;
+        serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
+    }
+
+    /// One request; the body of a success, or the API error.
+    async fn exchange(
+        &self,
+        method: Method,
+        path: &str,
+        bearer: Option<&str>,
+        body: Bytes,
+    ) -> Result<Bytes, ClientError> {
         let mut request = Request::builder()
             .method(method)
             .uri(path)
@@ -128,7 +151,7 @@ impl Client {
         let (status, _, bytes) = send(&self.authority, self.fingerprint, request).await?;
 
         if status.is_success() {
-            serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
+            Ok(bytes)
         } else {
             match serde_json::from_slice::<ErrorBody>(&bytes) {
                 Ok(body) => Err(ClientError::Api(body.error)),

@@ -47,6 +47,7 @@ const PATHS = {
   minimize: <path d="M5 12h14" />,
   close: <path d="M18 6 6 18M6 6l12 12" />,
   crown: <path d="M3 18h18M4 18 3 8l5 4 4-7 4 7 5-4-1 10" />,
+  moon: <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />,
   eye: (
     <>
       <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />

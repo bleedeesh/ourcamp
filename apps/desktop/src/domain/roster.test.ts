@@ -20,8 +20,8 @@ const camp: Camp = {
   short: "ВК",
   color: "#8E44AD",
   channels: [
-    { id: "lobby", name: "Лобби", memberIds: ["artem", "lena"] },
-    { id: "katka", name: "Катка", memberIds: ["olya"] },
+    { id: "lobby", name: "Лобби", afk: false, memberIds: ["artem", "lena"] },
+    { id: "katka", name: "Катка", afk: false, memberIds: ["olya"] },
   ],
   members: { me: member("me"), artem: member("artem", { isAdmin: true }), lena: member("lena"), olya: member("olya") },
 };
