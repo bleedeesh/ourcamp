@@ -168,17 +168,36 @@ fn show_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Puts the friends link on the clipboard (from the tray, the window may be hidden).
+fn copy_join_link(app: &tauri::AppHandle) {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+    let link = app.state::<Arc<Host>>().status().join_link;
+    if let Some(link) = link {
+        if let Err(e) = app.clipboard().write_text(link) {
+            eprintln!("[ourcamp-server] clipboard: {e}");
+        }
+    }
+}
+
 /// The tray icon: a click opens the window, the menu also stops the camp.
 fn tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Открыть", true, None::<&str>)?;
+    let copy = MenuItem::with_id(
+        app,
+        "copy",
+        "Скопировать ссылку для друзей",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Остановить лагерь и выйти", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &copy, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("OurCamp Server")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_window(app),
+            "copy" => copy_join_link(app),
             // `RunEvent::Exit` below stops the camp and LiveKit before the process ends.
             "quit" => app.exit(0),
             _ => {}
@@ -211,6 +230,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
         }))
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let lock = match lock_dir(&data_dir) {

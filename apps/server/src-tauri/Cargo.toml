@@ -19,6 +19,8 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 # A second launch shows the running window instead of starting a second camp.
 tauri-plugin-single-instance = "2"
+# The tray copies the friends link while the window may be hidden (no focused page).
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 oc-server = { path = "../../../crates/oc-server" }
 oc-proto = { path = "../../../crates/oc-proto" }
