@@ -20,6 +20,8 @@ export interface Member {
 export interface Channel {
   readonly id: string;
   readonly name: string;
+  /** The system AFK campfire: mic and sound go off inside (ADR-0025). */
+  readonly afk: boolean;
   /** Members currently connected, excluding the local user (added by the UI). */
   readonly memberIds: readonly UserId[];
 }

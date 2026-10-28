@@ -56,7 +56,7 @@ export function campFromOpen(open: OpenCamp): Camp {
     name: open.name,
     short: campShort(open.name),
     color: avatarColor(open.id),
-    channels: open.channels.map((c) => ({ id: c.id, name: c.name, memberIds: [] })),
+    channels: open.channels.map((c) => ({ id: c.id, name: c.name, afk: c.afk, memberIds: [] })),
     members: {
       [open.self.userId]: {
         id: open.self.userId,

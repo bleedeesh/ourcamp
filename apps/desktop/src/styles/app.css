@@ -856,3 +856,13 @@
   background: var(--danger-soft);
   color: #ff8a98; /* --danger lightened to 4.5:1 on its soft background */
 }
+
+/* The AFK campfire (ADR-0025): a moon instead of a fire. */
+.channel__afk {
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+.channel__row[aria-current="true"] .channel__afk {
+  color: var(--accent-text);
+}

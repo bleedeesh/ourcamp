@@ -56,7 +56,7 @@ export class DemoCampApi implements CampApi {
     return {
       id: DEMO_ID,
       name: DEMO_CAMP.name,
-      channels: DEMO_CAMP.channels.map((c) => ({ id: c.id, name: c.name })),
+      channels: DEMO_CAMP.channels.map((c) => ({ id: c.id, name: c.name, afk: c.afk })),
       self: { userId: DEMO_SELF_ID, name: this.#name || "Дима", isAdmin: true },
       offline: false,
     };

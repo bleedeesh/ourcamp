@@ -21,8 +21,8 @@ const camp: Camp = {
   short: "ВК",
   color: "#8E44AD",
   channels: [
-    { id: "lobby", name: "Лобби", memberIds: ["artem", "lena"] },
-    { id: "afk", name: "AFK", memberIds: [] },
+    { id: "lobby", name: "Лобби", afk: false, memberIds: ["artem", "lena"] },
+    { id: "afk", name: "AFK", afk: true, memberIds: [] },
   ],
   members: { artem: member("artem"), lena: member("lena"), me: member("me") },
 };
@@ -190,4 +190,37 @@ test("a server-side disconnect leaves the campfire and says why", async () => {
   voice.dismissError();
   engine.disconnect("late");
   assert.equal(voice.store.get().error, null);
+});
+
+test("the AFK campfire turns mic and sound off before connecting and restores them after", async () => {
+  const { engine, voice } = setup();
+  await voice.join("lobby");
+  await voice.toggleMic(); // muted on purpose before going AFK
+  engine.calls = [];
+
+  await voice.join("afk");
+  assert.deepEqual(
+    engine.calls.slice(0, 3),
+    ["deaf:true", "mic:true", "join:afk"],
+    "silenced before the room connects",
+  );
+  assert.equal(voice.store.get().deafened, true);
+  assert.equal(voice.store.get().micMuted, true);
+
+  await voice.toggleDeafen(); // listening in AFK is allowed; the mic stays off
+  assert.equal(voice.store.get().deafened, false);
+  assert.equal(voice.store.get().micMuted, true);
+
+  await voice.join("lobby");
+  assert.equal(voice.store.get().deafened, false, "as before AFK");
+  assert.equal(voice.store.get().micMuted, true, "it was muted before AFK, so it stays muted");
+});
+
+test("leaving AFK any way gives the sound back", async () => {
+  const { voice } = setup();
+  await voice.join("afk");
+  assert.equal(voice.store.get().deafened, true);
+  await voice.leave();
+  assert.equal(voice.store.get().deafened, false);
+  assert.equal(voice.store.get().micMuted, false);
 });

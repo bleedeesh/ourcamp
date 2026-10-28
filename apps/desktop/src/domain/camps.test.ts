@@ -14,8 +14,8 @@ const opened = (id: string, name: string, offline = false): OpenCamp => ({
   id,
   name,
   channels: [
-    { id: "c0", name: "Лобби" },
-    { id: "c1", name: "Катка" },
+    { id: "c0", name: "Лобби", afk: false },
+    { id: "c1", name: "Катка", afk: false },
   ],
   self: { userId: "me", name: "Дима", isAdmin: id === "own" },
   offline,

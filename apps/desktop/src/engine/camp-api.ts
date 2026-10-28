@@ -30,7 +30,7 @@ export interface CampPreview {
 export interface OpenCamp {
   readonly id: string;
   readonly name: string;
-  readonly channels: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+  readonly channels: ReadonlyArray<{ readonly id: string; readonly name: string; readonly afk: boolean }>;
   readonly self: { readonly userId: UserId; readonly name: string; readonly isAdmin: boolean };
   /** The camp server was unreachable; name and channels are the last known ones. */
   readonly offline: boolean;

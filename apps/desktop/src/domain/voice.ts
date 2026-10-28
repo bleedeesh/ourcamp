@@ -40,6 +40,8 @@ export class VoiceController {
   readonly #volumes: VolumeBook;
   /** Mic state before deafening, restored on undeafen (deafen implies mute). */
   #micBeforeDeafen = false;
+  /** Mic and sound before entering the AFK campfire, restored on the way out (ADR-0025). */
+  #beforeAfk: { readonly micMuted: boolean; readonly deafened: boolean } | null = null;
   #unsubscribeLevels: (() => void) | null = null;
   #unsubscribeParticipants: (() => void) | null = null;
   #unsubscribeDisconnected: (() => void) | null = null;
@@ -91,6 +93,14 @@ export class VoiceController {
     const channel = camp.channels.find((c) => c.id === channelId);
     if (!channel) throw new Error(`unknown channel ${channelId}`);
 
+    // AFK: mic and sound off before the room connects, so nothing leaks either way.
+    if (channel.afk && this.#beforeAfk === null) {
+      const { micMuted, deafened } = this.store.get();
+      this.#beforeAfk = { micMuted, deafened };
+      this.#micBeforeDeafen = true; // undeafening inside AFK keeps the mic off
+      await this.#setSound(true, true);
+    }
+
     const remote = channel.memberIds.filter((id) => id !== selfId);
     const prefs = Object.fromEntries(remote.map((id) => [id, this.#volumes.get(id)]));
     this.#volumesSent = new Set(remote);
@@ -108,6 +118,7 @@ export class VoiceController {
         }),
       () => this.store.patch({ channelId: current }),
     );
+    if (!channel.afk) await this.#leaveAfk();
   }
 
   async leave(): Promise<void> {
@@ -118,6 +129,26 @@ export class VoiceController {
       () => this.#engine.leaveChannel(),
       () => this.store.patch({ channelId }),
     );
+    await this.#leaveAfk();
+  }
+
+  /** Back from AFK: mic and sound as they were before it. */
+  async #leaveAfk(): Promise<void> {
+    const before = this.#beforeAfk;
+    if (before === null) return;
+    this.#beforeAfk = null;
+    this.#micBeforeDeafen = before.micMuted;
+    await this.#setSound(before.micMuted, before.deafened);
+  }
+
+  /** Sets mic and sound together, rolling both back if the engine refuses. */
+  async #setSound(micMuted: boolean, deafened: boolean): Promise<void> {
+    const previous = { micMuted: this.store.get().micMuted, deafened: this.store.get().deafened };
+    this.store.patch({ micMuted, deafened });
+    await this.#run(async () => {
+      await this.#engine.setDeafened(deafened);
+      await this.#engine.setMicMuted(micMuted);
+    }, () => this.store.patch(previous));
   }
 
   async toggleMic(): Promise<void> {
@@ -210,6 +241,7 @@ export class VoiceController {
   #onDisconnected(reason: string): void {
     if (this.store.get().channelId === null) return;
     this.store.patch({ channelId: null, speaking: {}, volumeMenu: null, error: reason });
+    void this.#leaveAfk();
   }
 
   #applyParticipants(update: ParticipantsUpdate): void {
