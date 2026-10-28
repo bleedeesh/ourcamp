@@ -1,5 +1,5 @@
 import { Avatar } from "./ChannelTree.tsx";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
 export function BottomPanel() {
@@ -16,21 +16,21 @@ export function BottomPanel() {
         <div className="panel__connection">
           <span className="dot dot--online" aria-hidden />
           <span className="panel__connection-text">
-            У костра <b>{channelName}</b>
+            В канале <b>{channelName}</b>
           </span>
           <button type="button" className="square-button square-button--danger" aria-label="Выйти из голосового канала" onClick={() => void voice.leave()}>
             <Icon name="leave" size={16} />
           </button>
         </div>
       ) : (
-        <p className="panel__hint">Не у костра — выберите канал выше</p>
+        <p className="panel__hint">Не в канале — выберите канал выше</p>
       )}
 
       <div className="panel__self">
         {self && <Avatar member={self} size={32} speaking={speaking && !micMuted} />}
         <span className="panel__who">
           <span className="panel__name">{self?.name}</span>
-          <span className="panel__status">{channelName !== null ? "У костра" : "В сети"}</span>
+          <span className="panel__status">{channelName !== null ? "В канале" : "В сети"}</span>
         </span>
         <button
           type="button"

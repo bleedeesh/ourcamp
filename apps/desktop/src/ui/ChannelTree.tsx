@@ -2,7 +2,7 @@ import type { MouseEvent } from "react";
 import type { Channel, Member, UserId } from "../domain/types.ts";
 import { DEFAULT_VOLUME } from "../domain/volume.ts";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
 export function ChannelTree() {
@@ -93,9 +93,9 @@ function MemberRow({ userId }: { userId: UserId }) {
         <span className="member__name" data-speaking={speaking || undefined}>
           {member.name}
         </span>
-        {member.role === "admin" && <Icon name="crown" size={14} label="Админ лагеря" className="member__admin" />}
+        {member.role === "admin" && <Icon name="crown" size={14} label="Админ сервера" className="member__admin" />}
         {member.role === "moderator" && (
-          <Icon name="shield" size={14} label="Модератор лагеря" className="member__moderator" />
+          <Icon name="shield" size={14} label="Модератор сервера" className="member__moderator" />
         )}
         {!isSelf && (localMuted || volume !== DEFAULT_VOLUME) && (
           <span className="member__volume">{localMuted ? <Icon name="speakerOff" size={14} label="Заглушен для вас" /> : `${volume}%`}</span>

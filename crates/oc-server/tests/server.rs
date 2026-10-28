@@ -906,15 +906,17 @@ async fn removing_a_campfire_closes_its_room_and_afk_stays() {
         calls.lock().unwrap().iter().any(|c| c == "DeleteRoom"),
         "the campfire's room is closed: whoever sat there is disconnected"
     );
-    let ids: Vec<_> = camp
-        .running
-        .camp_state()
-        .borrow()
-        .channels
-        .iter()
-        .map(|c| c.id.clone())
-        .collect();
-    assert_eq!(ids, ["afk"]);
+    // The change is published by the presence loop right after, not before the call
+    // returns: wait for that snapshot instead of reading the current one.
+    let mut state = camp.running.camp_state();
+    let only_afk = tokio::time::timeout(
+        std::time::Duration::from_millis(600),
+        state.wait_for(|s| s.channels.iter().map(|c| c.id.as_str()).eq(["afk"])),
+    )
+    .await
+    .expect("only AFK is left, within a moment")
+    .is_ok();
+    assert!(only_afk);
     assert!(matches!(
         manager.delete_channel("c0").await,
         Err(oc_server::ManageError::NotFound)

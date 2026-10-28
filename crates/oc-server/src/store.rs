@@ -756,7 +756,7 @@ mod tests {
              CREATE TABLE sessions (token_hash BLOB PRIMARY KEY,
                 user_id TEXT NOT NULL REFERENCES members (user_id) ON DELETE CASCADE,
                 expires_at INTEGER NOT NULL);
-             INSERT INTO meta VALUES ('camp_name', 'Старый лагерь');
+             INSERT INTO meta VALUES ('camp_name', 'Старый сервер');
              INSERT INTO channels VALUES ('c0', 'Лобби', 0, 0), ('c1', 'Катка', 1, 0),
                 ('c2', 'AFK', 2, 1);
              INSERT INTO invites VALUES ('aaaaaaaaaaaaaaaa', 'join', 1, NULL),
@@ -788,7 +788,7 @@ mod tests {
         let lena = store.session_member(&[0xaa]).unwrap().unwrap();
         assert_eq!(lena.user_id, "lena", "sessions survive the table rebuild");
         let camp = store.camp().unwrap();
-        assert_eq!(camp.name, "Старый лагерь");
+        assert_eq!(camp.name, "Старый сервер");
         let names: Vec<_> = camp.channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,

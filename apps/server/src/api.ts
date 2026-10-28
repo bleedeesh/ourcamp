@@ -62,7 +62,7 @@ export class DemoServerApi implements ServerApi {
   #status: ServerStatus = {
     ...STARTING,
     phase: { kind: "running" },
-    campName: "Мой лагерь",
+    campName: "Мой сервер",
     channels: [
       { id: "c0", name: "Voice", kind: "voice", afk: false },
       { id: "c1", name: "Chat", kind: "text", afk: false },
@@ -117,7 +117,7 @@ export class DemoServerApi implements ServerApi {
 
   deleteChannel(id: string): Promise<void> {
     if (this.#status.channels.find((c) => c.id === id)?.afk) {
-      return Promise.reject(new Error("Костёр AFK удалить нельзя — его можно только переименовать"));
+      return Promise.reject(new Error("Канал AFK удалить нельзя — его можно только переименовать"));
     }
     return this.#change({ ...this.#status, channels: this.#status.channels.filter((c) => c.id !== id) });
   }

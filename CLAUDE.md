@@ -15,7 +15,9 @@
   — страница «Компактный клиент». Тема: нейтральный чёрный/тёмно-серый **без синевы**,
   фиолетовый «Ночь» (#8B7CF6, ADR-0024) — только выбранное и главные действия. Логотип —
   мультяшный костёр в той же палитре (`packages/ui/src/Campfire.tsx`, иконки — `apps/desktop/app-icon.svg`). Шрифты Onest / Nunito 800 / Fredoka.
-  Скроллбары кастомные (`styles/base.css`).
+  Скроллбары кастомные (`styles/base.css`). Иконки — Lucide в сплошном стиле (`packages/ui/src/Icon.tsx`, ADR-0027).
+- **Слова в интерфейсе: сервер, канал, чат** (ADR-0027); «лагерь» и «костёр» — только имена в коде
+  (`camp`, `campfire`, протокол, база), их не переименовываем.
 
 ## Стек (ADR-0002, 0004)
 - Клиент: **Tauri 2 + React + TypeScript** (Vite). Звук и видео — **только в Rust**,
@@ -55,7 +57,7 @@
 - `apps/server` — окно сервера лагеря (Tauri, ADR-0023, `pnpm server:window`): `oc-server` в процессе,
   снимок `ServerStatus` (`src-tauri/src/status.rs`) → событие `server://status`; трей, крестик прячет окно.
   UI — `src/ui/App.tsx`, тексты в `src/status.ts` (тесты). Вёрстка в браузере — `server-ui` (порт 5175).
-- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `clipboard.ts`,
+- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`,
   `tauri-events.ts` (исходниками, компилирует Vite приложения).
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав

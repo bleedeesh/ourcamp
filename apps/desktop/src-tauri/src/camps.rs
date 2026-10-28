@@ -58,11 +58,11 @@ impl SavedCamp {
         let host: Host = self
             .host
             .parse()
-            .map_err(|_| format!("Сохранённый адрес лагеря повреждён: {}", self.host))?;
+            .map_err(|_| format!("Сохранённый адрес сервера повреждён: {}", self.host))?;
         let fingerprint: Fingerprint = self
             .id
             .parse()
-            .map_err(|_| "Сохранённый отпечаток лагеря повреждён".to_owned())?;
+            .map_err(|_| "Сохранённый отпечаток сервера повреждён".to_owned())?;
         Ok(CampClient::at(&host, self.port, fingerprint))
     }
 
@@ -206,7 +206,7 @@ impl Camps {
         let mut saved = self.lock();
         change(&mut saved);
         write_atomically(&self.file, &saved)
-            .map_err(|e| format!("Не удалось сохранить список лагерей: {e}"))
+            .map_err(|e| format!("Не удалось сохранить список серверов: {e}"))
     }
 
     fn camp(&self, id: &str) -> Result<SavedCamp, CampError> {
@@ -215,7 +215,7 @@ impl Camps {
             .iter()
             .find(|c| c.id == id)
             .cloned()
-            .ok_or_else(|| "Этот лагерь больше не в списке".to_owned())
+            .ok_or_else(|| "Этот сервер больше не в списке".to_owned())
     }
 
     /// This device's user id (same in every camp).
@@ -562,12 +562,14 @@ fn parse_link(link: &str) -> Result<Invite, CampError> {
     link.parse().map_err(|e: InviteError| {
         match e {
             InviteError::NotAnInvite => "Это не ссылка OurCamp — она начинается с ourcamp://",
-            InviteError::InvalidHost | InviteError::InvalidPort => "В ссылке неверный адрес лагеря",
+            InviteError::InvalidHost | InviteError::InvalidPort => {
+                "В ссылке неверный адрес сервера"
+            }
             InviteError::InvalidPath | InviteError::InvalidToken => {
                 "Ссылка повреждена — попросите прислать её заново"
             }
             InviteError::MissingFingerprint | InviteError::InvalidFingerprint => {
-                "В ссылке нет отпечатка лагеря — попросите прислать её заново"
+                "В ссылке нет отпечатка сервера — попросите прислать её заново"
             }
         }
         .to_owned()
@@ -578,11 +580,11 @@ fn parse_link(link: &str) -> Result<Invite, CampError> {
 fn describe(e: ClientError) -> CampError {
     match e {
         ClientError::Io(e) if e.to_string().contains("certificate") => {
-            "Сертификат лагеря не совпадает со ссылкой: это может быть подмена, или лагерь \
+            "Сертификат сервера не совпадает со ссылкой: это может быть подмена, или сервер \
              переустановлен — попросите новую ссылку"
                 .into()
         }
-        ClientError::Io(e) => format!("Лагерь недоступен: {e}"),
+        ClientError::Io(e) => format!("Сервер недоступен: {e}"),
         ClientError::Api(code) => match code {
             ErrorCode::InviteRequired => "Для первого входа нужна ссылка-приглашение",
             ErrorCode::InviteInvalid => "Приглашение недействительно",
@@ -590,13 +592,13 @@ fn describe(e: ClientError) -> CampError {
             ErrorCode::BadSignature | ErrorCode::NonceInvalid => {
                 "Не удалось подтвердить устройство — попробуйте ещё раз"
             }
-            ErrorCode::Unauthorized => "Сессия в лагере истекла",
-            ErrorCode::NotFound => "Такого костра в лагере нет",
-            ErrorCode::BadRequest => "Лагерь не принял данные — проверьте имя (до 32 символов)",
-            ErrorCode::Internal => "Ошибка на сервере лагеря",
+            ErrorCode::Unauthorized => "Сессия на сервере истекла",
+            ErrorCode::NotFound => "Такого канала на сервере нет",
+            ErrorCode::BadRequest => "Сервер не принял данные — проверьте имя (до 32 символов)",
+            ErrorCode::Internal => "Ошибка на сервере",
         }
         .into(),
-        ClientError::Protocol(m) => format!("Лагерь ответил непонятно: {m}"),
+        ClientError::Protocol(m) => format!("Сервер ответил непонятно: {m}"),
     }
 }
 
@@ -710,7 +712,7 @@ mod tests {
                 .room_access(&opened.id, "nope")
                 .await
                 .unwrap_err()
-                .contains("костра"));
+                .contains("канала"));
 
             server.stop().await;
             let _ = fs::remove_dir_all(dir);

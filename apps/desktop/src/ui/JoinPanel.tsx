@@ -1,7 +1,7 @@
 import { useEffect, useRef, type FormEvent } from "react";
 import { campfires, campShort } from "../domain/camps.ts";
 import { avatarColor } from "../domain/roster.ts";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useCamps, useCampsController } from "./camps-context.tsx";
 
 /** "Войти по ссылке": paste an invite, see the camp it leads to, choose a name. */
@@ -65,7 +65,7 @@ export function JoinPanel() {
       </div>
 
       <div id="join-status" className="join__status" aria-live="polite">
-        {check.state === "checking" && <p className="join__hint">Проверяем лагерь…</p>}
+        {check.state === "checking" && <p className="join__hint">Проверяем сервер…</p>}
         {check.state === "error" && <p className="join__error">{check.message}</p>}
         {check.state === "ok" && (
           <div className="camp-card">
@@ -78,7 +78,7 @@ export function JoinPanel() {
               {/* Admin keys are retired (ADR-0026): roles come from the server window. */}
               {check.preview.kind === "claim" && (
                 <span className="join__error">
-                  Ключ админа больше не действует — попросите ссылку для друзей, роль выдаст хозяин лагеря
+                  Ключ админа больше не действует — попросите ссылку для друзей, роль выдаст владелец сервера
                 </span>
               )}
             </span>
@@ -95,7 +95,7 @@ export function JoinPanel() {
           className="field__input"
           value={name}
           onChange={(e) => camps.setName(e.target.value)}
-          placeholder="Имя в лагере"
+          placeholder="Имя на сервере"
           maxLength={32}
           autoComplete="nickname"
         />
@@ -108,9 +108,9 @@ export function JoinPanel() {
       )}
 
       <button type="submit" className="primary-button" aria-disabled={!canJoin || undefined} disabled={!canJoin}>
-        {joining ? "Входим…" : "Войти в лагерь"}
+        {joining ? "Входим…" : "Войти на сервер"}
       </button>
-      <p className="join__hint">Ссылку присылает тот, у кого запущен сервер лагеря. Вставьте её целиком.</p>
+      <p className="join__hint">Ссылку присылает тот, у кого запущен сервер. Вставьте её целиком.</p>
     </form>
   );
 }

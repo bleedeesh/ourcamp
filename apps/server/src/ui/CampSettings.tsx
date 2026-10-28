@@ -1,21 +1,9 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 
 import type { ServerApi } from "../api.ts";
 import { MAX_CAMP_NAME, MAX_CHANNEL_NAME, nameProblem, type Channel } from "../status.ts";
-
-const PENCIL = "M4 20h4L19 9l-4-4L4 16zM14 6l4 4";
-const TRASH = "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3";
-const HASH = "M5 9h14M5 15h14M10 3 8 21M16 3l-2 18";
-const MOON = "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z";
-
-export function Glyph({ d, size = 14 }: { d: string; size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={d} />
-    </svg>
-  );
-}
 
 /** Runs a change; a refusal shows next to the control instead of being lost. */
 function useAction(): [error: string | null, run: (action: () => Promise<void>) => Promise<boolean>, clear: () => void] {
@@ -93,7 +81,7 @@ export function CampName({ name, api }: { name: string; api: ServerApi }) {
       <NameEditor
         initial={name}
         max={MAX_CAMP_NAME}
-        label="Название лагеря"
+        label="Название сервера"
         onSave={(n) => api.renameCamp(n)}
         onDone={() => setEditing(false)}
       />
@@ -102,16 +90,16 @@ export function CampName({ name, api }: { name: string; api: ServerApi }) {
   return (
     <span className="camp-name">
       <h1 className="status__title">{name || "OurCamp Server"}</h1>
-      <button type="button" className="icon-button" aria-label="Переименовать лагерь" onClick={() => setEditing(true)}>
-        <Glyph d={PENCIL} />
+      <button type="button" className="icon-button" aria-label="Переименовать сервер" onClick={() => setEditing(true)}>
+        <Icon name="pencil" size={14} />
       </button>
     </span>
   );
 }
 
 function ChannelIcon({ channel }: { channel: Channel }) {
-  if (channel.afk) return <Glyph d={MOON} size={16} />;
-  if (channel.kind === "text") return <Glyph d={HASH} size={16} />;
+  if (channel.afk) return <Icon name="moon" size={16} />;
+  if (channel.kind === "text") return <Icon name="hash" size={16} />;
   return <Campfire size={16} simple />;
 }
 
@@ -166,11 +154,11 @@ function ChannelRow({ channel, api }: { channel: Channel; api: ServerApi }) {
       {channel.afk && <span className="channel__tag">системный</span>}
       <span className="channel__tools">
         <button type="button" className="icon-button" aria-label={`Переименовать ${channel.name}`} onClick={() => setMode("rename")}>
-          <Glyph d={PENCIL} />
+          <Icon name="pencil" size={14} />
         </button>
         {!channel.afk && (
           <button type="button" className="icon-button icon-button--danger" aria-label={`Удалить ${channel.name}`} onClick={() => setMode("delete")}>
-            <Glyph d={TRASH} />
+            <Icon name="trash" size={14} />
           </button>
         )}
       </span>
@@ -200,7 +188,7 @@ function NewChannel({ api }: { api: ServerApi }) {
       />
       <span className="segmented" role="radiogroup" aria-label="Тип канала">
         <button type="button" role="radio" aria-checked={kind === "voice"} onClick={() => setKind("voice")}>
-          Костёр
+          Голосовой
         </button>
         <button type="button" role="radio" aria-checked={kind === "text"} onClick={() => setKind("text")}>
           Чат

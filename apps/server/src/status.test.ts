@@ -12,15 +12,15 @@ const member = (name: string, campfire: string | null = null): Member => ({
 });
 
 test("headline follows the phase", () => {
-  assert.equal(headline(STARTING), "Лагерь запускается…");
-  assert.equal(headline({ ...STARTING, phase: { kind: "running" } }), "Лагерь работает");
-  assert.equal(headline({ ...STARTING, phase: { kind: "failed", message: "x" } }), "Лагерь не запустился");
+  assert.equal(headline(STARTING), "Сервер запускается…");
+  assert.equal(headline({ ...STARTING, phase: { kind: "running" } }), "Сервер работает");
+  assert.equal(headline({ ...STARTING, phase: { kind: "failed", message: "x" } }), "Сервер не запустился");
 });
 
 test("crowd counts people and who sits at a campfire", () => {
   assert.equal(crowd([]), "Пока никого — отправьте друзьям ссылку");
-  assert.equal(crowd([member("Дима")]), "1 человек в лагере");
-  assert.equal(crowd([member("Дима", "Лобби"), member("Лена")]), "2 человека в лагере · 1 у костра");
+  assert.equal(crowd([member("Дима")]), "1 человек на сервере");
+  assert.equal(crowd([member("Дима", "Лобби"), member("Лена")]), "2 человека на сервере · 1 в голосе");
 });
 
 test("voice shows a LiveKit restart", () => {

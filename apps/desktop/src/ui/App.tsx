@@ -8,7 +8,7 @@ import { TitleBar } from "./TitleBar.tsx";
 import { VolumeMenu } from "./VolumeMenu.tsx";
 import { useCamps, useCampsController } from "./camps-context.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 
 export function App() {
   const view = useCamps((s) => s.view);

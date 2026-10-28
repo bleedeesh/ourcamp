@@ -19,7 +19,7 @@ fn describe(e: &ManageError) -> String {
         ManageError::NotFound => "Такого участника или канала уже нет".into(),
         ManageError::BadName(max) => format!("Название — от 1 до {max} символов"),
         ManageError::AfkIsPermanent => {
-            "Костёр AFK удалить нельзя — его можно только переименовать".into()
+            "Канал AFK удалить нельзя — его можно только переименовать".into()
         }
         ManageError::Store(e) => format!("Не удалось сохранить: {e}"),
         ManageError::LiveKit(e) => {
@@ -31,7 +31,7 @@ fn describe(e: &ManageError) -> String {
 async fn manager(host: &Arc<Host>) -> Result<Manager, String> {
     host.manager()
         .await
-        .ok_or_else(|| "Лагерь не запущен".to_owned())
+        .ok_or_else(|| "Сервер не запущен".to_owned())
 }
 
 #[tauri::command]

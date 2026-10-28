@@ -25,7 +25,7 @@ use tokio::sync::watch;
 /// Event with the whole [`ServerStatus`].
 const STATUS_EVENT: &str = "server://status";
 /// Name of a camp created by the window; renaming comes later (ADR-0023).
-const NEW_CAMP_NAME: &str = "Мой лагерь";
+const NEW_CAMP_NAME: &str = "Мой сервер";
 
 /// The camp as the window holds it.
 struct Host {
@@ -195,7 +195,7 @@ fn tray(app: &tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let quit = MenuItem::with_id(app, "quit", "Остановить лагерь и выйти", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Остановить сервер и выйти", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &copy, &quit])?;
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("OurCamp Server")

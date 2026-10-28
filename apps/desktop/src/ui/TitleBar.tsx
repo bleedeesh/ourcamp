@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../engine/tauri-engine.ts";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 
 /**
  * Custom window chrome (the native one is disabled in tauri.conf.json so the title bar
