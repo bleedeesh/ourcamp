@@ -10,149 +10,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use axum::body::Body;
-use bytes::Bytes;
-use http_body_util::BodyExt;
-use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST};
-use hyper::{Method, Request};
-use hyper_util::rt::TokioIo;
-use livekit_token::{AccessToken, VideoGrants};
 use oc_proto::{CampState, ChannelKind, ChannelPresence, PresentMember};
-use serde::Deserialize;
-use tokio::net::TcpStream;
-use tokio::sync::watch;
+use tokio::sync::{watch, Notify};
 
+use crate::rooms::{Participant, RoomService};
 use crate::store::{Store, StoreResult};
-use crate::LiveKit;
 
 /// How often LiveKit is asked. Joins and leaves show up within this.
 const POLL: Duration = Duration::from_secs(1);
-/// One LiveKit call must answer within this, or the round is skipped.
-const CALL_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// One participant as LiveKit's Twirp JSON describes it (only what we read; LiveKit
-/// answers in `snake_case`, see `docs/decisions/0021-*`).
-#[derive(Debug, Deserialize)]
-struct Participant {
-    identity: String,
-    #[serde(default)]
-    tracks: Vec<Track>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Track {
-    #[serde(default, rename = "type")]
-    kind: String,
-    #[serde(default)]
-    source: String,
-    #[serde(default)]
-    muted: bool,
-}
-
-impl Participant {
-    /// No microphone published, or it is muted — like `RemoteMember::mic_muted` in the app.
-    fn mic_muted(&self) -> bool {
-        !self
-            .tracks
-            .iter()
-            .any(|t| t.kind == "AUDIO" && t.source == "MICROPHONE" && !t.muted)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct Rooms {
-    #[serde(default)]
-    rooms: Vec<Room>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Room {
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Participants {
-    #[serde(default)]
-    participants: Vec<Participant>,
-}
-
-/// LiveKit's `RoomService` on loopback.
-struct LiveKitApi {
-    authority: String,
-    config: LiveKit,
-}
-
-impl LiveKitApi {
-    /// An admin token. LiveKit wants the room named for room-level calls.
-    fn token(&self, room: &str) -> Result<String, String> {
-        AccessToken::with_api_key(&self.config.api_key, &self.config.api_secret)
-            .with_identity("oc-server")
-            .with_ttl(Duration::from_secs(60))
-            .with_grants(VideoGrants {
-                room_list: true,
-                room_admin: true,
-                room: room.to_owned(),
-                ..VideoGrants::default()
-            })
-            .to_jwt()
-            .map_err(|e| e.to_string())
-    }
-
-    async fn call<T: for<'de> Deserialize<'de>>(
-        &self,
-        method: &str,
-        room: &str,
-        body: String,
-    ) -> Result<T, String> {
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri(format!("/twirp/livekit.RoomService/{method}"))
-            .header(HOST, &self.authority)
-            .header(CONTENT_TYPE, "application/json")
-            .header(AUTHORIZATION, format!("Bearer {}", self.token(room)?))
-            .body(Body::from(body))
-            .map_err(|e| e.to_string())?;
-        let exchange = async {
-            let tcp = TcpStream::connect(&self.authority)
-                .await
-                .map_err(|e| e.to_string())?;
-            let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tcp))
-                .await
-                .map_err(|e| e.to_string())?;
-            tokio::spawn(connection);
-            let response = sender
-                .send_request(request)
-                .await
-                .map_err(|e| e.to_string())?;
-            let status = response.status();
-            let bytes: Bytes = response
-                .into_body()
-                .collect()
-                .await
-                .map_err(|e| e.to_string())?
-                .to_bytes();
-            if !status.is_success() {
-                return Err(format!("{method}: HTTP {status}"));
-            }
-            serde_json::from_slice(&bytes).map_err(|e| format!("{method}: {e}"))
-        };
-        tokio::time::timeout(CALL_TIMEOUT, exchange)
-            .await
-            .map_err(|_| format!("{method}: timed out"))?
-    }
-
-    /// Room name → its participants.
-    async fn presence(&self) -> Result<HashMap<String, Vec<Participant>>, String> {
-        let rooms: Rooms = self.call("ListRooms", "", "{}".into()).await?;
-        let mut out = HashMap::new();
-        for room in rooms.rooms {
-            let body = serde_json::json!({ "room": room.name }).to_string();
-            let list: Participants = self.call("ListParticipants", &room.name, body).await?;
-            out.insert(room.name, list.participants);
-        }
-        Ok(out)
-    }
-}
 
 /// The snapshot to start with: members from the database, nobody at any campfire yet.
 /// Published before LiveKit is first asked, so members show up even while it is slow.
@@ -198,32 +63,36 @@ fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreRe
     })
 }
 
-/// Polls until `shutdown` turns true, publishing changes to `out`.
+/// Polls until `shutdown` turns true, publishing changes to `out`. `refresh` asks for a
+/// round now (after the owner changed the camp, ADR-0026) instead of at the next tick.
 pub async fn run(
     store: Arc<Mutex<Store>>,
-    livekit: LiveKit,
-    authority: String,
+    api: Arc<RoomService>,
     out: watch::Sender<Arc<CampState>>,
+    refresh: Arc<Notify>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let api = LiveKitApi {
-        authority,
-        config: livekit,
-    };
     let mut tick = tokio::time::interval(POLL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut livekit_down = false;
+    // Who sat where at the last answer: a refresh publishes the camp's change at once
+    // with it, without waiting for LiveKit (up to `CALL_TIMEOUT` when it is slow).
+    let mut rooms: Arc<HashMap<String, Vec<Participant>>> = Arc::default();
     loop {
-        tokio::select! {
-            _ = tick.tick() => {}
+        let refreshed = tokio::select! {
+            _ = tick.tick() => false,
+            () = refresh.notified() => true,
             _ = shutdown.changed() => return,
+        };
+        if refreshed {
+            publish(&store, &rooms, &out).await;
         }
         // A round can take up to `CALL_TIMEOUT` per call; stopping must not wait for it.
         let polled = tokio::select! {
             polled = api.presence() => polled,
             _ = shutdown.changed() => return,
         };
-        let rooms = match polled {
+        rooms = Arc::new(match polled {
             Ok(rooms) => {
                 if livekit_down {
                     eprintln!("[oc-server] LiveKit reachable again");
@@ -239,27 +108,36 @@ pub async fn run(
                 }
                 HashMap::new()
             }
-        };
-        let store = Arc::clone(&store);
-        let built = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(PoisonError::into_inner);
-            snapshot(&store, &rooms)
-        })
-        .await;
-        match built {
-            Ok(Ok(state)) => {
-                // `send_if_modified`: subscribers wake only on a real change.
-                out.send_if_modified(|current| {
-                    let changed = **current != state;
-                    if changed {
-                        *current = Arc::new(state);
-                    }
-                    changed
-                });
-            }
-            Ok(Err(e)) => eprintln!("[oc-server] presence snapshot: {e}"),
-            Err(_) => eprintln!("[oc-server] presence snapshot task panicked"),
+        });
+        publish(&store, &rooms, &out).await;
+    }
+}
+
+/// Builds the snapshot (SQLite: off the async workers) and publishes it if it changed.
+async fn publish(
+    store: &Arc<Mutex<Store>>,
+    rooms: &Arc<HashMap<String, Vec<Participant>>>,
+    out: &watch::Sender<Arc<CampState>>,
+) {
+    let (store, rooms) = (Arc::clone(store), Arc::clone(rooms));
+    let built = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        snapshot(&store, &rooms)
+    })
+    .await;
+    match built {
+        Ok(Ok(state)) => {
+            // `send_if_modified`: subscribers wake only on a real change.
+            out.send_if_modified(|current| {
+                let changed = **current != state;
+                if changed {
+                    *current = Arc::new(state);
+                }
+                changed
+            });
         }
+        Ok(Err(e)) => eprintln!("[oc-server] presence snapshot: {e}"),
+        Err(_) => eprintln!("[oc-server] presence snapshot task panicked"),
     }
 }
 

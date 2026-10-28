@@ -13,7 +13,9 @@
 
 mod api;
 mod livekit;
+mod manage;
 mod presence;
+mod rooms;
 mod rtc;
 mod serve;
 pub mod store;
@@ -34,6 +36,7 @@ use livekit::Supervisor;
 pub use livekit::{
     find_binary as find_livekit, ManagedLiveKit, DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
 };
+pub use manage::{ManageError, Manager, MAX_CAMP_NAME, MAX_CHANNEL_NAME};
 pub use oc_proto::API_VERSION;
 use store::Store;
 use tls::Identity;
@@ -148,6 +151,7 @@ pub struct Running {
     livekit: Option<Supervisor>,
     /// The snapshot clients get on `/api/v1/events` (ADR-0021).
     state: watch::Receiver<Arc<oc_proto::CampState>>,
+    manager: Manager,
 }
 
 impl Running {
@@ -169,6 +173,12 @@ impl Running {
     #[must_use]
     pub fn camp_state(&self) -> watch::Receiver<Arc<oc_proto::CampState>> {
         self.state.clone()
+    }
+
+    /// The owner's hand on the camp: name, roles, channels (ADR-0026).
+    #[must_use]
+    pub fn manager(&self) -> Manager {
+        self.manager.clone()
     }
 
     /// Stops accepting connections, waits for the accept loop to end, then stops the
@@ -258,11 +268,18 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         events_rx,
         shutdown_rx.clone(),
     );
+    let rooms = Arc::new(rooms::RoomService::new(livekit_authority.clone(), livekit));
+    let refresh = Arc::new(tokio::sync::Notify::new());
+    let manager = Manager::new(
+        state.store_handle(),
+        Arc::clone(&rooms),
+        Arc::clone(&refresh),
+    );
     tokio::spawn(presence::run(
         state.store_handle(),
-        livekit,
-        livekit_authority.clone(),
+        rooms,
         events,
+        refresh,
         shutdown_rx.clone(),
     ));
     let task = tokio::spawn(serve::serve(listener, tls, api::router(state), shutdown_rx));
@@ -275,6 +292,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         task,
         livekit: supervisor,
         state: state_rx,
+        manager,
     })
 }
 

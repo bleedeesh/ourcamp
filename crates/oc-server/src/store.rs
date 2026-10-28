@@ -466,6 +466,113 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Renames the camp.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn rename_camp(&self, name: &str) -> StoreResult<()> {
+        self.conn
+            .execute("UPDATE meta SET value = ?1 WHERE key = 'camp_name'", [name])?;
+        Ok(())
+    }
+
+    /// Gives a member a role. `false`: no such member.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn set_role(&self, user_id: &str, role: Role) -> StoreResult<bool> {
+        let changed = self.conn.execute(
+            "UPDATE members SET role = ?2 WHERE user_id = ?1",
+            params![user_id, role_str(role)],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Adds a channel before the AFK campfire, which stays last. Its id is random, so a
+    /// new campfire never lands in the LiveKit room of a removed one.
+    ///
+    /// # Errors
+    /// On database failure.
+    ///
+    /// # Panics
+    /// If the operating system cannot give random bytes — as for invites, unrecoverable.
+    pub fn create_channel(&mut self, name: &str, kind: ChannelKind) -> StoreResult<Channel> {
+        let mut bytes = [0u8; 5];
+        getrandom::fill(&mut bytes).expect("operating system random number generator");
+        // The invites' lower-case encoding: 8 characters, fine as a LiveKit room name.
+        let id = format!("c{}", Token::from_bytes(&bytes).as_str());
+        let kind_str = match kind {
+            ChannelKind::Voice => "voice",
+            ChannelKind::Text => "text",
+        };
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO channels (id, name, position, kind, afk)
+             VALUES (?1, ?2, (SELECT COALESCE(MAX(position), -1) + 1 FROM channels), ?3, 0)",
+            params![id, name, kind_str],
+        )?;
+        tx.execute(
+            "UPDATE channels SET position = (SELECT MAX(position) + 1 FROM channels)
+             WHERE afk = 1",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(Channel {
+            id,
+            name: name.to_owned(),
+            kind,
+            afk: false,
+        })
+    }
+
+    /// Renames a channel. `false`: no such channel.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn rename_channel(&self, id: &str, name: &str) -> StoreResult<bool> {
+        let changed = self.conn.execute(
+            "UPDATE channels SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Removes a channel and returns it; `None`: no such channel. The AFK campfire is not
+    /// removable — the caller checks [`Channel::afk`] first (ADR-0025).
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn delete_channel(&self, id: &str) -> StoreResult<Option<Channel>> {
+        let channel = self.channel(id)?;
+        if channel.is_some() {
+            self.conn
+                .execute("DELETE FROM channels WHERE id = ?1 AND afk = 0", [id])?;
+        }
+        Ok(channel)
+    }
+
+    /// One channel by id.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn channel(&self, id: &str) -> StoreResult<Option<Channel>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, name, kind, afk FROM channels WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(Channel {
+                        id: r.get(0)?,
+                        name: r.get(1)?,
+                        kind: channel_kind(&r.get::<_, String>(2)?),
+                        afk: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// Whether a campfire (voice channel) with this id exists: only those have rooms.
     ///
     /// # Errors

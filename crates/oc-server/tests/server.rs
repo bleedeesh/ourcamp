@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use oc_camp_client::{CampClient, ClientError, DeviceKey};
 use oc_invite::{Fingerprint, Host, Invite, InviteKind};
-use oc_proto::{ErrorCode, InviteKindDto, Role, API_VERSION};
+use oc_proto::{ChannelKind, ErrorCode, InviteKindDto, Role, API_VERSION};
 use oc_server::{start, Config, LiveKit, LiveKitMode, Running};
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -514,7 +514,18 @@ type Room = std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>;
 /// Stands in for LiveKit's Twirp API: one room, `c0`, holding whoever the test puts in
 /// `room` as (identity, mic muted). Answers in LiveKit's own `snake_case` JSON shape.
 async fn fake_twirp(room: Room) -> String {
+    fake_twirp_logged(room).await.0
+}
+
+/// Twirp methods the camp called, in order (`DeleteRoom`, …).
+type Calls = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
+
+/// [`fake_twirp`] that also records which methods were called.
+async fn fake_twirp_logged(room: Room) -> (String, Calls) {
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let calls: Calls = std::sync::Arc::default();
+    let log = calls.clone();
 
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -523,6 +534,7 @@ async fn fake_twirp(room: Room) -> String {
     tokio::spawn(async move {
         while let Ok((tcp, _)) = listener.accept().await {
             let room = room.clone();
+            let log = log.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(tcp);
                 let mut line = String::new();
@@ -544,6 +556,9 @@ async fn fake_twirp(room: Room) -> String {
                     } else if line == "\r\n" {
                         break;
                     }
+                }
+                if let Some(method) = path.rsplit('/').next() {
+                    log.lock().unwrap().push(method.to_owned());
                 }
                 let mut body = vec![0u8; length];
                 let _ = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await;
@@ -577,7 +592,7 @@ async fn fake_twirp(room: Room) -> String {
             });
         }
     });
-    format!("ws://{addr}")
+    (format!("ws://{addr}"), calls)
 }
 
 /// Waits for a snapshot that satisfies `ready` (snapshots are published once a second,
@@ -791,5 +806,129 @@ async fn a_member_who_leaves_is_forgotten_and_needs_a_new_invite() {
         .login(&key, "Лена", Some(&camp.join()))
         .await
         .expect("and with one, it does");
+    camp.stop().await;
+}
+
+// ---- ADR-0026: the owner manages the camp ----
+
+/// The next snapshot that satisfies `ready`, within `within` — shorter than a poll round
+/// proves the change was published at once.
+async fn state_within(
+    events: &mut oc_camp_client::CampEvents,
+    within: std::time::Duration,
+    ready: impl Fn(&oc_proto::CampState) -> bool,
+) -> oc_proto::CampState {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.next())
+            .await
+            .expect("the change within the time")
+            .expect("stream open")
+            .expect("valid event");
+        let oc_proto::CampEvent::State(state) = event;
+        if ready(&state) {
+            return state;
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_owners_changes_reach_members_at_once() {
+    let camp = camp_with_upstream(&fake_twirp(Room::default()).await).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut events = client.events(&lena).await.unwrap();
+    state_where(&mut events, |s| s.members.len() == 1).await;
+    let manager = camp.running.manager();
+    let soon = std::time::Duration::from_millis(600);
+
+    manager.rename_camp("  Кооп на выходных ").await.unwrap();
+    state_within(&mut events, soon, |s| s.name == "Кооп на выходных").await;
+
+    manager
+        .set_role(&lena.user_id, Role::Moderator)
+        .await
+        .unwrap();
+    state_within(&mut events, soon, |s| s.members[0].role == Role::Moderator).await;
+    let again = client.login(&DeviceKey::generate(), "x", None).await;
+    assert!(again.is_err(), "roles never come from logging in");
+
+    let added = manager
+        .create_channel("Катка", ChannelKind::Voice)
+        .await
+        .unwrap();
+    let state = state_within(&mut events, soon, |s| {
+        s.channels.iter().any(|c| c.id == added.id)
+    })
+    .await;
+    let names: Vec<_> = state.channels.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Voice", "Chat", "Катка", "AFK"],
+        "new channels go before AFK"
+    );
+
+    manager.rename_channel(&added.id, "Катка 2").await.unwrap();
+    state_within(&mut events, soon, |s| {
+        s.channels.iter().any(|c| c.name == "Катка 2")
+    })
+    .await;
+
+    assert!(matches!(
+        manager.set_role("nobody", Role::Admin).await,
+        Err(oc_server::ManageError::NotFound)
+    ));
+    assert!(matches!(
+        manager.rename_camp("   ").await,
+        Err(oc_server::ManageError::BadName(_))
+    ));
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn removing_a_campfire_closes_its_room_and_afk_stays() {
+    let (upstream, calls) = fake_twirp_logged(Room::default()).await;
+    let camp = camp_with_upstream(&upstream).await;
+    let manager = camp.running.manager();
+
+    assert!(matches!(
+        manager.delete_channel("afk").await,
+        Err(oc_server::ManageError::AfkIsPermanent)
+    ));
+    manager.delete_channel("c1").await.unwrap(); // Chat: no room to close
+    assert!(!calls.lock().unwrap().iter().any(|c| c == "DeleteRoom"));
+
+    manager.delete_channel("c0").await.unwrap();
+    assert!(
+        calls.lock().unwrap().iter().any(|c| c == "DeleteRoom"),
+        "the campfire's room is closed: whoever sat there is disconnected"
+    );
+    let ids: Vec<_> = camp
+        .running
+        .camp_state()
+        .borrow()
+        .channels
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    assert_eq!(ids, ["afk"]);
+    assert!(matches!(
+        manager.delete_channel("c0").await,
+        Err(oc_server::ManageError::NotFound)
+    ));
+
+    // A removed campfire hands out no more room tokens.
+    let client = camp.client();
+    let session = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    assert_eq!(
+        api_error(client.room_token(&session, "c0").await),
+        ErrorCode::NotFound
+    );
     camp.stop().await;
 }
