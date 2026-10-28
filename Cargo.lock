@@ -3262,6 +3262,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ourcamp-server-app"
+version = "0.1.0"
+dependencies = [
+ "oc-invite",
+ "oc-proto",
+ "oc-server",
+ "serde",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
 name = "pango"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
