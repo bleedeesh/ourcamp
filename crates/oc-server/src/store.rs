@@ -9,11 +9,33 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use oc_invite::{InviteKind, Token, CLAIM_TOKEN_BYTES, JOIN_TOKEN_BYTES};
-pub use oc_proto::{Channel, Role};
+pub use oc_proto::{Channel, ChannelKind, Role};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
-/// Channels a new camp starts with. The admin edits them later (M3 window / M5).
+/// Channels of the very first schema (v1). New camps get [`NEW_CAMP_CHANNELS`] instead;
+/// this stays as v1 created them, for migrations to recognise.
 const DEFAULT_CHANNELS: [&str; 3] = ["Лобби", "Катка", "Отошёл (AFK)"];
+
+/// What a brand-new camp starts with (ADR-0026): (id, name, kind, afk). The owner edits
+/// them in the server window.
+const NEW_CAMP_CHANNELS: [(&str, &str, &str, bool); 3] = [
+    ("c0", "Voice", "voice", false),
+    ("c1", "Chat", "text", false),
+    ("afk", "AFK", "voice", true),
+];
+
+/// A brand-new camp: the current default channels replace whatever the migrations from
+/// v1 laid down (they describe how old camps change, not how new ones begin).
+fn seed_new_camp(conn: &Connection) -> StoreResult<()> {
+    conn.execute("DELETE FROM channels", [])?;
+    for (position, (id, name, kind, afk)) in (0_i64..).zip(NEW_CAMP_CHANNELS) {
+        conn.execute(
+            "INSERT INTO channels (id, name, position, kind, afk) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, position, kind, afk],
+        )?;
+    }
+    Ok(())
+}
 
 /// Adds the AFK campfire at the end unless the camp has one (ADR-0025). `MAX()` sits in a
 /// subquery: an aggregate over rows the `WHERE` filtered out still yields one row.
@@ -23,11 +45,19 @@ const ENSURE_AFK: &str = "INSERT INTO channels (id, name, position, afk)
 
 /// Storage failure (disk, corruption). Not something the user can fix from a request.
 #[derive(Debug)]
-pub struct StoreError(rusqlite::Error);
+pub enum StoreError {
+    /// SQLite refused.
+    Sqlite(rusqlite::Error),
+    /// The data does not hold together (a migration found it so).
+    Inconsistent(String),
+}
 
 impl fmt::Display for StoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "camp database: {}", self.0)
+        match self {
+            Self::Sqlite(e) => write!(f, "camp database: {e}"),
+            Self::Inconsistent(why) => write!(f, "camp database: {why}"),
+        }
     }
 }
 
@@ -35,7 +65,7 @@ impl std::error::Error for StoreError {}
 
 impl From<rusqlite::Error> for StoreError {
     fn from(e: rusqlite::Error) -> Self {
-        Self(e)
+        Self::Sqlite(e)
     }
 }
 
@@ -56,7 +86,7 @@ pub struct Camp {
 pub struct InviteStatus {
     /// Join or admin claim.
     pub kind: InviteKind,
-    /// Whether redeeming it would work now (claims are single-use).
+    /// Whether it lets a new device in now (admin keys never do since ADR-0026).
     pub usable: bool,
 }
 
@@ -67,8 +97,6 @@ pub enum LoginError {
     InviteRequired,
     /// A new device came with a token the server never issued.
     InviteInvalid,
-    /// A new device came with the admin key somebody already redeemed.
-    ClaimUsed,
 }
 
 /// A camp member, as a session resolves to.
@@ -198,6 +226,49 @@ impl Store {
             tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
+        if version < 4 {
+            self.migrate_v4()?;
+        }
+        if version == 0 {
+            seed_new_camp(&self.conn)?;
+        }
+        Ok(())
+    }
+
+    /// Roles and channel kinds (ADR-0026). SQLite cannot change a CHECK in place: the
+    /// members table is rebuilt (the documented 12-step way), with foreign keys off for
+    /// the swap — they cannot be switched inside a transaction.
+    fn migrate_v4(&mut self) -> StoreResult<()> {
+        self.conn.pragma_update(None, "foreign_keys", false)?;
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "CREATE TABLE members_v4 (
+                user_id    TEXT PRIMARY KEY,
+                public_key BLOB NOT NULL UNIQUE,
+                name       TEXT NOT NULL,
+                role       TEXT NOT NULL CHECK (role IN ('member', 'moderator', 'admin')),
+                joined_at  INTEGER NOT NULL
+             );
+             INSERT INTO members_v4 SELECT user_id, public_key, name, role, joined_at FROM members;
+             DROP TABLE members;
+             ALTER TABLE members_v4 RENAME TO members;
+             ALTER TABLE channels ADD COLUMN kind TEXT NOT NULL DEFAULT 'voice'
+                CHECK (kind IN ('voice', 'text'));
+             -- The admin key is retired: whoever redeemed it stays admin.
+             DELETE FROM invites WHERE kind = 'claim' AND redeemed_at IS NULL;",
+        )?;
+        let broken: Option<String> = tx
+            .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
+            .optional()?;
+        if let Some(table) = broken {
+            // Rolls back on drop; nothing changed.
+            return Err(StoreError::Inconsistent(format!(
+                "foreign keys of {table} do not hold after the v4 migration"
+            )));
+        }
+        tx.pragma_update(None, "user_version", 4)?;
+        tx.commit()?;
+        self.conn.pragma_update(None, "foreign_keys", true)?;
         Ok(())
     }
 
@@ -213,13 +284,14 @@ impl Store {
                 })?;
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name, afk FROM channels ORDER BY position")?;
+            .prepare("SELECT id, name, kind, afk FROM channels ORDER BY position")?;
         let channels = stmt
             .query_map([], |r| {
                 Ok(Channel {
                     id: r.get(0)?,
                     name: r.get(1)?,
-                    afk: r.get(2)?,
+                    kind: channel_kind(&r.get::<_, String>(2)?),
+                    afk: r.get(3)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -239,56 +311,35 @@ impl Store {
         stored_token(&token, InviteKind::Join)
     }
 
-    /// The admin claim key, until someone redeems it.
-    ///
-    /// # Errors
-    /// On database failure.
-    pub fn unclaimed_admin_token(&self) -> StoreResult<Option<Token>> {
-        let token: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT token FROM invites WHERE kind = 'claim' AND redeemed_at IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        token
-            .map(|t| stored_token(&t, InviteKind::ClaimAdmin))
-            .transpose()
-    }
-
-    /// What `token` is, or `None` if the server never issued it.
+    /// What `token` is, or `None` if the server never issued it. An admin key (retired by
+    /// ADR-0026) is reported as such and never usable.
     ///
     /// # Errors
     /// On database failure.
     pub fn invite_status(&self, token: &str) -> StoreResult<Option<InviteStatus>> {
-        let row: Option<(String, Option<i64>)> = self
+        let kind: Option<String> = self
             .conn
-            .query_row(
-                "SELECT kind, redeemed_at FROM invites WHERE token = ?1",
-                [token],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+            .query_row("SELECT kind FROM invites WHERE token = ?1", [token], |r| {
+                r.get(0)
+            })
             .optional()?;
-        Ok(row.map(|(kind, redeemed_at)| match kind.as_str() {
-            "claim" => InviteStatus {
-                kind: InviteKind::ClaimAdmin,
-                usable: redeemed_at.is_none(),
-            },
-            _ => InviteStatus {
+        Ok(kind.map(|kind| match kind.as_str() {
+            "join" => InviteStatus {
                 kind: InviteKind::Join,
                 usable: true,
+            },
+            _ => InviteStatus {
+                kind: InviteKind::ClaimAdmin,
+                usable: false,
             },
         }))
     }
 
     /// Admits a device whose signature the caller has verified (ADR-0018):
     ///
-    /// * a known device is let in (its name updated); an unredeemed admin key promotes it;
-    /// * a new device needs a valid invite; the admin key makes it admin.
-    ///
-    /// One write transaction (`BEGIN IMMEDIATE`): two devices racing for the admin key
-    /// cannot both win.
+    /// * a known device is let in with its role (its name updated); no invite needed;
+    /// * a new device needs the friends invite and joins as a member. Roles are given in
+    ///   the server window (ADR-0026), never by a link.
     ///
     /// # Errors
     /// `Ok(Err(_))` when refused; `Err` on database failure.
@@ -297,6 +348,7 @@ impl Store {
         device: Device<'_>,
         invite: Option<&str>,
     ) -> StoreResult<Result<Role, LoginError>> {
+        // `BEGIN IMMEDIATE`: the check and the insert see the same state.
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -307,42 +359,29 @@ impl Store {
                 |r| r.get(0),
             )
             .optional()?;
-        let claimed = match invite {
-            Some(token) => {
-                tx.execute(
-                    "UPDATE invites SET redeemed_at = ?2
-                     WHERE token = ?1 AND kind = 'claim' AND redeemed_at IS NULL",
-                    params![token, now()],
-                )? == 1
+        let role = if let Some(role) = known {
+            role_from(&role)
+        } else {
+            let Some(token) = invite else {
+                return Ok(Err(LoginError::InviteRequired));
+            };
+            let join: Option<()> = tx
+                .query_row(
+                    "SELECT 1 FROM invites WHERE token = ?1 AND kind = 'join'",
+                    [token],
+                    |_| Ok(()),
+                )
+                .optional()?;
+            if join.is_none() {
+                return Ok(Err(LoginError::InviteInvalid));
             }
-            None => false,
-        };
-
-        let role = match (known.as_deref(), claimed) {
-            (_, true) | (Some("admin"), false) => Role::Admin,
-            (Some(_), false) => Role::Member,
-            (None, false) => {
-                // New device without a fresh admin key: the invite decides.
-                let kind: Option<String> = match invite {
-                    Some(token) => tx
-                        .query_row("SELECT kind FROM invites WHERE token = ?1", [token], |r| {
-                            r.get(0)
-                        })
-                        .optional()?,
-                    None => return Ok(Err(LoginError::InviteRequired)),
-                };
-                match kind.as_deref() {
-                    Some("join") => Role::Member,
-                    Some(_) => return Ok(Err(LoginError::ClaimUsed)),
-                    None => return Ok(Err(LoginError::InviteInvalid)),
-                }
-            }
+            Role::Member
         };
 
         tx.execute(
             "INSERT INTO members (user_id, public_key, name, role, joined_at)
              VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (user_id) DO UPDATE SET name = excluded.name, role = excluded.role",
+             ON CONFLICT (user_id) DO UPDATE SET name = excluded.name",
             params![
                 device.user_id,
                 device.public_key,
@@ -405,11 +444,7 @@ impl Store {
         Ok(row.map(|(user_id, name, role)| Member {
             user_id,
             name,
-            role: if role == "admin" {
-                Role::Admin
-            } else {
-                Role::Member
-            },
+            role: role_from(&role),
         }))
     }
 
@@ -425,20 +460,24 @@ impl Store {
             Ok(oc_proto::MemberInfo {
                 user_id: r.get(0)?,
                 name: r.get(1)?,
-                is_admin: r.get::<_, String>(2)? == "admin",
+                role: role_from(&r.get::<_, String>(2)?),
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Whether a channel with this id exists.
+    /// Whether a campfire (voice channel) with this id exists: only those have rooms.
     ///
     /// # Errors
     /// On database failure.
-    pub fn channel_exists(&self, id: &str) -> StoreResult<bool> {
+    pub fn campfire_exists(&self, id: &str) -> StoreResult<bool> {
         Ok(self
             .conn
-            .query_row("SELECT 1 FROM channels WHERE id = ?1", [id], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM channels WHERE id = ?1 AND kind = 'voice'",
+                [id],
+                |_| Ok(()),
+            )
             .optional()?
             .is_some())
     }
@@ -447,7 +486,26 @@ impl Store {
 fn role_str(role: Role) -> &'static str {
     match role {
         Role::Member => "member",
+        Role::Moderator => "moderator",
         Role::Admin => "admin",
+    }
+}
+
+/// The column's `CHECK` allows only the three names; anything else cannot be stored.
+fn role_from(role: &str) -> Role {
+    match role {
+        "admin" => Role::Admin,
+        "moderator" => Role::Moderator,
+        _ => Role::Member,
+    }
+}
+
+/// See [`role_from`]: `CHECK (kind IN ('voice', 'text'))`.
+fn channel_kind(kind: &str) -> ChannelKind {
+    if kind == "text" {
+        ChannelKind::Text
+    } else {
+        ChannelKind::Voice
     }
 }
 
@@ -473,7 +531,7 @@ fn insert_invite(conn: &Connection, kind: InviteKind) -> StoreResult<()> {
 /// Reads back a token the store wrote. Only a corrupted database fails here.
 fn stored_token(s: &str, kind: InviteKind) -> StoreResult<Token> {
     Token::parse(s, kind).map_err(|e| {
-        StoreError(rusqlite::Error::FromSqlConversionFailure(
+        StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
             0,
             rusqlite::types::Type::Text,
             Box::new(e),
@@ -527,33 +585,33 @@ mod tests {
     }
 
     #[test]
-    fn new_camp_has_name_default_channels_and_both_links() {
+    fn a_new_camp_starts_with_voice_chat_and_afk_and_a_friends_link() {
         let store = Store::open_in_memory("Вечерний кооп").unwrap();
         let camp = store.camp().unwrap();
         assert_eq!(camp.name, "Вечерний кооп");
-        let names: Vec<_> = camp.channels.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(
-            names,
-            ["Лобби", "Катка", "AFK"],
-            "v3 turns the third into AFK"
-        );
-        let afk: Vec<_> = camp
+        let channels: Vec<_> = camp
             .channels
             .iter()
-            .filter(|c| c.afk)
-            .map(|c| c.id.as_str())
+            .map(|c| (c.id.as_str(), c.name.as_str(), c.kind, c.afk))
             .collect();
-        assert_eq!(afk, ["c2"], "one AFK campfire, same LiveKit room as before");
-        assert_eq!(store.join_token().unwrap().as_str().len(), 16);
         assert_eq!(
-            store
-                .unclaimed_admin_token()
-                .unwrap()
-                .unwrap()
-                .as_str()
-                .len(),
-            26
+            channels,
+            [
+                ("c0", "Voice", ChannelKind::Voice, false),
+                ("c1", "Chat", ChannelKind::Text, false),
+                ("afk", "AFK", ChannelKind::Voice, true),
+            ]
         );
+        assert_eq!(store.join_token().unwrap().as_str().len(), 16);
+        let claims: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM invites WHERE kind = 'claim'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(claims, 0, "no admin key any more (ADR-0026)");
     }
 
     #[test]
@@ -562,16 +620,100 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("camp.db");
         let _ = std::fs::remove_file(&path);
-        let (join, claim) = {
+        let (join, channels) = {
             let s = Store::open(&path, "Первое имя").unwrap();
-            (s.join_token().unwrap(), s.unclaimed_admin_token().unwrap())
+            (s.join_token().unwrap(), s.camp().unwrap().channels)
         };
         let s = Store::open(&path, "Другое имя").unwrap();
         assert_eq!(s.camp().unwrap().name, "Первое имя", "name is set once");
         assert_eq!(s.join_token().unwrap(), join, "links survive restarts");
-        assert_eq!(s.unclaimed_admin_token().unwrap(), claim);
+        assert_eq!(s.camp().unwrap().channels, channels, "seeded only once");
         drop(s);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A camp as schema v3 left it: an admin who redeemed the old key, a member with a
+    /// live session, an admin key nobody redeemed, the v1 campfires.
+    fn v3_camp() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE channels (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                position INTEGER NOT NULL, afk INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE invites (token TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK (kind IN ('join', 'claim')),
+                created_at INTEGER NOT NULL, redeemed_at INTEGER);
+             CREATE TABLE members (user_id TEXT PRIMARY KEY, public_key BLOB NOT NULL UNIQUE,
+                name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('member', 'admin')),
+                joined_at INTEGER NOT NULL);
+             CREATE TABLE sessions (token_hash BLOB PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES members (user_id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL);
+             INSERT INTO meta VALUES ('camp_name', 'Старый лагерь');
+             INSERT INTO channels VALUES ('c0', 'Лобби', 0, 0), ('c1', 'Катка', 1, 0),
+                ('c2', 'AFK', 2, 1);
+             INSERT INTO invites VALUES ('aaaaaaaaaaaaaaaa', 'join', 1, NULL),
+                ('bbbbbbbbbbbbbbbbbbbbbbbbbb', 'claim', 1, NULL),
+                ('cccccccccccccccccccccccccc', 'claim', 1, 2);
+             INSERT INTO members VALUES ('dima', x'01', 'Дима', 'admin', 1),
+                ('lena', x'02', 'Лена', 'member', 1);
+             INSERT INTO sessions VALUES (x'aa', 'lena', 99999999999);
+             PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn v4_keeps_people_sessions_and_campfires_and_retires_the_admin_key() {
+        let store = Store::init(v3_camp(), "ignored").unwrap();
+        let roles: Vec<_> = store
+            .members()
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.user_id, m.role))
+            .collect();
+        assert_eq!(
+            roles,
+            [("dima".into(), Role::Admin), ("lena".into(), Role::Member)],
+            "whoever redeemed the key stays admin"
+        );
+        let lena = store.session_member(&[0xaa]).unwrap().unwrap();
+        assert_eq!(lena.user_id, "lena", "sessions survive the table rebuild");
+        let camp = store.camp().unwrap();
+        assert_eq!(camp.name, "Старый лагерь");
+        let names: Vec<_> = camp.channels.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Лобби", "Катка", "AFK"],
+            "an old camp is not reseeded"
+        );
+        assert!(camp.channels.iter().all(|c| c.kind == ChannelKind::Voice));
+        let claims: Vec<String> = store
+            .conn
+            .prepare("SELECT token FROM invites WHERE kind = 'claim'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            claims,
+            ["cccccccccccccccccccccccccc"],
+            "unredeemed key gone"
+        );
+        // Moderators fit the new CHECK; foreign keys are back on.
+        store
+            .conn
+            .execute(
+                "UPDATE members SET role = 'moderator' WHERE user_id = 'lena'",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .conn
+            .execute("INSERT INTO sessions VALUES (x'bb', 'nobody', 1)", [])
+            .is_err());
     }
 
     fn device(id: &str) -> Device<'_> {
@@ -582,22 +724,10 @@ mod tests {
         }
     }
 
-    fn tokens(store: &Store) -> (String, String) {
-        (
-            store.join_token().unwrap().as_str().to_owned(),
-            store
-                .unclaimed_admin_token()
-                .unwrap()
-                .unwrap()
-                .as_str()
-                .to_owned(),
-        )
-    }
-
     #[test]
-    fn new_device_needs_a_valid_invite() {
+    fn new_device_needs_the_friends_invite_and_joins_as_a_member() {
         let mut store = Store::open_in_memory("x").unwrap();
-        let (join, _) = tokens(&store);
+        let join = store.join_token().unwrap().as_str().to_owned();
         assert_eq!(
             store.login(device("a"), None).unwrap(),
             Err(LoginError::InviteRequired)
@@ -620,78 +750,38 @@ mod tests {
     }
 
     #[test]
-    fn admin_key_works_exactly_once_and_its_link_disappears() {
+    fn an_old_admin_key_lets_nobody_in_and_does_not_change_roles() {
         let mut store = Store::open_in_memory("x").unwrap();
-        let (_, claim) = tokens(&store);
+        let claim = "dddddddddddddddddddddddddd";
+        store
+            .conn
+            .execute(
+                "INSERT INTO invites (token, kind, created_at) VALUES (?1, 'claim', 1)",
+                [claim],
+            )
+            .unwrap();
+        let status = store.invite_status(claim).unwrap().unwrap();
         assert_eq!(
-            store.login(device("host"), Some(&claim)).unwrap(),
-            Ok(Role::Admin)
+            (status.kind, status.usable),
+            (InviteKind::ClaimAdmin, false)
         );
         assert_eq!(
-            store.login(device("intruder"), Some(&claim)).unwrap(),
-            Err(LoginError::ClaimUsed)
+            store.login(device("new"), Some(claim)).unwrap(),
+            Err(LoginError::InviteInvalid)
         );
-        assert_eq!(store.unclaimed_admin_token().unwrap(), None);
-        assert!(!store.invite_status(&claim).unwrap().unwrap().usable);
-        assert_eq!(
-            store.login(device("host"), Some(&claim)).unwrap(),
-            Ok(Role::Admin),
-            "the admin reopening their own claim link is still let in"
-        );
-    }
-
-    #[test]
-    fn a_member_can_redeem_the_admin_key_later_and_admins_stay_admins() {
-        let mut store = Store::open_in_memory("x").unwrap();
-        let (join, claim) = tokens(&store);
+        let join = store.join_token().unwrap().as_str().to_owned();
         store.login(device("a"), Some(&join)).unwrap().unwrap();
         assert_eq!(
-            store.login(device("a"), Some(&claim)).unwrap(),
-            Ok(Role::Admin)
+            store.login(device("a"), Some(claim)).unwrap(),
+            Ok(Role::Member),
+            "a member is let in, still a member"
         );
-        assert_eq!(store.login(device("a"), None).unwrap(), Ok(Role::Admin));
-        assert_eq!(
-            store.login(device("a"), Some(&join)).unwrap(),
-            Ok(Role::Admin)
-        );
-    }
-
-    #[test]
-    fn racing_for_the_admin_key_has_one_winner() {
-        // Two connections to one file = two server requests in flight.
-        let dir = std::env::temp_dir().join(format!("oc-store-race-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("camp.db");
-        let claim = tokens(&Store::open(&path, "x").unwrap()).1;
-        let results: Vec<_> = ["a", "b", "c", "d"]
-            .map(|id| {
-                let (path, claim) = (path.clone(), claim.clone());
-                std::thread::spawn(move || {
-                    let mut store = Store::open(&path, "x").unwrap();
-                    store
-                        .conn
-                        .busy_timeout(std::time::Duration::from_secs(5))
-                        .unwrap();
-                    store.login(device(id), Some(&claim)).unwrap()
-                })
-            })
-            .map(|t| t.join().unwrap())
-            .into_iter()
-            .collect();
-        let admins = results.iter().filter(|r| **r == Ok(Role::Admin)).count();
-        let refused = results
-            .iter()
-            .filter(|r| **r == Err(LoginError::ClaimUsed))
-            .count();
-        assert_eq!((admins, refused), (1, 3), "{results:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn sessions_resolve_to_members_until_they_expire() {
         let mut store = Store::open_in_memory("x").unwrap();
-        let (join, _) = tokens(&store);
+        let join = store.join_token().unwrap().as_str().to_owned();
         store.login(device("a"), Some(&join)).unwrap().unwrap();
         store.create_session(b"live", "a", 60).unwrap();
         store.create_session(b"dead", "a", -1).unwrap();
@@ -707,13 +797,12 @@ mod tests {
     #[test]
     fn invite_status_and_channels() {
         let store = Store::open_in_memory("x").unwrap();
-        let (join, claim) = tokens(&store);
+        let join = store.join_token().unwrap().as_str().to_owned();
         let status = store.invite_status(&join).unwrap().unwrap();
         assert_eq!((status.kind, status.usable), (InviteKind::Join, true));
-        let status = store.invite_status(&claim).unwrap().unwrap();
-        assert_eq!((status.kind, status.usable), (InviteKind::ClaimAdmin, true));
         assert_eq!(store.invite_status("nonexistent").unwrap(), None);
-        assert!(store.channel_exists("c0").unwrap());
-        assert!(!store.channel_exists("lobby").unwrap());
+        assert!(store.campfire_exists("c0").unwrap());
+        assert!(!store.campfire_exists("c1").unwrap(), "Chat is no campfire");
+        assert!(!store.campfire_exists("lobby").unwrap());
     }
 }

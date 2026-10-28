@@ -17,7 +17,7 @@ use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST};
 use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use livekit_token::{AccessToken, VideoGrants};
-use oc_proto::{CampState, ChannelPresence, PresentMember};
+use oc_proto::{CampState, ChannelKind, ChannelPresence, PresentMember};
 use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
@@ -160,15 +160,17 @@ pub fn initial(store: &Store) -> StoreResult<CampState> {
     snapshot(store, &HashMap::new())
 }
 
-/// Builds the snapshot clients see: members from the database, presence from LiveKit
-/// restricted to this camp's channels and members, in channel order.
+/// Builds the snapshot clients see: the camp and its members from the database, presence
+/// from LiveKit restricted to this camp's campfires and members, in channel order.
 fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreResult<CampState> {
     let members = store.members()?;
     let known: std::collections::HashSet<&str> =
         members.iter().map(|m| m.user_id.as_str()).collect();
-    let channels = store.camp()?.channels;
-    let presence = channels
+    let camp = store.camp()?;
+    let presence = camp
+        .channels
         .iter()
+        .filter(|channel| channel.kind == ChannelKind::Voice)
         .filter_map(|channel| {
             let people: BTreeMap<&str, bool> = rooms
                 .get(&channel.id)?
@@ -188,7 +190,12 @@ fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreRe
             })
         })
         .collect();
-    Ok(CampState { members, presence })
+    Ok(CampState {
+        name: camp.name,
+        channels: camp.channels,
+        members,
+        presence,
+    })
 }
 
 /// Polls until `shutdown` turns true, publishing changes to `out`.
@@ -301,7 +308,7 @@ mod tests {
         }
         let rooms = HashMap::from([
             (
-                "c1".to_owned(),
+                "afk".to_owned(),
                 vec![
                     participant(r#"{"identity":"bob"}"#),
                     participant(r#"{"identity":"ann"}"#),
@@ -310,6 +317,11 @@ mod tests {
             (
                 "c0".to_owned(),
                 vec![participant(r#"{"identity":"stranger"}"#)],
+            ),
+            (
+                // A text channel never has a room; a stray one is ignored all the same.
+                "c1".to_owned(),
+                vec![participant(r#"{"identity":"ann"}"#)],
             ),
             (
                 "other-camp-room".to_owned(),
@@ -321,9 +333,11 @@ mod tests {
         assert_eq!(
             state.presence.len(),
             1,
-            "c0 had only a stranger; unknown rooms ignored"
+            "c0 had only a stranger; text channels and unknown rooms ignored"
         );
-        assert_eq!(state.presence[0].channel_id, "c1");
+        assert_eq!(state.presence[0].channel_id, "afk");
+        assert_eq!(state.name, "x", "the snapshot carries the camp itself");
+        assert_eq!(state.channels.len(), 3);
         let ids: Vec<_> = state.presence[0]
             .members
             .iter()

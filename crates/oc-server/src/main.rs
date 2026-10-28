@@ -229,12 +229,8 @@ async fn main() -> ExitCode {
     eprintln!("[oc-server] data: {}", data_dir.display());
     eprintln!("[oc-server] listening on {} (TLS)", running.local_addr);
     eprintln!("[oc-server] fingerprint: {}", running.fingerprint);
-    // Links go to stdout so they can be piped; everything else is a log line.
+    // The link goes to stdout so it can be piped; everything else is a log line.
     println!("Для друзей: {}", running.links.join);
-    match &running.links.claim {
-        Some(claim) => println!("Для вас (админ, одноразовая): {claim}"),
-        None => eprintln!("[oc-server] admin key already redeemed"),
-    }
 
     if let Err(e) = tokio::signal::ctrl_c().await {
         eprintln!("oc-server: cannot wait for Ctrl+C: {e}");

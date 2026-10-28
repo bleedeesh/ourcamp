@@ -67,17 +67,6 @@ impl Camp {
         self.running.links.join.token.as_str().to_owned()
     }
 
-    fn claim(&self) -> String {
-        self.running
-            .links
-            .claim
-            .as_ref()
-            .unwrap()
-            .token
-            .as_str()
-            .to_owned()
-    }
-
     async fn stop(self) {
         self.running.stop().await;
         let _ = std::fs::remove_dir_all(self.dir);
@@ -99,7 +88,7 @@ async fn camp_is_served_over_pinned_tls() {
     let info = camp.client().camp().await.unwrap();
     assert_eq!(info.api_version, API_VERSION);
     assert_eq!(info.name, "Вечерний кооп");
-    assert_eq!(info.channels[0].name, "Лобби");
+    assert_eq!(info.channels[0].name, "Voice");
     assert_eq!(info.channels[0].id, "c0");
     camp.stop().await;
 }
@@ -127,8 +116,6 @@ async fn links_carry_the_public_address_and_the_real_fingerprint() {
     assert_eq!(join.port, camp.running.local_addr.port());
     assert_eq!(join.kind, InviteKind::Join);
     assert_eq!(join.fingerprint, camp.running.fingerprint);
-    let claim = camp.running.links.claim.as_ref().unwrap();
-    assert_eq!(claim.kind, InviteKind::ClaimAdmin);
     camp.stop().await;
 }
 
@@ -141,8 +128,6 @@ async fn invite_status_is_lenient_about_case_and_strict_about_existence() {
         .await
         .unwrap();
     assert_eq!((info.kind, info.usable), (InviteKindDto::Join, true));
-    let info = client.invite(&camp.claim()).await.unwrap();
-    assert_eq!((info.kind, info.usable), (InviteKindDto::Claim, true));
     assert_eq!(
         api_error(client.invite(&"0".repeat(16)).await),
         ErrorCode::NotFound
@@ -182,23 +167,6 @@ async fn friend_joins_with_the_invite_and_comes_back_without_it() {
     assert_eq!(session.user_id, key.user_id());
     let again = client.login(&key, "Лена", None).await.unwrap();
     assert_eq!((again.user_id, again.role), (key.user_id(), Role::Member));
-    camp.stop().await;
-}
-
-#[tokio::test]
-async fn admin_key_makes_exactly_one_admin() {
-    let camp = Camp::start().await;
-    let client = camp.client();
-    let host = client
-        .login(&DeviceKey::generate(), "Дима", Some(&camp.claim()))
-        .await
-        .unwrap();
-    assert_eq!(host.role, Role::Admin);
-    let intruder = client
-        .login(&DeviceKey::generate(), "Не Дима", Some(&camp.claim()))
-        .await;
-    assert_eq!(api_error(intruder), ErrorCode::ClaimUsed);
-    assert!(!client.invite(&camp.claim()).await.unwrap().usable);
     camp.stop().await;
 }
 
@@ -639,7 +607,7 @@ async fn everyone_sees_who_sits_at_which_campfire_with_roles() {
     let client = camp.client();
     let host_key = DeviceKey::generate();
     let host = client
-        .login(&host_key, "Дима", Some(&camp.claim()))
+        .login(&host_key, "Дима", Some(&camp.join()))
         .await
         .unwrap();
     let friend_key = DeviceKey::generate();
@@ -658,16 +626,16 @@ async fn everyone_sees_who_sits_at_which_campfire_with_roles() {
         .find(|m| m.user_id == host.user_id)
         .unwrap();
     assert_eq!(
-        (dima.name.as_str(), dima.is_admin),
-        ("Дима", true),
-        "the crown is visible"
+        (dima.name.as_str(), dima.role),
+        ("Дима", Role::Member),
+        "names and roles travel with the snapshot"
     );
     let angelina = state
         .members
         .iter()
         .find(|m| m.user_id == friend.user_id)
         .unwrap();
-    assert!(!angelina.is_admin);
+    assert_eq!(angelina.role, Role::Member);
 
     // Dima sits down at the Lobby with his mic off: the friend sees it without joining.
     room.lock().unwrap().push((host.user_id.clone(), true));

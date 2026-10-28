@@ -96,10 +96,8 @@ impl fmt::Debug for LiveKit {
 /// The two links the host hands out.
 #[derive(Debug, Clone)]
 pub struct Links {
-    /// For friends.
+    /// For friends. Roles are given in the server window, not by links (ADR-0026).
     pub join: Invite,
-    /// For the host: makes whoever redeems it admin. `None` once redeemed.
-    pub claim: Option<Invite>,
 }
 
 /// Why the server did not start.
@@ -231,10 +229,6 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
             InviteKind::Join,
             store.join_token().map_err(StartError::Store)?,
         ),
-        claim: store
-            .unclaimed_admin_token()
-            .map_err(StartError::Store)?
-            .map(|t| link(InviteKind::ClaimAdmin, t)),
     };
     let camp = store.camp().map_err(StartError::Store)?;
 
