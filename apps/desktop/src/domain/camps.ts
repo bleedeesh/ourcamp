@@ -23,6 +23,8 @@ export interface CampsState {
   /** The open camp's server is unreachable; its channels are the last known ones. */
   readonly offline: boolean;
   readonly switcherOpen: boolean;
+  /** The camp menu asks "leave this camp?" instead of listing camps. */
+  readonly leaveAsk: boolean;
   // Join form
   readonly link: string;
   readonly name: string;
@@ -103,6 +105,7 @@ export class CampsController {
       currentId: null,
       offline: false,
       switcherOpen: false,
+      leaveAsk: false,
       link: "",
       name: "",
       check: { state: "idle" },
@@ -194,11 +197,47 @@ export class CampsController {
   // ---- switcher ----
 
   toggleSwitcher(): void {
-    this.store.patch({ switcherOpen: !this.store.get().switcherOpen });
+    this.store.patch({ switcherOpen: !this.store.get().switcherOpen, leaveAsk: false });
   }
 
   closeSwitcher(): void {
-    this.store.patch({ switcherOpen: false });
+    this.store.patch({ switcherOpen: false, leaveAsk: false });
+  }
+
+  /** "Покинуть лагерь" in the menu: ask first — coming back takes a new invite. */
+  askLeave(): void {
+    this.store.patch({ leaveAsk: true });
+  }
+
+  cancelLeave(): void {
+    this.store.patch({ leaveAsk: false });
+  }
+
+  /**
+   * Leaves the open camp: its voice, then the camp itself; opens the next camp in the
+   * list, or the first-run screen when none is left.
+   */
+  async leave(): Promise<void> {
+    const { currentId, camps } = this.store.get();
+    this.store.patch({ switcherOpen: false, leaveAsk: false });
+    if (currentId === null) return;
+    const name = camps.find((c) => c.id === currentId)?.name ?? "";
+    await this.#voice.leave();
+    try {
+      const told = await this.#api.leave(currentId);
+      const list = await this.#api.list();
+      this.store.patch({ camps: list.camps, currentId: null, offline: false });
+      const next = list.camps[0]?.id;
+      if (next === undefined) this.store.patch({ view: "empty" });
+      else await this.#open(next);
+      this.store.patch({
+        notice: told
+          ? `Вы покинули лагерь «${name}»`
+          : `Лагерь «${name}» убран из списка. Он сейчас недоступен, поэтому там вы пока числитесь участником`,
+      });
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
   }
 
   async switchTo(id: string): Promise<void> {

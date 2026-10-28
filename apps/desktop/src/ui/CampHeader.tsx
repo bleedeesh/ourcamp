@@ -42,6 +42,7 @@ function CampMenu() {
   const campsCtl = useCampsController();
   const camps = useCamps((s) => s.camps);
   const currentId = useCamps((s) => s.currentId);
+  const leaveAsk = useCamps((s) => s.leaveAsk);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,7 +61,27 @@ function CampMenu() {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("pointerdown", onPointer);
     };
-  }, [campsCtl]);
+  }, [campsCtl, leaveAsk]);
+
+  if (leaveAsk) {
+    const name = camps.find((c) => c.id === currentId)?.name ?? "";
+    return (
+      <div ref={ref} className="camp-menu camp-menu--confirm" role="alertdialog" aria-labelledby="leave-title">
+        <p id="leave-title" className="camp-menu__question">
+          Покинуть лагерь «{name}»?
+        </p>
+        <p className="camp-menu__hint">Он пропадёт из списка, а вернуться можно будет только по новому приглашению.</p>
+        <div className="camp-menu__actions">
+          <button type="button" className="wide-button" onClick={() => campsCtl.cancelLeave()}>
+            Отмена
+          </button>
+          <button type="button" className="wide-button wide-button--danger" onClick={() => void campsCtl.leave()}>
+            Покинуть
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={ref} className="camp-menu" role="menu" aria-label="Лагеря">
@@ -95,6 +116,11 @@ function CampMenu() {
       <button type="button" role="menuitem" className="menu-button" aria-disabled="true" title="Скоро: окно сервера лагеря">
         <Icon name="plus" size={18} />
         Создать свой лагерь
+      </button>
+      <span className="camp-menu__sep" role="separator" />
+      <button type="button" role="menuitem" className="menu-button" data-danger onClick={() => campsCtl.askLeave()}>
+        <Icon name="leave" size={18} />
+        Покинуть лагерь
       </button>
     </div>
   );

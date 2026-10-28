@@ -38,9 +38,9 @@ export class DemoCampApi implements CampApi {
     return Promise.resolve(this.#open());
   }
 
-  forget(): Promise<void> {
+  leave(): Promise<boolean> {
     this.#joined = false;
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
 
   invite(): Promise<string> {
