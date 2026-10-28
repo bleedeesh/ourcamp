@@ -231,6 +231,12 @@ impl Supervisor {
         *self.pid.borrow()
     }
 
+    /// Changes of [`Self::pid`].
+    #[must_use]
+    pub fn pid_changes(&self) -> watch::Receiver<Option<u32>> {
+        self.pid.clone()
+    }
+
     /// Stops LiveKit and waits until it is gone.
     pub async fn stop(self) {
         let _ = self.stop.send(true);

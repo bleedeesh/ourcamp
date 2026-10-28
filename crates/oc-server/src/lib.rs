@@ -146,6 +146,8 @@ pub struct Running {
     task: JoinHandle<()>,
     /// `Some` in `managed` mode.
     livekit: Option<Supervisor>,
+    /// The snapshot clients get on `/api/v1/events` (ADR-0021).
+    state: watch::Receiver<Arc<oc_proto::CampState>>,
 }
 
 impl Running {
@@ -154,6 +156,19 @@ impl Running {
     #[must_use]
     pub fn livekit_pid(&self) -> Option<u32> {
         self.livekit.as_ref().and_then(Supervisor::pid)
+    }
+
+    /// Changes of [`Self::livekit_pid`] (restarts); `None` in `external` mode.
+    #[must_use]
+    pub fn livekit_pid_changes(&self) -> Option<watch::Receiver<Option<u32>>> {
+        self.livekit.as_ref().map(Supervisor::pid_changes)
+    }
+
+    /// Who is in the camp and at which campfire — the same snapshots members get on
+    /// `/api/v1/events`. For the server window.
+    #[must_use]
+    pub fn camp_state(&self) -> watch::Receiver<Arc<oc_proto::CampState>> {
+        self.state.clone()
     }
 
     /// Stops accepting connections, waits for the accept loop to end, then stops the
@@ -237,6 +252,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
 
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (events, events_rx) = watch::channel(Arc::new(initial));
+    let state_rx = events_rx.clone();
     let state = api::AppState::new(
         store,
         identity.fingerprint,
@@ -260,6 +276,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         shutdown,
         task,
         livekit: supervisor,
+        state: state_rx,
     })
 }
 
