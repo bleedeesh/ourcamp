@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CampState } from "../engine/camp-api.ts";
 import type { Camp } from "./types.ts";
-import { applyCampState, applyRoster, avatarColor, canMove, moves } from "./roster.ts";
+import { applyCampState, applyRoster, avatarColor, canGovern, canMove, governs, moves } from "./roster.ts";
 
 const member = (id: string, extra = {}) => ({
   id,
@@ -37,6 +37,17 @@ test("moderators and admins move their rank and below; anyone moves themselves",
   assert.equal(canMove(camp, "me", "lena"), false, "a member moves nobody else");
   assert.equal(canMove(camp, "artem", "lena"), true, "the admin does");
   assert.equal(canMove(camp, "artem", "ghost"), false, "unknown people stay put");
+});
+
+test("kicking and silencing reach lower ranks only, never yourself", () => {
+  assert.equal(governs("member", "member"), false);
+  assert.equal(governs("moderator", "member"), true);
+  assert.equal(governs("moderator", "moderator"), false, "moderators do not kick each other");
+  assert.equal(governs("admin", "moderator"), true);
+  assert.equal(governs("admin", "admin"), false, "only the owner kicks an admin");
+  assert.equal(canGovern(camp, "artem", "lena"), true, "the admin over a member");
+  assert.equal(canGovern(camp, "artem", "artem"), false, "not yourself");
+  assert.equal(canGovern(camp, "me", "lena"), false);
 });
 
 test("the joined channel holds exactly the room's members", () => {

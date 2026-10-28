@@ -31,7 +31,7 @@ use std::io;
 use oc_invite::{Fingerprint, Host, Invite, InviteKind, Token};
 use oc_proto::{
     CampInfo, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest, LoginResponse,
-    MoveMember, Role, RoomToken, API_VERSION,
+    MoveMember, Role, RoomToken, SetSilenced, API_VERSION,
 };
 
 pub use device::DeviceKey;
@@ -253,6 +253,35 @@ impl CampClient {
                 &MoveMember {
                     channel_id: channel_id.to_owned(),
                 },
+            )
+            .await
+    }
+
+    /// Kicks someone of a lower rank ([`Role::governs`], ADR-0033); no ban.
+    ///
+    /// # Errors
+    /// [`ErrorCode::Forbidden`], [`ErrorCode::NotFound`], [`ErrorCode::Unauthorized`].
+    pub async fn kick(&self, session: &Session, user_id: &str) -> Result<(), ClientError> {
+        self.http
+            .delete_authorized(&format!("/api/v1/members/{user_id}"), &session.token)
+            .await
+    }
+
+    /// Forbids someone of a lower rank to speak, or lifts it ([`Role::governs`]).
+    ///
+    /// # Errors
+    /// [`ErrorCode::Forbidden`], [`ErrorCode::NotFound`], [`ErrorCode::Unauthorized`].
+    pub async fn set_silenced(
+        &self,
+        session: &Session,
+        user_id: &str,
+        silenced: bool,
+    ) -> Result<(), ClientError> {
+        self.http
+            .put_no_content(
+                &format!("/api/v1/members/{user_id}/silenced"),
+                &session.token,
+                &SetSilenced { silenced },
             )
             .await
     }

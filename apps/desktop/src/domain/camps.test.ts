@@ -61,6 +61,15 @@ class FakeCampApi implements CampApi {
     this.calls.push(`move:${id}:${userId}:${channelId}`);
     return this.failMove ? Promise.reject(new Error(this.failMove)) : Promise.resolve();
   }
+  failModeration: string | null = null;
+  kick(id: string, userId: string): Promise<void> {
+    this.calls.push(`kick:${id}:${userId}`);
+    return this.failModeration ? Promise.reject(new Error(this.failModeration)) : Promise.resolve();
+  }
+  setSilenced(id: string, userId: string, silenced: boolean): Promise<void> {
+    this.calls.push(`silence:${id}:${userId}:${silenced}`);
+    return this.failModeration ? Promise.reject(new Error(this.failModeration)) : Promise.resolve();
+  }
   invite(id: string): Promise<string> {
     this.calls.push(`invite:${id}`);
     return Promise.resolve(LINK);
@@ -406,4 +415,24 @@ test("dragging yourself joins the channel; dragging someone else asks the camp",
   api.failMove = "Для этого нужны права админа или модератора";
   await camps.moveMember("bob", "c1");
   assert.equal(camps.store.get().error, "Для этого нужны права админа или модератора");
+});
+
+test("kicking and silencing go to the camp; a refusal is said", async () => {
+  const { api, camps, voice } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  voice.applyCampState({
+    name: "Вечерний кооп",
+    channels: opened("vk", "Вечерний кооп").channels,
+    members: [{ userId: "bob", name: "Боб", role: "member", silenced: false }],
+    presence: [],
+  });
+  await camps.setSilenced("bob", true);
+  await camps.kick("bob");
+  assert.deepEqual(api.calls.slice(-2), ["silence:vk:bob:true", "kick:vk:bob"]);
+  assert.match(camps.store.get().notice ?? "", /^«Боб» выгнан с сервера/);
+
+  api.failModeration = "Это может только тот, у кого роль выше";
+  await camps.setSilenced("bob", false);
+  assert.equal(camps.store.get().error, "Это может только тот, у кого роль выше");
 });

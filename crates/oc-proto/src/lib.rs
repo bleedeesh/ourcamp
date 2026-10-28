@@ -162,6 +162,21 @@ impl Role {
     pub fn moves(self, target: Role) -> bool {
         self >= Role::Moderator && target <= self
     }
+
+    /// Whether this role may kick or silence someone of `target`'s role (ADR-0033):
+    /// moderators and admins, over lower ranks only — a moderator does not kick a
+    /// moderator, nor an admin an admin; that is the owner's call.
+    #[must_use]
+    pub fn governs(self, target: Role) -> bool {
+        self >= Role::Moderator && target < self
+    }
+}
+
+/// `PUT /api/v1/members/{userId}/silenced` (ADR-0033).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSilenced {
+    /// Forbidden to speak until lifted.
+    pub silenced: bool,
 }
 
 /// `POST /api/v1/members/{userId}/move` (ADR-0029).
@@ -333,6 +348,19 @@ mod tests {
         assert!(Moderator.moves(Member) && Moderator.moves(Moderator));
         assert!(!Moderator.moves(Admin));
         assert!(Admin.moves(Admin) && Admin.moves(Member));
+    }
+
+    #[test]
+    fn kicking_and_silencing_reach_lower_ranks_only() {
+        use Role::{Admin, Member, Moderator};
+        assert!(!Member.governs(Member));
+        assert!(Moderator.governs(Member));
+        assert!(
+            !Moderator.governs(Moderator),
+            "moderators do not kick each other"
+        );
+        assert!(Admin.governs(Moderator) && Admin.governs(Member));
+        assert!(!Admin.governs(Admin), "only the owner kicks an admin");
     }
 
     #[test]

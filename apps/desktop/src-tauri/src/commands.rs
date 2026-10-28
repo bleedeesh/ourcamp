@@ -198,6 +198,27 @@ pub async fn camp_move_member(
     camps(&state)?.move_member(&id, &user_id, &channel_id).await
 }
 
+/// Kicks someone of a lower rank out of the open camp (ADR-0033).
+#[tauri::command]
+pub async fn camp_kick(
+    state: State<'_, CampsState>,
+    id: String,
+    user_id: String,
+) -> Result<(), String> {
+    camps(&state)?.kick(&id, &user_id).await
+}
+
+/// Forbids someone of a lower rank to speak, or lifts it (ADR-0033).
+#[tauri::command]
+pub async fn camp_set_silenced(
+    state: State<'_, CampsState>,
+    id: String,
+    user_id: String,
+    silenced: bool,
+) -> Result<(), String> {
+    camps(&state)?.set_silenced(&id, &user_id, silenced).await
+}
+
 /// The camp's friends link, to copy.
 #[tauri::command]
 pub async fn camp_invite(state: State<'_, CampsState>, id: String) -> Result<String, String> {

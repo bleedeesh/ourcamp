@@ -965,6 +965,97 @@ fn can_publish(token: &str) -> Option<bool> {
         .can_publish
 }
 
+/// ADR-0033: from a client, moderators and admins kick and silence lower ranks only;
+/// LiveKit enforces the silence, the kicked member is told.
+#[tokio::test]
+async fn moderators_kick_and_silence_lower_ranks_from_their_client() {
+    let room: Room = std::sync::Arc::default();
+    let (upstream, calls) = fake_twirp_logged(room.clone()).await;
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let bob = client
+        .login(&DeviceKey::generate(), "Боб", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut lena_events = client.events(&lena).await.unwrap();
+    room.lock().unwrap().push((lena.user_id.clone(), false)); // Лена в голосе, в c0
+    let manager = camp.running.manager();
+    let updates = || {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == "UpdateParticipant")
+            .count()
+    };
+
+    // A member governs nobody.
+    assert_eq!(
+        api_error(client.set_silenced(&bob, &lena.user_id, true).await),
+        ErrorCode::Forbidden
+    );
+    assert_eq!(
+        api_error(client.kick(&bob, &lena.user_id).await),
+        ErrorCode::Forbidden
+    );
+
+    // A moderator silences a member: saved, seen by all, and LiveKit takes the mic down.
+    manager
+        .set_role(&bob.user_id, Role::Moderator)
+        .await
+        .unwrap();
+    client
+        .set_silenced(&bob, &lena.user_id, true)
+        .await
+        .unwrap();
+    state_where(&mut lena_events, |s| {
+        s.members
+            .iter()
+            .any(|m| m.user_id == lena.user_id && m.silenced)
+    })
+    .await;
+    assert_eq!(updates(), 1);
+    client
+        .set_silenced(&bob, &lena.user_id, false)
+        .await
+        .unwrap();
+    assert_eq!(updates(), 2, "lifted in the room too");
+
+    // ...but not another moderator, nor himself.
+    manager
+        .set_role(&lena.user_id, Role::Moderator)
+        .await
+        .unwrap();
+    assert_eq!(
+        api_error(client.set_silenced(&bob, &lena.user_id, true).await),
+        ErrorCode::Forbidden
+    );
+    assert_eq!(
+        api_error(client.kick(&bob, &bob.user_id).await),
+        ErrorCode::Forbidden
+    );
+    assert_eq!(
+        api_error(client.kick(&bob, "nobody").await),
+        ErrorCode::NotFound
+    );
+
+    // An admin kicks a moderator: she is told and gone.
+    manager.set_role(&bob.user_id, Role::Admin).await.unwrap();
+    client.kick(&bob, &lena.user_id).await.unwrap();
+    assert_eq!(
+        next_directive(&mut lena_events).await,
+        Some(oc_proto::CampEvent::Kicked)
+    );
+    assert_eq!(
+        api_error(client.events(&lena).await.map(|_| ())),
+        ErrorCode::Unauthorized
+    );
+}
+
 #[tokio::test]
 async fn moderators_move_people_from_their_client_admins_only_by_admins() {
     let room: Room = std::sync::Arc::default();

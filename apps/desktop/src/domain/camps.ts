@@ -272,6 +272,33 @@ export class CampsController {
     }
   }
 
+  /**
+   * Kicks someone of a lower rank (ADR-0033). The camp's snapshot then drops them from
+   * the tree; here we only say it happened.
+   */
+  async kick(userId: string): Promise<void> {
+    const { currentId } = this.store.get();
+    if (currentId === null) return;
+    const name = this.#voice.store.get().camp.members[userId]?.name ?? "";
+    try {
+      await this.#api.kick(currentId, userId);
+      this.store.patch({ notice: `«${name}» выгнан с сервера. Вернуться можно по приглашению` });
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
+  }
+
+  /** Forbids someone of a lower rank to speak, or lifts it (ADR-0033); the snapshot shows it. */
+  async setSilenced(userId: string, silenced: boolean): Promise<void> {
+    const { currentId } = this.store.get();
+    if (currentId === null) return;
+    try {
+      await this.#api.setSilenced(currentId, userId, silenced);
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
+  }
+
   /** Live state of the open camp (ADR-0021); updates for a camp we already left are dropped. */
   #onLive(live: CampLive): void {
     if (live.campId !== this.store.get().currentId) return;
