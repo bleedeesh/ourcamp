@@ -206,12 +206,17 @@ fn tray(app: &tauri::App) -> tauri::Result<()> {
 /// If Tauri cannot start (no webview runtime), with its own message.
 pub fn run() {
     let app = tauri::Builder::default()
+        // Registered first, as the plugin asks: a second launch only brings this
+        // window back (it may be hidden in the tray) and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let lock = match lock_dir(&data_dir) {
                 Ok(lock) => lock,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    eprintln!("[ourcamp-server] the camp is already open in another window");
+                    eprintln!("[ourcamp-server] this camp is served by another process");
                     std::process::exit(0);
                 }
                 Err(e) => return Err(e.into()),
