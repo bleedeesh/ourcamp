@@ -257,6 +257,14 @@
   flex-shrink: 0;
 }
 
+/* Forbidden by a moderator (ADR-0028), not muted by choice: the icon sits on a badge. */
+.member__state--silenced {
+  box-sizing: content-box;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--danger-soft);
+}
+
 .live-badge {
   height: 20px;
   padding: 0 6px;
@@ -361,6 +369,10 @@
   color: var(--text-muted);
 }
 
+.panel__status[data-warning] {
+  color: #ff8a98; /* --danger lightened to 4.5:1, as in .camp-switcher__offline */
+}
+
 .square-button {
   width: 44px;
   height: 44px;
@@ -376,6 +388,10 @@
 .square-button[data-off] {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.square-button[aria-disabled="true"] {
+  cursor: not-allowed;
 }
 
 .square-button--danger {

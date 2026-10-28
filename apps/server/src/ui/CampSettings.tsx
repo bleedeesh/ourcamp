@@ -6,7 +6,7 @@ import type { ServerApi } from "../api.ts";
 import { MAX_CAMP_NAME, MAX_CHANNEL_NAME, nameProblem, type Channel } from "../status.ts";
 
 /** Runs a change; a refusal shows next to the control instead of being lost. */
-function useAction(): [error: string | null, run: (action: () => Promise<void>) => Promise<boolean>, clear: () => void] {
+export function useAction(): [error: string | null, run: (action: () => Promise<void>) => Promise<boolean>, clear: () => void] {
   const [error, setError] = useState<string | null>(null);
   const run = async (action: () => Promise<void>) => {
     try {

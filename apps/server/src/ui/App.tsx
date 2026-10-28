@@ -5,8 +5,18 @@ import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { copyText } from "@ourcamp/ui/clipboard.ts";
 
 import { isTauri, type ServerApi } from "../api.ts";
-import { crowd, headline, ROLE_LABEL, STARTING, voice, type Member, type Role, type ServerStatus } from "../status.ts";
-import { CampName, Channels } from "./CampSettings.tsx";
+import {
+  crowd,
+  headline,
+  ROLE_LABEL,
+  STARTING,
+  voice,
+  type Channel,
+  type Member,
+  type Role,
+  type ServerStatus,
+} from "../status.ts";
+import { CampName, Channels, useAction } from "./CampSettings.tsx";
 
 function TitleBar() {
   const win = () => (isTauri() ? getCurrentWindow() : null);
@@ -60,14 +70,38 @@ function LinkRow({ label, hint, link }: { label: string; hint: string; link: str
   );
 }
 
-function MemberRow({ member, api }: { member: Member; api: ServerApi }) {
-  const [error, setError] = useState<string | null>(null);
-  const setRole = (role: Role) => {
-    api.setRole(member.userId, role).then(
-      () => setError(null),
-      (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
-    );
+/** A member and the owner's hand on them: role (ADR-0026), move, silence, kick (ADR-0028). */
+function MemberRow({ member, channels, api }: { member: Member; channels: readonly Channel[]; api: ServerApi }) {
+  const [mode, setMode] = useState<"view" | "move" | "kick">("view");
+  const [error, run, clear] = useAction();
+  const back = () => {
+    clear();
+    setMode("view");
   };
+  const act = async (action: () => Promise<void>) => {
+    if (await run(action)) setMode("view");
+  };
+
+  if (mode === "kick") {
+    return (
+      <li className="member member--confirm" role="alertdialog" aria-label={`Выгнать ${member.name}`}>
+        <span className="member__question">
+          Выгнать «{member.name}» с сервера? Вернуться можно по ссылке для друзей.
+        </span>
+        <span className="member__actions">
+          <button type="button" className="small-button small-button--danger" onClick={() => void act(() => api.kick(member.userId))}>
+            Выгнать
+          </button>
+          <button type="button" className="small-button" onClick={back}>
+            Отмена
+          </button>
+        </span>
+        {error && <span className="member__error">{error}</span>}
+      </li>
+    );
+  }
+
+  const targets = channels.filter((c) => c.kind === "voice" && c.id !== member.campfireId);
   return (
     <li className="member">
       <span className="member__avatar" aria-hidden="true">
@@ -84,10 +118,17 @@ function MemberRow({ member, api }: { member: Member; api: ServerApi }) {
           <Icon name="shield" size={14} />
         </span>
       )}
-      {member.campfire !== null && member.micMuted && (
-        <span className="member__muted" title="Микрофон выключен">
+      {member.silenced ? (
+        <span className="member__silenced" title="Говорить запрещено">
           <Icon name="mic" off size={14} />
         </span>
+      ) : (
+        member.campfire !== null &&
+        member.micMuted && (
+          <span className="member__muted" title="Микрофон выключен">
+            <Icon name="mic" off size={14} />
+          </span>
+        )
       )}
       <span className={member.campfire === null ? "member__where" : "member__where member__where--seated"}>
         {member.campfire ?? "не в голосе"}
@@ -96,7 +137,7 @@ function MemberRow({ member, api }: { member: Member; api: ServerApi }) {
         className="member__role"
         aria-label={`Роль: ${member.name}`}
         value={member.role}
-        onChange={(e) => setRole(e.target.value as Role)}
+        onChange={(e) => void run(() => api.setRole(member.userId, e.target.value as Role))}
       >
         {(["member", "moderator", "admin"] as const).map((role) => (
           <option key={role} value={role}>
@@ -104,6 +145,53 @@ function MemberRow({ member, api }: { member: Member; api: ServerApi }) {
           </option>
         ))}
       </select>
+      <span className="member__tools">
+        {member.campfireId !== null && targets.length > 0 && (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label={`Перенести ${member.name} в другой канал`}
+            title="Перенести в другой канал"
+            aria-expanded={mode === "move"}
+            onClick={() => (mode === "move" ? back() : setMode("move"))}
+          >
+            <Icon name="move" size={14} />
+          </button>
+        )}
+        <button
+          type="button"
+          className="icon-button"
+          data-on={member.silenced || undefined}
+          aria-pressed={member.silenced}
+          aria-label={member.silenced ? `Разрешить ${member.name} говорить` : `Запретить ${member.name} говорить`}
+          title={member.silenced ? "Разрешить говорить" : "Запретить говорить"}
+          onClick={() => void run(() => api.setSilenced(member.userId, !member.silenced))}
+        >
+          <Icon name="mic" off={!member.silenced} size={14} />
+        </button>
+        <button
+          type="button"
+          className="icon-button icon-button--danger"
+          aria-label={`Выгнать ${member.name}`}
+          title="Выгнать с сервера"
+          onClick={() => {
+            clear();
+            setMode("kick");
+          }}
+        >
+          <Icon name="kick" size={14} />
+        </button>
+      </span>
+      {mode === "move" && (
+        <span className="member__move" role="group" aria-label={`Куда перенести ${member.name}`}>
+          <span className="member__move-label">Перенести в</span>
+          {targets.map((c) => (
+            <button key={c.id} type="button" className="small-button" onClick={() => void act(() => api.moveMember(member.userId, c.id))}>
+              {c.name}
+            </button>
+          ))}
+        </span>
+      )}
       {error && <span className="member__error">{error}</span>}
     </li>
   );
@@ -158,7 +246,7 @@ export function App({ api }: { api: ServerApi }) {
               <h2 className="members__title">{crowd(status.members)}</h2>
               <ul className="members__list">
                 {status.members.map((m) => (
-                  <MemberRow key={m.userId} member={m} api={api} />
+                  <MemberRow key={m.userId} member={m} channels={status.channels} api={api} />
                 ))}
               </ul>
             </section>

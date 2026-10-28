@@ -98,24 +98,13 @@ impl VoiceRoom {
         if mic_muted {
             track.mute();
         }
-        let options = TrackPublishOptions {
-            source: TrackSource::Microphone,
-            audio_encoding: Some(AudioEncoding {
-                max_bitrate: VOICE_BITRATE,
-            }),
-            // DTX clips the start of phrases; RED + Opus in-band FEC (on by default in
-            // libwebrtc) hide packet loss.
-            dtx: false,
-            red: true,
-            ..TrackPublishOptions::default()
-        };
-        if let Err(e) = room
-            .local_participant()
-            .publish_track(LocalTrack::Audio(track.clone()), options)
-            .await
-        {
-            let _ = room.close().await;
-            return Err(format!("Не удалось включить микрофон в комнате: {e}"));
+        // A silenced member's token comes without publishing (ADR-0028): they listen
+        // only, and the microphone goes up when the right comes back (`handle_events`).
+        if may_publish(&room) {
+            if let Err(e) = publish_mic(&room, &track).await {
+                let _ = room.close().await;
+                return Err(format!("Не удалось включить микрофон в комнате: {e}"));
+            }
         }
 
         // Participants already in the room were announced before we subscribed to
@@ -126,6 +115,7 @@ impl VoiceRoom {
             events,
             host,
             params.playback_rate,
+            track.clone(),
         ));
         Ok(Self {
             room,
@@ -157,6 +147,34 @@ impl VoiceRoom {
         self.events.abort();
         let _ = self.events.await;
     }
+}
+
+/// Whether this participant may publish now: the room token's grant, changed by the
+/// camp when it silences or lifts (ADR-0028). No permission info means the default: yes.
+fn may_publish(room: &Room) -> bool {
+    room.local_participant()
+        .permission()
+        .is_none_or(|p| p.can_publish)
+}
+
+/// Publishes the microphone with the voice settings of ADR-0008.
+async fn publish_mic(room: &Room, track: &LocalAudioTrack) -> Result<(), String> {
+    let options = TrackPublishOptions {
+        source: TrackSource::Microphone,
+        audio_encoding: Some(AudioEncoding {
+            max_bitrate: VOICE_BITRATE,
+        }),
+        // DTX clips the start of phrases; RED + Opus in-band FEC (on by default in
+        // libwebrtc) hide packet loss.
+        dtx: false,
+        red: true,
+        ..TrackPublishOptions::default()
+    };
+    room.local_participant()
+        .publish_track(LocalTrack::Audio(track.clone()), options)
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// Aborts a task when dropped. Tokio's `JoinHandle` only detaches on drop, which
@@ -194,6 +212,7 @@ async fn handle_events(
     mut events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
     host: Arc<dyn RoomHost>,
     playback_rate: u32,
+    mic: LocalAudioTrack,
 ) {
     let mut voices: HashMap<String, AbortOnDrop> = HashMap::new();
     let mut last_members = members(&room);
@@ -234,6 +253,34 @@ async fn handle_events(
             }
             RoomEvent::ParticipantDisconnected(participant) => {
                 stop_voice(&mut voices, &participant.identity().to_string());
+            }
+            // Silenced or lifted (ADR-0028). Taking the right away, LiveKit drops the
+            // microphone on its side but the SDK keeps the publication: we take it down
+            // here too, so that giving the right back can publish it anew.
+            RoomEvent::ParticipantPermissionChanged {
+                participant: Participant::Local(local),
+                permission,
+            } => {
+                let published: Vec<TrackSid> = local
+                    .track_publications()
+                    .values()
+                    .filter(|p| p.source() == TrackSource::Microphone)
+                    .map(LocalTrackPublication::sid)
+                    .collect();
+                if permission.is_none_or(|p| p.can_publish) {
+                    if published.is_empty() {
+                        if let Err(e) = publish_mic(&room, &mic).await {
+                            eprintln!("[oc-voice] microphone back after a lift: {e}");
+                        }
+                    }
+                } else {
+                    for sid in published {
+                        // The track itself keeps running: only the sender goes.
+                        if let Err(e) = local.unpublish_track(&sid).await {
+                            eprintln!("[oc-voice] microphone down on silence: {e}");
+                        }
+                    }
+                }
             }
             RoomEvent::Disconnected { reason } => {
                 eprintln!("[oc-voice] disconnected: {reason:?}");
@@ -399,7 +446,9 @@ mod tests {
                     .expect("presence within 10 s")
                     .expect("stream open")
                     .expect("valid event");
-                let oc_proto::CampEvent::State(state) = event;
+                let oc_proto::CampEvent::State(state) = event else {
+                    continue;
+                };
                 if !state.presence.is_empty() {
                     break state;
                 }
@@ -423,11 +472,61 @@ mod tests {
                     .expect("the seat is freed within 3 s")
                     .expect("stream open")
                     .expect("valid event");
-                let oc_proto::CampEvent::State(state) = event;
+                let oc_proto::CampEvent::State(state) = event else {
+                    continue;
+                };
                 if state.presence.is_empty() {
                     break;
                 }
             }
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
+    /// ADR-0028 against the real LiveKit: silencing takes the microphone down at once
+    /// (`UpdateParticipant`), lifting brings it back without rejoining — the room
+    /// publishes it again on `ParticipantPermissionChanged`.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn silencing_takes_the_mic_down_and_lifting_brings_it_back() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("silence").await;
+            let room = connect(params).await;
+            let mut states = camp.camp_state();
+            // Whether the one person in `c0` publishes an unmuted microphone, once seen.
+            let speaking = |want: bool| {
+                move |s: &Arc<oc_proto::CampState>| {
+                    s.presence
+                        .first()
+                        .and_then(|p| p.members.first())
+                        .is_some_and(|m| m.mic_muted != want)
+                }
+            };
+            let deadline = std::time::Duration::from_secs(10);
+            let me = tokio::time::timeout(deadline, states.wait_for(speaking(true)))
+                .await
+                .expect("speaking within 10 s")
+                .unwrap()
+                .presence[0]
+                .members[0]
+                .user_id
+                .clone();
+
+            let manager = camp.manager();
+            manager.set_silenced(&me, true).await.unwrap();
+            tokio::time::timeout(deadline, states.wait_for(speaking(false)))
+                .await
+                .expect("the microphone is taken down")
+                .unwrap();
+
+            manager.set_silenced(&me, false).await.unwrap();
+            tokio::time::timeout(deadline, states.wait_for(speaking(true)))
+                .await
+                .expect("the microphone is back")
+                .unwrap();
+
+            room.close().await;
             camp.stop().await;
             let _ = std::fs::remove_dir_all(dir);
         });

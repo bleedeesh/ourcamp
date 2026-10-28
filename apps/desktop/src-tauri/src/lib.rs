@@ -21,6 +21,9 @@ use tauri::Manager;
 /// Live camp state for the webview. Must match `CAMP_STATE_EVENT` in
 /// `src/engine/tauri-camp-api.ts`.
 const CAMP_STATE_EVENT: &str = "camp://state";
+/// What the camp asked of this member alone (ADR-0028). Must match
+/// `CAMP_DIRECTIVE_EVENT` in `src/engine/tauri-camp-api.ts`.
+const CAMP_DIRECTIVE_EVENT: &str = "camp://directive";
 
 /// Starts the application. Called from `main.rs` (desktop) and mobile entry points.
 ///
@@ -67,10 +70,16 @@ pub fn run() {
                 eprintln!("[ourcamp] {reason}");
             }
             if let Ok(camps) = &camps {
-                let app = app.handle().clone();
+                let handle = app.handle().clone();
                 camps.set_state_listener(Arc::new(move |live| {
-                    if let Err(e) = tauri::Emitter::emit(&app, CAMP_STATE_EVENT, live) {
+                    if let Err(e) = tauri::Emitter::emit(&handle, CAMP_STATE_EVENT, live) {
                         eprintln!("[ourcamp] camp state event: {e}");
+                    }
+                }));
+                let app = app.handle().clone();
+                camps.set_directive_listener(Arc::new(move |directive| {
+                    if let Err(e) = tauri::Emitter::emit(&app, CAMP_DIRECTIVE_EVENT, directive) {
+                        eprintln!("[ourcamp] camp directive event: {e}");
                     }
                 }));
             }

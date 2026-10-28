@@ -52,6 +52,11 @@ export class DemoCampApi implements CampApi {
     return () => {};
   }
 
+  onDirective(): () => void {
+    // Nobody moderates the demo camp.
+    return () => {};
+  }
+
   #open(): OpenCamp {
     return {
       id: DEMO_ID,

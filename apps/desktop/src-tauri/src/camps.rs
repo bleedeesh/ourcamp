@@ -145,6 +145,7 @@ pub struct Camps {
     saved: Mutex<Saved>,
     /// Where live camp state goes (the app forwards it to the webview).
     listener: Mutex<Option<StateListener>>,
+    directives: Mutex<Option<DirectiveListener>>,
     /// The task following the open camp's events; replaced when another camp opens.
     follower: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
@@ -163,6 +164,23 @@ pub struct CampLive {
 
 /// Receives [`CampLive`] updates.
 pub type StateListener = Arc<dyn Fn(CampLive) + Send + Sync>;
+
+/// What the open camp asked of this member alone (ADR-0028), as sent to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CampDirective {
+    /// Go to this voice channel.
+    Moved { camp_id: String, channel_id: String },
+    /// Removed from the camp; this device has already forgotten it.
+    Kicked { camp_id: String, camp_name: String },
+}
+
+/// Receives [`CampDirective`]s.
+pub type DirectiveListener = Arc<dyn Fn(CampDirective) + Send + Sync>;
 
 /// Reconnect delays for the event stream: 1 s, doubling, at most this.
 const MAX_BACKOFF: Duration = Duration::from_secs(15);
@@ -194,6 +212,7 @@ impl Camps {
             key,
             saved: Mutex::new(saved),
             listener: Mutex::new(None),
+            directives: Mutex::new(None),
             follower: Mutex::new(None),
         })
     }
@@ -443,6 +462,51 @@ impl Camps {
         *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
     }
 
+    /// Where directives go.
+    pub fn set_directive_listener(&self, listener: DirectiveListener) {
+        *self
+            .directives
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(listener);
+    }
+
+    fn direct(&self, directive: CampDirective) {
+        let listener = self
+            .directives
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener(directive);
+        }
+    }
+
+    /// Kicked out of `id` while following it: forget it here (the camp already has) and
+    /// tell the UI. Called from the follower itself, so it detaches rather than aborts.
+    fn kicked(&self, id: &str) {
+        let Ok(camp) = self.camp(id) else { return };
+        if self.lock().current.as_deref() == Some(id) {
+            drop(
+                self.follower
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take(),
+            );
+        }
+        if let Err(e) = self.update(|saved| {
+            saved.camps.retain(|c| c.id != id);
+            if saved.current.as_deref() == Some(id) {
+                saved.current = None;
+            }
+        }) {
+            eprintln!("[ourcamp] kicked from {id}: {e}");
+        }
+        self.direct(CampDirective::Kicked {
+            camp_id: camp.id,
+            camp_name: camp.name,
+        });
+    }
+
     fn notify(&self, live: CampLive) {
         let listener = self
             .listener
@@ -495,6 +559,17 @@ impl Camps {
                                     online: true,
                                     state: Some(state),
                                 });
+                            }
+                            Ok(CampEvent::Moved { channel_id }) => {
+                                self.direct(CampDirective::Moved {
+                                    camp_id: id.clone(),
+                                    channel_id,
+                                });
+                            }
+                            // The camp closes the stream after this: nothing to reconnect to.
+                            Ok(CampEvent::Kicked) => {
+                                self.kicked(&id);
+                                return;
                             }
                             Err(e) => {
                                 eprintln!("[ourcamp] camp events: {}", describe(e));
@@ -797,6 +872,62 @@ mod tests {
             );
 
             camps.forget(&opened.id).unwrap();
+            let _ = fs::remove_dir_all(dir);
+            let _ = fs::remove_dir_all(server_dir);
+        });
+    }
+
+    /// ADR-0028: the owner kicks us while we follow the camp — the UI is told, the camp
+    /// is gone from this device, and the follower stops instead of knocking again.
+    #[test]
+    fn a_kick_reaches_the_ui_and_drops_the_camp_here() {
+        tauri::async_runtime::block_on(async {
+            let (server, server_dir) = camp("kick").await;
+            let dir = temp_dir("kick");
+            let camps = Arc::new(Camps::load(&dir).unwrap());
+            let seen: Arc<Mutex<Vec<CampDirective>>> = Arc::default();
+            let sink = Arc::clone(&seen);
+            camps.set_directive_listener(Arc::new(move |d| sink.lock().unwrap().push(d)));
+            let online = Arc::new(tokio::sync::Notify::new());
+            let ready = Arc::clone(&online);
+            camps.set_state_listener(Arc::new(move |live| {
+                if live.online {
+                    ready.notify_one();
+                }
+            }));
+
+            let opened = camps
+                .join(&server.links.join.to_string(), "Лена")
+                .await
+                .unwrap();
+            camps.follow(&opened.id);
+            tokio::time::timeout(Duration::from_secs(5), online.notified())
+                .await
+                .expect("following");
+
+            server.manager().kick(&opened.me.user_id).await.unwrap();
+            let directive = (0..50).find_map(|_| {
+                let first = seen.lock().unwrap().first().cloned();
+                if first.is_none() {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                first
+            });
+            assert_eq!(
+                directive,
+                Some(CampDirective::Kicked {
+                    camp_id: opened.id.clone(),
+                    camp_name: "Вечерний кооп".into(),
+                })
+            );
+            assert!(camps.list().camps.is_empty());
+            assert_eq!(camps.list().current, None);
+            assert!(
+                camps.follower.lock().unwrap().is_none(),
+                "no reconnecting to a camp that threw us out"
+            );
+
+            server.stop().await;
             let _ = fs::remove_dir_all(dir);
             let _ = fs::remove_dir_all(server_dir);
         });

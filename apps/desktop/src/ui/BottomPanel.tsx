@@ -9,6 +9,9 @@ export function BottomPanel() {
   const speaking = useVoice((s) => s.speaking[s.selfId] === true);
   const micMuted = useVoice((s) => s.micMuted);
   const deafened = useVoice((s) => s.deafened);
+  // A moderator forbade speaking (ADR-0028): the button is locked until lifted.
+  const silenced = self?.silenced === true;
+  const micOff = micMuted || silenced;
 
   return (
     <section className="panel" aria-label="Голос и управление">
@@ -27,20 +30,24 @@ export function BottomPanel() {
       )}
 
       <div className="panel__self">
-        {self && <Avatar member={self} size={32} speaking={speaking && !micMuted} />}
+        {self && <Avatar member={self} size={32} speaking={speaking && !micOff} />}
         <span className="panel__who">
           <span className="panel__name">{self?.name}</span>
-          <span className="panel__status">{channelName !== null ? "В канале" : "В сети"}</span>
+          <span className="panel__status" data-warning={silenced || undefined}>
+            {silenced ? "Говорить запрещено" : channelName !== null ? "В канале" : "В сети"}
+          </span>
         </span>
         <button
           type="button"
           className="square-button"
-          data-off={micMuted || undefined}
-          aria-pressed={micMuted}
-          aria-label={micMuted ? "Включить микрофон" : "Выключить микрофон"}
+          data-off={micOff || undefined}
+          aria-pressed={micOff}
+          aria-disabled={silenced || undefined}
+          aria-label={silenced ? "Микрофон: модератор запретил вам говорить" : micMuted ? "Включить микрофон" : "Выключить микрофон"}
+          title={silenced ? "Модератор запретил вам говорить" : undefined}
           onClick={() => void voice.toggleMic()}
         >
-          <Icon name="mic" off={micMuted} />
+          <Icon name="mic" off={micOff} />
         </button>
         <button
           type="button"

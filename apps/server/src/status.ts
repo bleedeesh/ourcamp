@@ -19,7 +19,11 @@ export interface Member {
   role: Role;
   /** Campfire they sit at; null when not in voice. */
   campfire: string | null;
+  /** Its id, to move them elsewhere (ADR-0028). */
+  campfireId: string | null;
   micMuted: boolean;
+  /** Forbidden to speak until lifted (ADR-0028). */
+  silenced: boolean;
 }
 
 export interface ServerStatus {

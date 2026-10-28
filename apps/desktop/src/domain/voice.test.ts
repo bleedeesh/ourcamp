@@ -11,6 +11,7 @@ const member = (id: string) => ({
   color: "#888",
   micMuted: false,
   deafened: false,
+  silenced: false,
   role: "member" as const,
   streaming: false,
 });
@@ -45,6 +46,20 @@ test("joining passes saved volumes of present members to the engine", async () =
     { userId: "artem", volume: 100, muted: false, micMuted: false },
     { userId: "lena", volume: 150, muted: false, micMuted: false },
   ]);
+});
+
+test("a silenced member's mic button does nothing: the camp forbade speaking", async () => {
+  const { engine, voice } = setup();
+  voice.applyCampState({
+    name: camp.name,
+    channels: [{ id: "lobby", name: "Лобби", kind: "voice", afk: false }],
+    members: [{ userId: "me", name: "me", role: "member", silenced: true }],
+    presence: [],
+  });
+  assert.equal(voice.silenced(), true);
+  await voice.toggleMic();
+  assert.equal(voice.store.get().micMuted, false);
+  assert.deepEqual(engine.calls, []);
 });
 
 test("failed join rolls back and reports the error", async () => {

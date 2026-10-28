@@ -64,14 +64,30 @@ export interface CampApi {
   invite(id: string): Promise<string>;
   /** Live state of the camp opened last (who sits where, profiles); returns an unsubscribe. */
   onLive(listener: (live: CampLive) => void): () => void;
+  /** What the open camp asks of you alone (ADR-0028); returns an unsubscribe. */
+  onDirective(listener: (directive: CampDirective) => void): () => void;
 }
+
+/**
+ * A moderator's word to you alone (ADR-0028), mirrors `camps::CampDirective`. On
+ * `kicked` this device has already forgotten the camp.
+ */
+export type CampDirective =
+  | { readonly type: "moved"; readonly campId: string; readonly channelId: string }
+  | { readonly type: "kicked"; readonly campId: string; readonly campName: string };
 
 /** The camp's live state (ADR-0021, 0026), mirrors `oc_proto::CampState`. */
 export interface CampState {
   /** Renames and channel changes arrive here too. */
   readonly name: string;
   readonly channels: readonly ChannelInfo[];
-  readonly members: ReadonlyArray<{ readonly userId: UserId; readonly name: string; readonly role: Role }>;
+  readonly members: ReadonlyArray<{
+    readonly userId: UserId;
+    readonly name: string;
+    readonly role: Role;
+    /** Forbidden to speak until lifted (ADR-0028). */
+    readonly silenced: boolean;
+  }>;
   readonly presence: ReadonlyArray<{
     readonly channelId: string;
     readonly members: ReadonlyArray<{ readonly userId: UserId; readonly micMuted: boolean }>;

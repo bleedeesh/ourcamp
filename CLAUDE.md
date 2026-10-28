@@ -37,7 +37,7 @@
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
   пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
   `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
-- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v3: участники, роли, костёр AFK — ADR-0025,
+- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v5: участники, роли, костёр AFK — ADR-0025, запрет говорить — ADR-0028,
   сессии), TLS 7780, ссылка для друзей, вход по подписи, роли и каналы v4 (ADR-0026), токены LiveKit (ADR-0017, 0018),
   выход из лагеря `DELETE /api/v1/members/me`.
   `livekit/` — свой LiveKit (`managed` по умолчанию, ADR-0022): ключ в `livekit-keys.json`, конфиг через
@@ -74,8 +74,9 @@
 ## Дальше
 M3: готовы шаги 1–6 (ADR-0014–0025). Порядок дальше — раздел «После проверки M3 Димой» в
 `docs/roadmap.md`: мелочи ✅, управление лагерем в окне ✅ (роли владелец/админ/модератор, название, каналы
-Voice/Chat/AFK, `manage.rs`, ADR-0026); дальше модерация (кик, перенос, mute; затем из клиента для
-админов и модераторов), CLI владельца для headless, шаг 7 (порты), короткие ссылки — M4.
+Voice/Chat/AFK, `manage.rs`, ADR-0026); модерация из окна ✅ (выгнать, перенести, запретить говорить —
+адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); дальше модерация из клиента для
+админов и модераторов, CLI владельца для headless, шаг 7 (порты), короткие ссылки — M4.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

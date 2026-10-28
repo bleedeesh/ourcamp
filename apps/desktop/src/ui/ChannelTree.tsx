@@ -89,7 +89,7 @@ function MemberRow({ userId }: { userId: UserId }) {
         onContextMenu={openMenu}
         aria-label={isSelf ? `${member.name} (вы)` : `${member.name}, громкость ${localMuted ? "заглушен" : `${volume}%`}`}
       >
-        <Avatar member={member} size={24} speaking={speaking && !micMuted && !deafened} />
+        <Avatar member={member} size={24} speaking={speaking && !micMuted && !deafened && !member.silenced} />
         <span className="member__name" data-speaking={speaking || undefined}>
           {member.name}
         </span>
@@ -101,7 +101,9 @@ function MemberRow({ userId }: { userId: UserId }) {
           <span className="member__volume">{localMuted ? <Icon name="speakerOff" size={14} label="Заглушен для вас" /> : `${volume}%`}</span>
         )}
         {member.streaming && <span className="live-badge">LIVE</span>}
-        {deafened ? (
+        {member.silenced ? (
+          <Icon name="mic" off size={15} label="Говорить запрещено" className="member__state member__state--silenced" />
+        ) : deafened ? (
           <Icon name="headphones" off size={15} label="Звук выключен" className="member__state" />
         ) : (
           micMuted && <Icon name="mic" off size={15} label="Микрофон выключен" className="member__state" />

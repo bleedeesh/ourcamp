@@ -151,7 +151,15 @@ export class VoiceController {
     }, () => this.store.patch(previous));
   }
 
+  /** A moderator forbade you to speak (ADR-0028): the mic button stays locked. */
+  silenced(): boolean {
+    const { camp, selfId } = this.store.get();
+    return camp.members[selfId]?.silenced === true;
+  }
+
   async toggleMic(): Promise<void> {
+    // The camp's LiveKit would refuse the microphone anyway; the button says why.
+    if (this.silenced()) return;
     const { micMuted, deafened } = this.store.get();
     if (deafened) {
       // Unmuting while deafened means "I want to talk": undeafen and unmute together.
