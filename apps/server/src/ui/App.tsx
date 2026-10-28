@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { copyText } from "@ourcamp/ui/clipboard.ts";
+import { DragGhost, useDragMove } from "@ourcamp/ui/useDragMove.tsx";
 
 import { isTauri, type ServerApi } from "../api.ts";
 import {
@@ -11,12 +12,11 @@ import {
   ROLE_LABEL,
   STARTING,
   voice,
-  type Channel,
   type Member,
   type Role,
   type ServerStatus,
 } from "../status.ts";
-import { CampName, Channels, useAction } from "./CampSettings.tsx";
+import { CampName, Channels, useAction, type Dragging } from "./CampSettings.tsx";
 
 function TitleBar() {
   const win = () => (isTauri() ? getCurrentWindow() : null);
@@ -70,29 +70,34 @@ function LinkRow({ label, hint, link }: { label: string; hint: string; link: str
   );
 }
 
-/** A member and the owner's hand on them: role (ADR-0026), move, silence, kick (ADR-0028). */
-function MemberRow({ member, channels, api }: { member: Member; channels: readonly Channel[]; api: ServerApi }) {
-  const [mode, setMode] = useState<"view" | "move" | "kick">("view");
+/**
+ * A member and the owner's hand on them: role (ADR-0026), silence and kick (ADR-0028).
+ * Someone in voice can be dragged onto another channel (ADR-0029).
+ */
+function MemberRow({ member, api, drag, grab }: { member: Member; api: ServerApi } & Dragging) {
+  const [kicking, setKicking] = useState(false);
   const [error, run, clear] = useAction();
-  const back = () => {
-    clear();
-    setMode("view");
-  };
-  const act = async (action: () => Promise<void>) => {
-    if (await run(action)) setMode("view");
-  };
 
-  if (mode === "kick") {
+  if (kicking) {
     return (
       <li className="member member--confirm" role="alertdialog" aria-label={`Выгнать ${member.name}`}>
-        <span className="member__question">
-          Выгнать «{member.name}» с сервера? Вернуться можно по ссылке для друзей.
-        </span>
+        <span className="member__question">Выгнать «{member.name}» с сервера? Вернуться можно по ссылке для друзей.</span>
         <span className="member__actions">
-          <button type="button" className="small-button small-button--danger" onClick={() => void act(() => api.kick(member.userId))}>
+          <button
+            type="button"
+            className="small-button small-button--danger"
+            onClick={() => void run(() => api.kick(member.userId)).then((ok) => ok && setKicking(false))}
+          >
             Выгнать
           </button>
-          <button type="button" className="small-button" onClick={back}>
+          <button
+            type="button"
+            className="small-button"
+            onClick={() => {
+              clear();
+              setKicking(false);
+            }}
+          >
             Отмена
           </button>
         </span>
@@ -101,37 +106,52 @@ function MemberRow({ member, channels, api }: { member: Member; channels: readon
     );
   }
 
-  const targets = channels.filter((c) => c.kind === "voice" && c.id !== member.campfireId);
+  const seated = member.campfireId;
+  // Only the person is the handle: the controls on the right stay plain clicks.
+  const handle =
+    seated === null
+      ? {}
+      : {
+          "data-draggable": true,
+          onPointerDown: (e: PointerEvent<HTMLElement>) => {
+            if ((e.target as HTMLElement).closest("button, select")) return;
+            grab({ userId: member.userId, name: member.name, from: seated })(e);
+          },
+        };
   return (
-    <li className="member">
-      <span className="member__avatar" aria-hidden="true">
+    <li className="member" data-dragging={drag?.userId === member.userId || undefined} {...handle}>
+      <span className="avatar" style={{ width: 32, height: 32, fontSize: 13 }} aria-hidden="true">
         {member.name.slice(0, 1).toUpperCase()}
       </span>
-      <span className="member__name">{member.name}</span>
-      {member.role === "admin" && (
-        <span className="member__crown" title="Админ">
-          <Icon name="crown" size={14} />
+      <span className="member__who">
+        <span className="member__line">
+          <span className="member__name">{member.name}</span>
+          {member.role === "admin" && (
+            <span className="member__crown" title="Админ">
+              <Icon name="crown" size={14} />
+            </span>
+          )}
+          {member.role === "moderator" && (
+            <span className="member__shield" title="Модератор">
+              <Icon name="shield" size={14} />
+            </span>
+          )}
+          {member.silenced ? (
+            <span className="member__silenced" title="Говорить запрещено">
+              <Icon name="mic" off size={12} />
+            </span>
+          ) : (
+            member.campfire !== null &&
+            member.micMuted && (
+              <span className="member__muted" title="Микрофон выключен">
+                <Icon name="mic" off size={14} />
+              </span>
+            )
+          )}
         </span>
-      )}
-      {member.role === "moderator" && (
-        <span className="member__shield" title="Модератор">
-          <Icon name="shield" size={14} />
+        <span className={member.campfire === null ? "member__where" : "member__where member__where--seated"}>
+          {member.campfire === null ? "не в голосе" : `в канале «${member.campfire}»`}
         </span>
-      )}
-      {member.silenced ? (
-        <span className="member__silenced" title="Говорить запрещено">
-          <Icon name="mic" off size={14} />
-        </span>
-      ) : (
-        member.campfire !== null &&
-        member.micMuted && (
-          <span className="member__muted" title="Микрофон выключен">
-            <Icon name="mic" off size={14} />
-          </span>
-        )
-      )}
-      <span className={member.campfire === null ? "member__where" : "member__where member__where--seated"}>
-        {member.campfire ?? "не в голосе"}
       </span>
       <select
         className="member__role"
@@ -146,18 +166,6 @@ function MemberRow({ member, channels, api }: { member: Member; channels: readon
         ))}
       </select>
       <span className="member__tools">
-        {member.campfireId !== null && targets.length > 0 && (
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={`Перенести ${member.name} в другой канал`}
-            title="Перенести в другой канал"
-            aria-expanded={mode === "move"}
-            onClick={() => (mode === "move" ? back() : setMode("move"))}
-          >
-            <Icon name="move" size={14} />
-          </button>
-        )}
         <button
           type="button"
           className="icon-button"
@@ -167,7 +175,7 @@ function MemberRow({ member, channels, api }: { member: Member; channels: readon
           title={member.silenced ? "Разрешить говорить" : "Запретить говорить"}
           onClick={() => void run(() => api.setSilenced(member.userId, !member.silenced))}
         >
-          <Icon name="mic" off={!member.silenced} size={14} />
+          <Icon name="mic" off={!member.silenced} size={16} />
         </button>
         <button
           type="button"
@@ -176,22 +184,12 @@ function MemberRow({ member, channels, api }: { member: Member; channels: readon
           title="Выгнать с сервера"
           onClick={() => {
             clear();
-            setMode("kick");
+            setKicking(true);
           }}
         >
-          <Icon name="kick" size={14} />
+          <Icon name="kick" size={16} />
         </button>
       </span>
-      {mode === "move" && (
-        <span className="member__move" role="group" aria-label={`Куда перенести ${member.name}`}>
-          <span className="member__move-label">Перенести в</span>
-          {targets.map((c) => (
-            <button key={c.id} type="button" className="small-button" onClick={() => void act(() => api.moveMember(member.userId, c.id))}>
-              {c.name}
-            </button>
-          ))}
-        </span>
-      )}
       {error && <span className="member__error">{error}</span>}
     </li>
   );
@@ -199,11 +197,16 @@ function MemberRow({ member, channels, api }: { member: Member; channels: readon
 
 export function App({ api }: { api: ServerApi }) {
   const [status, setStatus] = useState<ServerStatus>(STARTING);
+  const [moveError, setMoveError] = useState<string | null>(null);
   useEffect(() => {
     const off = api.onStatus(setStatus);
     void api.status().then(setStatus);
     return off;
   }, [api]);
+  const { drag, grab } = useDragMove((userId, channelId) => {
+    setMoveError(null);
+    api.moveMember(userId, channelId).catch((e: unknown) => setMoveError(e instanceof Error ? e.message : String(e)));
+  });
   const { phase } = status;
 
   return (
@@ -236,22 +239,25 @@ export function App({ api }: { api: ServerApi }) {
 
         {phase.kind === "running" && (
           <>
-            <section className="links">
-              {status.joinLink !== null && (
-                <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте на сервер." link={status.joinLink} />
-              )}
-            </section>
+            {status.joinLink !== null && (
+              <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте на сервер." link={status.joinLink} />
+            )}
 
-            <section className="members">
-              <h2 className="members__title">{crowd(status.members)}</h2>
-              <ul className="members__list">
+            <Channels channels={status.channels} members={status.members} api={api} drag={drag} grab={grab} />
+            {moveError && (
+              <p className="member__error" role="alert">
+                {moveError}
+              </p>
+            )}
+
+            <section className="card">
+              <h2 className="card__title">{crowd(status.members)}</h2>
+              <ul className="list">
                 {status.members.map((m) => (
-                  <MemberRow key={m.userId} member={m} channels={status.channels} api={api} />
+                  <MemberRow key={m.userId} member={m} api={api} drag={drag} grab={grab} />
                 ))}
               </ul>
             </section>
-
-            <Channels channels={status.channels} api={api} />
           </>
         )}
 
@@ -261,6 +267,7 @@ export function App({ api }: { api: ServerApi }) {
           {status.fingerprint !== null && <span className="footer__fp">Отпечаток: {status.fingerprint}</span>}
         </footer>
       </main>
+      <DragGhost drag={drag} />
     </div>
   );
 }

@@ -15,13 +15,13 @@ use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
     login_message, user_id, verify, CampEvent, CampInfo, CampState, Challenge, CurrentInvite,
-    ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse, RoomToken,
-    API_VERSION, PUBLIC_KEY_LEN,
+    ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse, MoveMember,
+    RoomToken, API_VERSION, PUBLIC_KEY_LEN,
 };
 
 use tokio::sync::{broadcast, watch};
 
-use crate::manage::Directive;
+use crate::manage::{Directive, ManageError, Manager};
 use crate::store::{canonical_token, Device, LoginError, Store, StoreResult};
 use crate::LiveKit;
 
@@ -52,26 +52,31 @@ pub struct AppState {
     shutdown: watch::Receiver<bool>,
     /// Events for one member (`moved`, `kicked`; ADR-0028), sent by the manager.
     directives: broadcast::Sender<Directive>,
+    /// Moderation asked by members with the rights (ADR-0029).
+    manager: Manager,
 }
 
 impl AppState {
     /// Everything the handlers need.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        store: Store,
+        store: Arc<Mutex<Store>>,
         fingerprint: Fingerprint,
         livekit: LiveKit,
         livekit_authority: &str,
         events: watch::Receiver<Arc<CampState>>,
         shutdown: watch::Receiver<bool>,
         directives: broadcast::Sender<Directive>,
+        manager: Manager,
     ) -> Self {
         Self {
             livekit_authority: Arc::from(livekit_authority),
             events,
             shutdown,
             directives,
-            store: Arc::new(Mutex::new(store)),
+            manager,
+            store,
             nonces: Arc::default(),
             fingerprint,
             livekit: Arc::new(livekit),
@@ -157,6 +162,7 @@ impl IntoResponse for ApiError {
                 StatusCode::FORBIDDEN
             }
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ErrorCode::NotInVoice => StatusCode::CONFLICT,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(ErrorBody { error: self.0 })).into_response()
@@ -179,6 +185,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/members/me", delete(leave))
+        .route("/api/v1/members/{id}/move", post(move_member))
         .route("/api/v1/channels/{id}/token", post(room_token))
         .route("/api/v1/events", get(events))
         .route("/rtc", any(crate::rtc::proxy))
@@ -328,6 +335,53 @@ async fn leave(State(state): State<AppState>, headers: HeaderMap) -> Result<Stat
     } else {
         Err(ApiError(ErrorCode::Unauthorized))
     }
+}
+
+/// `POST /api/v1/members/{id}/move`: a moderator or admin moves someone sitting in voice
+/// to another campfire; their app joins it (ADR-0029). Members move only themselves — by
+/// joining, which needs no call here.
+async fn move_member(
+    State(state): State<AppState>,
+    Path(target): Path<String>,
+    headers: HeaderMap,
+    body: Result<Json<MoveMember>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(req) = body?;
+    let hash = session_hash(&headers)?;
+    let (actor, target_role) = {
+        let target = target.clone();
+        state
+            .with_store(move |s| {
+                let target_role = s
+                    .members()?
+                    .into_iter()
+                    .find(|m| m.user_id == target)
+                    .map(|m| m.role);
+                Ok((s.session_member(&hash)?, target_role))
+            })
+            .await?
+    };
+    let actor = actor.ok_or(ApiError(ErrorCode::Unauthorized))?;
+    let target_role = target_role.ok_or(ApiError(ErrorCode::NotFound))?;
+    if !actor.role.moves(target_role) {
+        return Err(ApiError(ErrorCode::Forbidden));
+    }
+    state
+        .manager
+        .move_member(&target, &req.channel_id)
+        .await
+        .map_err(|e| {
+            ApiError(match e {
+                ManageError::NotFound => ErrorCode::NotFound,
+                ManageError::NotACampfire => ErrorCode::BadRequest,
+                ManageError::NotInVoice => ErrorCode::NotInVoice,
+                other => {
+                    eprintln!("[oc-server] move: {other}");
+                    ErrorCode::Internal
+                }
+            })
+        })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn room_token(

@@ -966,6 +966,72 @@ fn can_publish(token: &str) -> Option<bool> {
 }
 
 #[tokio::test]
+async fn moderators_move_people_from_their_client_admins_only_by_admins() {
+    let room: Room = std::sync::Arc::default();
+    let (upstream, _calls) = fake_twirp_logged(room.clone()).await;
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let bob = client
+        .login(&DeviceKey::generate(), "Боб", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut lena_events = client.events(&lena).await.unwrap();
+    room.lock().unwrap().push((lena.user_id.clone(), false)); // Лена в голосе, в c0
+    let manager = camp.running.manager();
+    let katka = manager
+        .create_channel("Катка", ChannelKind::Voice)
+        .await
+        .unwrap();
+
+    // ADR-0029: a member may not move others; a moderator may, over
+    // their own rank and below; nobody moves an admin but an admin.
+    assert_eq!(
+        api_error(client.move_member(&bob, &lena.user_id, "c0").await),
+        ErrorCode::Forbidden
+    );
+    manager
+        .set_role(&bob.user_id, oc_proto::Role::Moderator)
+        .await
+        .unwrap();
+    client
+        .move_member(&bob, &lena.user_id, &katka.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        next_directive(&mut lena_events).await,
+        Some(oc_proto::CampEvent::Moved {
+            channel_id: katka.id.clone()
+        })
+    );
+    assert_eq!(
+        api_error(client.move_member(&bob, &bob.user_id, "c0").await),
+        ErrorCode::NotInVoice
+    );
+    assert_eq!(
+        api_error(client.move_member(&bob, &lena.user_id, "c1").await),
+        ErrorCode::BadRequest,
+        "a chat has no voice"
+    );
+    assert_eq!(
+        api_error(client.move_member(&bob, "nobody", "c0").await),
+        ErrorCode::NotFound
+    );
+    manager
+        .set_role(&lena.user_id, oc_proto::Role::Admin)
+        .await
+        .unwrap();
+    assert_eq!(
+        api_error(client.move_member(&bob, &lena.user_id, "c0").await),
+        ErrorCode::Forbidden,
+        "a moderator does not move an admin"
+    );
+}
+
+#[tokio::test]
 async fn moderation_reaches_the_member_and_livekit_enforces_it() {
     let room: Room = std::sync::Arc::default();
     let (upstream, calls) = fake_twirp_logged(room.clone()).await;

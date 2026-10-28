@@ -103,6 +103,7 @@ pub fn run() {
             commands::camp_open,
             commands::camp_leave,
             commands::camp_invite,
+            commands::camp_move_member,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start OurCamp");

@@ -155,6 +155,23 @@ pub enum Role {
     Admin,
 }
 
+impl Role {
+    /// Whether this role may move someone of `target`'s role (ADR-0029): moderators and
+    /// admins, over their own rank and below. The owner (the server window) moves anyone.
+    #[must_use]
+    pub fn moves(self, target: Role) -> bool {
+        self >= Role::Moderator && target <= self
+    }
+}
+
+/// `POST /api/v1/members/{userId}/move` (ADR-0029).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveMember {
+    /// The voice channel to move them to.
+    pub channel_id: String,
+}
+
 /// Successful login.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,6 +295,8 @@ pub enum ErrorCode {
     Unauthorized,
     /// No such resource.
     NotFound,
+    /// Moving someone who is not in voice right now (ADR-0029).
+    NotInVoice,
     /// Server-side failure.
     Internal,
 }
@@ -302,6 +321,18 @@ mod tests {
 
     fn public(key: &Ed25519KeyPair) -> [u8; PUBLIC_KEY_LEN] {
         key.public_key().as_ref().try_into().unwrap()
+    }
+
+    #[test]
+    fn moderators_and_admins_move_their_rank_and_below() {
+        use Role::{Admin, Member, Moderator};
+        assert!(
+            !Member.moves(Member),
+            "members only move themselves, by joining"
+        );
+        assert!(Moderator.moves(Member) && Moderator.moves(Moderator));
+        assert!(!Moderator.moves(Admin));
+        assert!(Admin.moves(Admin) && Admin.moves(Member));
     }
 
     #[test]

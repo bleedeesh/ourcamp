@@ -33,6 +33,10 @@ export class TauriCampApi implements CampApi {
     return invoke("camp_invite", { id });
   }
 
+  moveMember(id: string, userId: string, channelId: string): Promise<void> {
+    return invoke("camp_move_member", { id, userId, channelId });
+  }
+
   onLive(listener: (live: CampLive) => void): () => void {
     return subscribe<CampLive>(CAMP_STATE_EVENT, listener);
   }

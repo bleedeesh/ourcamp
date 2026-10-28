@@ -200,6 +200,29 @@
   padding: 0 0 4px 30px;
 }
 
+/* Dragging people between channels (ADR-0029). */
+.channel {
+  border-radius: var(--radius-m);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  transition:
+    background-color 0.12s,
+    outline-color 0.12s;
+}
+
+.channel[data-drop-target] {
+  background: var(--accent-soft);
+  outline-color: var(--accent);
+}
+
+.member[data-draggable] {
+  touch-action: none;
+}
+
+.member[data-dragging] {
+  opacity: 0.4;
+}
+
 /* ---------- Member row ---------- */
 
 .member {

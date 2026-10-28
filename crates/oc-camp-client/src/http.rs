@@ -107,6 +107,19 @@ impl Client {
             .await
     }
 
+    /// `POST` with a session whose success has no body (`204`).
+    pub(crate) async fn post_no_content(
+        &self,
+        path: &str,
+        bearer: &str,
+        body: &impl Serialize,
+    ) -> Result<(), ClientError> {
+        let body = serde_json::to_vec(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        self.exchange(Method::POST, path, Some(bearer), Bytes::from(body))
+            .await
+            .map(drop)
+    }
+
     /// `DELETE` with a session; success has no body (`204`).
     pub(crate) async fn delete_authorized(
         &self,

@@ -4,13 +4,18 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Theme and pieces shared by the client and the server window (ADR-0023). Shipped as source: each app's Vite compiles it.",
+  "scripts": {
+    "test": "node --experimental-strip-types --test \"src/**/*.test.ts\""
+  },
   "exports": {
     "./tokens.css": "./src/tokens.css",
     "./base.css": "./src/base.css",
     "./Campfire.tsx": "./src/Campfire.tsx",
     "./clipboard.ts": "./src/clipboard.ts",
     "./tauri-events.ts": "./src/tauri-events.ts",
-    "./Icon.tsx": "./src/Icon.tsx"
+    "./Icon.tsx": "./src/Icon.tsx",
+    "./drag.ts": "./src/drag.ts",
+    "./useDragMove.tsx": "./src/useDragMove.tsx"
   },
   "peerDependencies": {
     "react": "^19.2.0",

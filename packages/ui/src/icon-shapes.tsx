@@ -346,17 +346,6 @@ export const ICONS = {
       </>
     ),
   },
-  move: {
-    lucide: "arrow-right-left",
-    stroke: (
-      <>
-        <path d="m16 3 4 4-4 4" />
-        <path d="M20 7H4" />
-        <path d="m8 21-4-4 4-4" />
-        <path d="M4 17h16" />
-      </>
-    ),
-  },
   kick: {
     lucide: "user-x",
     stroke: (
@@ -369,7 +358,7 @@ export const ICONS = {
     ),
     fill: (
       <>
-        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2Z" />
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2z" />
         <circle cx="9" cy="7" r="4" />
       </>
     ),

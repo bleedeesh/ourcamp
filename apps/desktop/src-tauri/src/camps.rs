@@ -421,6 +421,38 @@ impl Camps {
         Ok(invite.to_string())
     }
 
+    /// Moves someone sitting in voice to another campfire; their app joins it. Needs a
+    /// moderator's or admin's rights over them (ADR-0029).
+    ///
+    /// # Errors
+    /// No rights, they left voice, unknown member or channel, unreachable camp.
+    pub async fn move_member(
+        &self,
+        id: &str,
+        user_id: &str,
+        channel_id: &str,
+    ) -> Result<(), CampError> {
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        match client
+            .move_member(&camp.session(), user_id, channel_id)
+            .await
+        {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(&camp, &client).await?;
+                client.move_member(&session, user_id, channel_id).await
+            }
+            other => other,
+        }
+        .map_err(|e| match e {
+            ClientError::Api(ErrorCode::NotFound) => "Этого участника или канала уже нет".into(),
+            ClientError::Api(ErrorCode::BadRequest) => {
+                "Перенести можно только в голосовой канал".into()
+            }
+            other => describe(other),
+        })
+    }
+
     /// Whether `id` is the open camp (the one voice can be in).
     pub fn is_current(&self, id: &str) -> bool {
         self.lock().current.as_deref() == Some(id)
@@ -669,6 +701,7 @@ fn describe(e: ClientError) -> CampError {
             }
             ErrorCode::Unauthorized => "Сессия на сервере истекла",
             ErrorCode::NotFound => "Такого канала на сервере нет",
+            ErrorCode::NotInVoice => "Участник уже вышел из голосового канала",
             ErrorCode::BadRequest => "Сервер не принял данные — проверьте имя (до 32 символов)",
             ErrorCode::Internal => "Ошибка на сервере",
         }

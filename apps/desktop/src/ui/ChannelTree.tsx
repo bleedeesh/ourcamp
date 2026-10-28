@@ -1,22 +1,35 @@
-import type { MouseEvent } from "react";
+import type { MouseEvent, PointerEvent } from "react";
+import { canMove } from "../domain/roster.ts";
 import type { Channel, Member, UserId } from "../domain/types.ts";
 import { DEFAULT_VOLUME } from "../domain/volume.ts";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
+import { DROP_ATTRIBUTE, dropTarget } from "@ourcamp/ui/drag.ts";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
+import { DragGhost, useDragMove, type Drag, type Draggable } from "@ourcamp/ui/useDragMove.tsx";
+import { useCampsController } from "./camps-context.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
+
+/** Dragging people between channels (ADR-0029). */
+interface Dragging {
+  readonly drag: Drag | null;
+  readonly grab: (who: Draggable) => (e: PointerEvent<HTMLElement>) => void;
+}
 
 export function ChannelTree() {
   const channels = useVoice((s) => s.camp.channels);
+  const camps = useCampsController();
+  const { drag, grab } = useDragMove((userId, channelId) => void camps.moveMember(userId, channelId));
   return (
     <nav className="tree" aria-label="Голосовые каналы">
       {channels.map((channel) => (
-        <ChannelNode key={channel.id} channel={channel} />
+        <ChannelNode key={channel.id} channel={channel} drag={drag} grab={grab} />
       ))}
+      <DragGhost drag={drag} />
     </nav>
   );
 }
 
-function ChannelNode({ channel }: { channel: Channel }) {
+function ChannelNode({ channel, drag, grab }: { channel: Channel } & Dragging) {
   const voice = useVoiceController();
   const current = useVoice((s) => s.channelId === channel.id);
   const selfId = useVoice((s) => s.selfId);
@@ -24,7 +37,11 @@ function ChannelNode({ channel }: { channel: Channel }) {
   const lit = memberIds.length > 0;
 
   return (
-    <div className="channel">
+    <div
+      className="channel"
+      {...{ [DROP_ATTRIBUTE]: channel.id }}
+      data-drop-target={(drag !== null && dropTarget(drag.from, drag.over) === channel.id) || undefined}
+    >
       <button
         type="button"
         className="channel__row"
@@ -43,7 +60,7 @@ function ChannelNode({ channel }: { channel: Channel }) {
       {lit && (
         <ul className="channel__members">
           {memberIds.map((id) => (
-            <MemberRow key={id} userId={id} />
+            <MemberRow key={id} userId={id} channelId={channel.id} drag={drag} grab={grab} />
           ))}
         </ul>
       )}
@@ -51,7 +68,7 @@ function ChannelNode({ channel }: { channel: Channel }) {
   );
 }
 
-function MemberRow({ userId }: { userId: UserId }) {
+function MemberRow({ userId, channelId, drag, grab }: { userId: UserId; channelId: string } & Dragging) {
   const voice = useVoiceController();
   const member = useVoice((s) => s.camp.members[userId]);
   const isSelf = useVoice((s) => s.selfId === userId);
@@ -59,6 +76,8 @@ function MemberRow({ userId }: { userId: UserId }) {
   const selfMicMuted = useVoice((s) => s.micMuted);
   const selfDeafened = useVoice((s) => s.deafened);
   const prefs = useVoice((s) => s.prefs[userId]);
+  // Yourself — to change channel; others — with a moderator's rights (ADR-0029).
+  const movable = useVoice((s) => canMove(s.camp, s.selfId, userId));
 
   if (!member) return null;
   const micMuted = isSelf ? selfMicMuted : member.micMuted;
@@ -85,6 +104,9 @@ function MemberRow({ userId }: { userId: UserId }) {
         type="button"
         className="member"
         data-self={isSelf || undefined}
+        data-draggable={movable || undefined}
+        data-dragging={drag?.userId === userId || undefined}
+        onPointerDown={movable ? grab({ userId, name: member.name, from: channelId }) : undefined}
         onClick={openMenu}
         onContextMenu={openMenu}
         aria-label={isSelf ? `${member.name} (вы)` : `${member.name}, громкость ${localMuted ? "заглушен" : `${volume}%`}`}

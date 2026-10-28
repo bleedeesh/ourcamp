@@ -257,6 +257,21 @@ export class CampsController {
     }
   }
 
+  /**
+   * Someone dragged onto another campfire (ADR-0029): yourself — you join it; anyone
+   * else — the camp tells their app to (rights are checked there too).
+   */
+  async moveMember(userId: string, channelId: string): Promise<void> {
+    if (userId === this.#voice.store.get().selfId) return this.#voice.join(channelId);
+    const { currentId } = this.store.get();
+    if (currentId === null) return;
+    try {
+      await this.#api.moveMember(currentId, userId, channelId);
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
+  }
+
   /** Live state of the open camp (ADR-0021); updates for a camp we already left are dropped. */
   #onLive(live: CampLive): void {
     if (live.campId !== this.store.get().currentId) return;

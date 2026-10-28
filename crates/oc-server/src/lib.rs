@@ -262,22 +262,27 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     // Events for one member (ADR-0028); a few in flight at most, so 64 is plenty.
     let (directives, _) = tokio::sync::broadcast::channel(64);
     let state_rx = events_rx.clone();
+    let store = Arc::new(std::sync::Mutex::new(store));
+    let rooms = Arc::new(rooms::RoomService::new(
+        livekit_authority.clone(),
+        livekit.clone(),
+    ));
+    let refresh = Arc::new(tokio::sync::Notify::new());
+    let manager = Manager::new(
+        Arc::clone(&store),
+        Arc::clone(&rooms),
+        Arc::clone(&refresh),
+        directives.clone(),
+    );
     let state = api::AppState::new(
         store,
         identity.fingerprint,
-        livekit.clone(),
+        livekit,
         &livekit_authority,
         events_rx,
         shutdown_rx.clone(),
-        directives.clone(),
-    );
-    let rooms = Arc::new(rooms::RoomService::new(livekit_authority.clone(), livekit));
-    let refresh = Arc::new(tokio::sync::Notify::new());
-    let manager = Manager::new(
-        state.store_handle(),
-        Arc::clone(&rooms),
-        Arc::clone(&refresh),
         directives,
+        manager.clone(),
     );
     tokio::spawn(presence::run(
         state.store_handle(),

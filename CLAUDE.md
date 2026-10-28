@@ -57,7 +57,7 @@
 - `apps/server` — окно сервера лагеря (Tauri, ADR-0023, `pnpm server:window`): `oc-server` в процессе,
   снимок `ServerStatus` (`src-tauri/src/status.rs`) → событие `server://status`; трей, крестик прячет окно.
   UI — `src/ui/App.tsx`, тексты в `src/status.ts` (тесты). Вёрстка в браузере — `server-ui` (порт 5175).
-- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`,
+- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`, `useDragMove.tsx` (перетаскивание людей по каналам, ADR-0029),
   `tauri-events.ts` (исходниками, компилирует Vite приложения).
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав
@@ -75,8 +75,8 @@
 M3: готовы шаги 1–6 (ADR-0014–0025). Порядок дальше — раздел «После проверки M3 Димой» в
 `docs/roadmap.md`: мелочи ✅, управление лагерем в окне ✅ (роли владелец/админ/модератор, название, каналы
 Voice/Chat/AFK, `manage.rs`, ADR-0026); модерация из окна ✅ (выгнать, перенести, запретить говорить —
-адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); дальше модерация из клиента для
-админов и модераторов, CLI владельца для headless, шаг 7 (порты), короткие ссылки — M4.
+адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); перенос перетаскиванием в окне и клиенте ✅ (`useDragMove`, `POST /members/{id}/move`, ADR-0029); дальше
+выгнать и запретить говорить из клиента для админов и модераторов, CLI владельца для headless, шаг 7 (порты), короткие ссылки — M4.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

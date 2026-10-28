@@ -187,6 +187,17 @@ pub async fn camp_leave(
     camps.leave(&id).await
 }
 
+/// Moves someone sitting in voice to another campfire of the open camp (ADR-0029).
+#[tauri::command]
+pub async fn camp_move_member(
+    state: State<'_, CampsState>,
+    id: String,
+    user_id: String,
+    channel_id: String,
+) -> Result<(), String> {
+    camps(&state)?.move_member(&id, &user_id, &channel_id).await
+}
+
 /// The camp's friends link, to copy.
 #[tauri::command]
 pub async fn camp_invite(state: State<'_, CampsState>, id: String) -> Result<String, String> {

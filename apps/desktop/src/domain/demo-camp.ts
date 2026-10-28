@@ -24,7 +24,7 @@ export const DEMO_CAMP: Camp = {
   short: "ВК",
   color: "#8E44AD",
   members: {
-    dima: m("dima", "Дима", "#4FC3F7"),
+    dima: m("dima", "Дима", "#4FC3F7", { role: "admin" }),
     artem: m("artem", "Артём", "#6C8CFF", { role: "admin" }),
     lena: m("lena", "Лена", "#F2A65A", { streaming: true, role: "moderator" }),
     max: m("max", "Макс", "#C792EA", { micMuted: true }),

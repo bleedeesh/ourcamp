@@ -56,6 +56,11 @@ class FakeCampApi implements CampApi {
     this.list_ = { ...this.list_, camps, current: this.list_.current === id ? null : this.list_.current };
     return Promise.resolve(this.leaveTold);
   }
+  failMove: string | null = null;
+  moveMember(id: string, userId: string, channelId: string): Promise<void> {
+    this.calls.push(`move:${id}:${userId}:${channelId}`);
+    return this.failMove ? Promise.reject(new Error(this.failMove)) : Promise.resolve();
+  }
   invite(id: string): Promise<string> {
     this.calls.push(`invite:${id}`);
     return Promise.resolve(LINK);
@@ -385,4 +390,20 @@ test("a kick takes you out of voice and the camp, and says so", async () => {
   api.emitDirective({ type: "kicked", campId: "own", campName: "Свой" });
   await settle();
   assert.equal(camps.store.get().view, "empty", "no camps left");
+});
+
+test("dragging yourself joins the channel; dragging someone else asks the camp", async () => {
+  const { api, camps, engine, voice } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  await voice.join("c0");
+  await camps.moveMember("me", "c1");
+  assert.equal(voice.store.get().channelId, "c1");
+  assert.deepEqual(engine.calls.slice(-1), ["join:c1"]);
+
+  await camps.moveMember("bob", "c0");
+  assert.deepEqual(api.calls.slice(-1), ["move:vk:bob:c0"]);
+  api.failMove = "Для этого нужны права админа или модератора";
+  await camps.moveMember("bob", "c1");
+  assert.equal(camps.store.get().error, "Для этого нужны права админа или модератора");
 });

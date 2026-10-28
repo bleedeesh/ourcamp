@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CampState } from "../engine/camp-api.ts";
 import type { Camp } from "./types.ts";
-import { applyCampState, applyRoster, avatarColor } from "./roster.ts";
+import { applyCampState, applyRoster, avatarColor, canMove, moves } from "./roster.ts";
 
 const member = (id: string, extra = {}) => ({
   id,
@@ -27,6 +27,17 @@ const camp: Camp = {
   ],
   members: { me: member("me"), artem: member("artem", { role: "admin" as const }), lena: member("lena"), olya: member("olya") },
 };
+
+test("moderators and admins move their rank and below; anyone moves themselves", () => {
+  assert.equal(moves("member", "member"), false);
+  assert.equal(moves("moderator", "moderator"), true);
+  assert.equal(moves("moderator", "admin"), false);
+  assert.equal(moves("admin", "admin"), true);
+  assert.equal(canMove(camp, "me", "me"), true, "yourself: just a join");
+  assert.equal(canMove(camp, "me", "lena"), false, "a member moves nobody else");
+  assert.equal(canMove(camp, "artem", "lena"), true, "the admin does");
+  assert.equal(canMove(camp, "artem", "ghost"), false, "unknown people stay put");
+});
 
 test("the joined channel holds exactly the room's members", () => {
   const next = applyRoster(camp, "lobby", {
