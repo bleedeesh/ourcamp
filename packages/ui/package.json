@@ -7,12 +7,16 @@
   "exports": {
     "./tokens.css": "./src/tokens.css",
     "./base.css": "./src/base.css",
-    "./Campfire.tsx": "./src/Campfire.tsx"
+    "./Campfire.tsx": "./src/Campfire.tsx",
+    "./clipboard.ts": "./src/clipboard.ts",
+    "./tauri-events.ts": "./src/tauri-events.ts"
   },
   "peerDependencies": {
-    "react": "^19.2.0"
+    "react": "^19.2.0",
+    "@tauri-apps/api": "^2.8.0"
   },
   "devDependencies": {
-    "@types/react": "^19.2.0"
+    "@types/react": "^19.2.0",
+    "@tauri-apps/api": "^2.8.0"
   }
 }

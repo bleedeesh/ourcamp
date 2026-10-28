@@ -20,7 +20,7 @@ import { DemoCampApi } from "./engine/demo-camp-api.ts";
 import { DemoEngine } from "./engine/demo-engine.ts";
 import { TauriCampApi } from "./engine/tauri-camp-api.ts";
 import { isTauri, TauriEngine } from "./engine/tauri-engine.ts";
-import { copyText } from "./lib/clipboard.ts";
+import { copyText } from "@ourcamp/ui/clipboard.ts";
 import { App } from "./ui/App.tsx";
 import { CampsProvider } from "./ui/camps-context.tsx";
 import { VoiceProvider } from "./ui/voice-context.tsx";

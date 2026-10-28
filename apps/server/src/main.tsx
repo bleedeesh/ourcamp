@@ -9,23 +9,18 @@ import "@fontsource/nunito/800.css";
 import "@fontsource/fredoka/600.css";
 import "@ourcamp/ui/tokens.css";
 import "@ourcamp/ui/base.css";
+import "./styles/server.css";
 
-import { Campfire } from "@ourcamp/ui/Campfire.tsx";
+import { DemoServerApi, isTauri, TauriServerApi } from "./api.ts";
+import { App } from "./ui/App.tsx";
 
-// The full window (status, links, members, tray) arrives later in M3 step 6.
-function App() {
-  return (
-    <main style={{ display: "grid", placeItems: "center", height: "100%" }}>
-      <Campfire size={64} />
-    </main>
-  );
-}
+const api = isTauri() ? new TauriServerApi() : new DemoServerApi();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root element missing from index.html");
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <App api={api} />
   </StrictMode>,
 );

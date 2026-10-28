@@ -106,6 +106,9 @@ importers:
         specifier: ^19.2.0
         version: 19.3.1
     devDependencies:
+      '@tauri-apps/api':
+        specifier: ^2.8.0
+        version: 2.12.4
       '@types/react':
         specifier: ^19.2.0
         version: 19.3.0
