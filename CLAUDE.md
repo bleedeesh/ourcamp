@@ -51,6 +51,11 @@
   Присутствие и роли: `Camps::follow` → `/api/v1/events` → `camp://state` (ADR-0021).
   Синхронные вызовы LiveKit SDK — только внутри `runtime.enter()` (команды Tauri без
   `async` идут на UI-потоке без tokio). Тесты с сервером — `#[ignore]`, нужен `pnpm livekit`.
+- `apps/server` — окно сервера лагеря (Tauri, ADR-0023, `pnpm server:window`): `oc-server` в процессе,
+  снимок `ServerStatus` (`src-tauri/src/status.rs`) → событие `server://status`; трей, крестик прячет окно.
+  UI — `src/ui/App.tsx`, тексты в `src/status.ts` (тесты). Вёрстка в браузере — `server-ui` (порт 5175).
+- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `clipboard.ts`,
+  `tauri-events.ts` (исходниками, компилирует Vite приложения).
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав
   костра из движка (`domain/roster.ts`), 39 тестов. Вёрстку смотреть в браузере: `.claude/launch.json`
@@ -64,8 +69,8 @@
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — по шагам из `docs/roadmap.md` (ADR-0014–0022). Готовы шаги 1–5 (лагерь в приложении, присутствие
-во всех кострах, свой LiveKit); дальше шаг 6 — окно сервера (Tauri: статус, ссылки, трей).
+M3 — по шагам из `docs/roadmap.md` (ADR-0014–0023). Готовы шаги 1–5; шаг 6 (окно сервера, ADR-0023) — в ветке `m3-server-window`:
+осталась проверка вживую.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

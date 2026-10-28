@@ -1,6 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isTauri } from "../engine/tauri-engine.ts";
-import { Campfire } from "./Campfire.tsx";
+import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { Icon } from "./icons.tsx";
 
 /**

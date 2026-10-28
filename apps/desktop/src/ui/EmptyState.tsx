@@ -1,4 +1,4 @@
-import { Campfire } from "./Campfire.tsx";
+import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { Icon } from "./icons.tsx";
 import { useCampsController } from "./camps-context.tsx";
 

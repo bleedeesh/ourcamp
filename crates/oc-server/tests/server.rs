@@ -744,3 +744,31 @@ async fn stopping_the_camp_closes_event_streams_at_once() {
     assert!(closed.is_none(), "a clean close, got {closed:?}");
     drop(hung);
 }
+
+// ---- step 6: what the server window reads ----
+
+#[tokio::test]
+async fn the_host_sees_the_camp_state_without_a_client() {
+    let camp = Camp::start().await;
+    let mut state = camp.running.camp_state();
+    assert!(state.borrow().members.is_empty(), "a fresh camp");
+    let session = camp
+        .client()
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let seen = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.wait_for(|s| s.members.iter().any(|m| m.user_id == session.user_id)),
+    )
+    .await
+    .expect("the next snapshot has her")
+    .is_ok();
+    assert!(seen);
+    assert_eq!(
+        camp.running.livekit_pid_changes().map(|_| ()),
+        None,
+        "external mode"
+    );
+    camp.stop().await;
+}

@@ -8,6 +8,7 @@ members = [
     "crates/oc-camp-client",
     "crates/oc-server",
     "apps/desktop/src-tauri",
+    "apps/server/src-tauri",
 ]
 # `cargo test` / `cargo clippy` at the root build only the platform-independent crates.
 # The Tauri app needs the native webview toolchain, so it is built explicitly

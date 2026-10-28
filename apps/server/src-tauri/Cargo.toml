@@ -1,0 +1,31 @@
+[package]
+name = "ourcamp-server-app"
+version = "0.1.0"
+description = "OurCamp Server window: the camp of oc-server with status, links and who is in (ADR-0023)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+# `_lib` suffix avoids a name clash with the binary on Windows (cargo#8519).
+name = "ourcamp_server_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+# A second launch shows the running window instead of starting a second camp.
+tauri-plugin-single-instance = "2"
+# The tray copies the friends link while the window may be hidden (no focused page).
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+oc-server = { path = "../../../crates/oc-server" }
+oc-proto = { path = "../../../crates/oc-proto" }
+oc-invite = { path = "../../../crates/oc-invite" }
+tokio = { version = "1", features = ["sync"] }
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UserId } from "../domain/types.ts";
 import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
-import { subscribe } from "./tauri-events.ts";
+import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 
 /** Event emitted by `src-tauri/src/levels.rs`. */
 const LEVELS_EVENT = "voice://levels";

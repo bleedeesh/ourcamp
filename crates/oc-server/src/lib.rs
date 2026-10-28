@@ -142,10 +142,14 @@ pub struct Running {
     pub fingerprint: Fingerprint,
     /// Links to hand out.
     pub links: Links,
+    /// Name and campfires, as at start (the server window labels presence with them).
+    pub camp: store::Camp,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
     /// `Some` in `managed` mode.
     livekit: Option<Supervisor>,
+    /// The snapshot clients get on `/api/v1/events` (ADR-0021).
+    state: watch::Receiver<Arc<oc_proto::CampState>>,
 }
 
 impl Running {
@@ -154,6 +158,19 @@ impl Running {
     #[must_use]
     pub fn livekit_pid(&self) -> Option<u32> {
         self.livekit.as_ref().and_then(Supervisor::pid)
+    }
+
+    /// Changes of [`Self::livekit_pid`] (restarts); `None` in `external` mode.
+    #[must_use]
+    pub fn livekit_pid_changes(&self) -> Option<watch::Receiver<Option<u32>>> {
+        self.livekit.as_ref().map(Supervisor::pid_changes)
+    }
+
+    /// Who is in the camp and at which campfire — the same snapshots members get on
+    /// `/api/v1/events`. For the server window.
+    #[must_use]
+    pub fn camp_state(&self) -> watch::Receiver<Arc<oc_proto::CampState>> {
+        self.state.clone()
     }
 
     /// Stops accepting connections, waits for the accept loop to end, then stops the
@@ -219,6 +236,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
             .map_err(StartError::Store)?
             .map(|t| link(InviteKind::ClaimAdmin, t)),
     };
+    let camp = store.camp().map_err(StartError::Store)?;
 
     // Last of all: nothing after it can fail for a managed LiveKit (whose address is
     // ours), so a started one is never left behind.
@@ -237,6 +255,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
 
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (events, events_rx) = watch::channel(Arc::new(initial));
+    let state_rx = events_rx.clone();
     let state = api::AppState::new(
         store,
         identity.fingerprint,
@@ -257,10 +276,29 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         local_addr,
         fingerprint: identity.fingerprint,
         links,
+        camp,
         shutdown,
         task,
         livekit: supervisor,
+        state: state_rx,
     })
+}
+
+/// This machine's LAN address — the default for links. It is the source address the OS
+/// would pick to reach the internet; `connect` on UDP only selects a route, no packet
+/// is sent. Falls back to loopback without a network.
+#[must_use]
+pub fn lan_address() -> Host {
+    let ip = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|s| {
+            s.connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 9))?; // TEST-NET-1, never routed
+            s.local_addr()
+        })
+        .map(|a| a.ip());
+    match ip {
+        Ok(std::net::IpAddr::V4(v4)) if !v4.is_unspecified() => Host::Ipv4(v4),
+        _ => Host::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+    }
 }
 
 /// `ws://host:port[/]` → `host:port`. Plain `ws` only: LiveKit sits next to the server;
