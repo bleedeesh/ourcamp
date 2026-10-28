@@ -751,3 +751,31 @@ async fn with_livekit_down_the_camp_still_streams_its_members() {
     assert_eq!(state.presence, []);
     camp.stop().await;
 }
+
+#[tokio::test]
+async fn stopping_the_camp_closes_event_streams_at_once() {
+    // LiveKit that accepts and never answers: a poll round hangs until its timeout, and
+    // stopping must not wait for it (on Windows a refused connect alone takes ~2 s).
+    let hung = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let camp = camp_with_upstream(&format!("ws://{}", hung.local_addr().unwrap())).await;
+    let client = camp.client();
+    let session = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut events = client.events(&session).await.unwrap();
+    let first = events.next().await.unwrap().unwrap();
+    let oc_proto::CampEvent::State(first) = first;
+    assert_eq!(
+        first.presence,
+        [],
+        "the first snapshot comes without LiveKit"
+    );
+
+    camp.stop().await;
+    let closed = tokio::time::timeout(std::time::Duration::from_millis(500), events.next())
+        .await
+        .expect("closed promptly, not after a poll round");
+    assert!(closed.is_none(), "a clean close, got {closed:?}");
+    drop(hung);
+}

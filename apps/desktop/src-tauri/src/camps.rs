@@ -600,9 +600,13 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    /// A camp server in this process (no LiveKit needed: nothing here connects voice).
+    /// A camp server in this process. Its LiveKit is a port nobody listens on: nothing
+    /// here connects voice, and results must not depend on a dev LiveKit being up.
     async fn camp(name: &str) -> (oc_server::Running, PathBuf) {
         let dir = temp_dir(&format!("server-{name}"));
+        let free = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let livekit = format!("ws://{}", free.local_addr().unwrap());
+        drop(free);
         let running = oc_server::start(oc_server::Config {
             data_dir: dir.clone(),
             bind: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
@@ -610,7 +614,7 @@ mod tests {
             public_port: None,
             camp_name: "Вечерний кооп".into(),
             livekit: oc_server::LiveKit {
-                url: "ws://127.0.0.1:7880".into(),
+                url: livekit,
                 api_key: "devkey".into(),
                 api_secret: "secret".into(),
             },

@@ -144,13 +144,14 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     let data_dir = config.data_dir.clone();
     let camp_name = config.camp_name.clone();
     // Disk I/O and key generation: off the async workers.
-    let (store, identity) = tokio::task::spawn_blocking(move || {
+    let (store, identity, initial) = tokio::task::spawn_blocking(move || {
         std::fs::create_dir_all(&data_dir).map_err(StartError::Identity)?;
         let store =
             Store::open(&data_dir.join("camp.db"), &camp_name).map_err(StartError::Store)?;
         let identity =
             Identity::load_or_create(&data_dir.join("tls")).map_err(StartError::Identity)?;
-        Ok::<_, StartError>((store, identity))
+        let initial = presence::initial(&store).map_err(StartError::Store)?;
+        Ok::<_, StartError>((store, identity, initial))
     })
     .await
     .expect("startup task panicked")?;
@@ -182,13 +183,14 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     };
 
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let (events, events_rx) = watch::channel(Arc::default());
+    let (events, events_rx) = watch::channel(Arc::new(initial));
     let state = api::AppState::new(
         store,
         identity.fingerprint,
         config.livekit.clone(),
         &livekit_authority,
         events_rx,
+        shutdown_rx.clone(),
     );
     tokio::spawn(presence::run(
         state.store_handle(),

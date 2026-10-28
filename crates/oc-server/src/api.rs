@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -47,6 +47,8 @@ pub struct AppState {
     livekit_authority: Arc<str>,
     /// Latest camp snapshot (ADR-0021), streamed by `/api/v1/events`.
     events: watch::Receiver<Arc<CampState>>,
+    /// Turns true when the server stops; open event streams close on it.
+    shutdown: watch::Receiver<bool>,
 }
 
 impl AppState {
@@ -58,10 +60,12 @@ impl AppState {
         livekit: LiveKit,
         livekit_authority: &str,
         events: watch::Receiver<Arc<CampState>>,
+        shutdown: watch::Receiver<bool>,
     ) -> Self {
         Self {
             livekit_authority: Arc::from(livekit_authority),
             events,
+            shutdown,
             store: Arc::new(Mutex::new(store)),
             nonces: Arc::default(),
             fingerprint,
@@ -356,10 +360,21 @@ async fn events(
         .await?
         .ok_or(ApiError(ErrorCode::Unauthorized))?;
     let events = state.events.clone();
-    Ok(upgrade.on_upgrade(move |socket| stream_events(socket, events)))
+    let shutdown = state.shutdown.clone();
+    Ok(upgrade.on_upgrade(move |socket| stream_events(socket, events, shutdown)))
 }
 
-async fn stream_events(mut socket: WebSocket, mut events: watch::Receiver<Arc<CampState>>) {
+async fn stream_events(
+    mut socket: WebSocket,
+    mut events: watch::Receiver<Arc<CampState>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    // `wait_for` hands back a read guard (`watch::Ref`, not `Send`); drop it right away
+    // so it is not held across the `await` that sends the close frame.
+    let stopping = async move {
+        let _ = shutdown.wait_for(|&stopping| stopping).await;
+    };
+    tokio::pin!(stopping);
     let send = |state: &CampState| {
         serde_json::to_string(&CampEvent::State(state.clone()))
             .map(|json| Message::Text(json.into()))
@@ -375,7 +390,7 @@ async fn stream_events(mut socket: WebSocket, mut events: watch::Receiver<Arc<Ca
         tokio::select! {
             changed = events.changed() => {
                 if changed.is_err() {
-                    return; // server shutting down
+                    break; // the poller is gone: the server is stopping
                 }
                 let Ok(message) = send(&events.borrow_and_update()) else { return };
                 if socket.send(message).await.is_err() {
@@ -387,6 +402,7 @@ async fn stream_events(mut socket: WebSocket, mut events: watch::Receiver<Arc<Ca
                 Some(Ok(Message::Close(_)) | Err(_)) | None => return,
                 Some(Ok(_)) => {}
             },
+            () = &mut stopping => break,
             _ = ping.tick() => {
                 if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
                     return;
@@ -394,4 +410,11 @@ async fn stream_events(mut socket: WebSocket, mut events: watch::Receiver<Arc<Ca
             }
         }
     }
+    // Stopping says so at once instead of leaving clients to notice a dead connection:
+    // they show the camp as offline right away.
+    let close = CloseFrame {
+        code: close_code::AWAY,
+        reason: "camp server stopping".into(),
+    };
+    let _ = socket.send(Message::Close(Some(close))).await;
 }

@@ -22,7 +22,7 @@ use serde::Deserialize;
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
-use crate::store::Store;
+use crate::store::{Store, StoreResult};
 use crate::LiveKit;
 
 /// How often LiveKit is asked. Joins and leaves show up within this.
@@ -154,13 +154,19 @@ impl LiveKitApi {
     }
 }
 
+/// The snapshot to start with: members from the database, nobody at any campfire yet.
+/// Published before LiveKit is first asked, so members show up even while it is slow.
+pub fn initial(store: &Store) -> StoreResult<CampState> {
+    snapshot(store, &HashMap::new())
+}
+
 /// Builds the snapshot clients see: members from the database, presence from LiveKit
 /// restricted to this camp's channels and members, in channel order.
-fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> Result<CampState, String> {
-    let members = store.members().map_err(|e| e.to_string())?;
+fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreResult<CampState> {
+    let members = store.members()?;
     let known: std::collections::HashSet<&str> =
         members.iter().map(|m| m.user_id.as_str()).collect();
-    let channels = store.camp().map_err(|e| e.to_string())?.channels;
+    let channels = store.camp()?.channels;
     let presence = channels
         .iter()
         .filter_map(|channel| {
@@ -205,7 +211,12 @@ pub async fn run(
             _ = tick.tick() => {}
             _ = shutdown.changed() => return,
         }
-        let rooms = match api.presence().await {
+        // A round can take up to `CALL_TIMEOUT` per call; stopping must not wait for it.
+        let polled = tokio::select! {
+            polled = api.presence() => polled,
+            _ = shutdown.changed() => return,
+        };
+        let rooms = match polled {
             Ok(rooms) => {
                 if livekit_down {
                     eprintln!("[oc-server] LiveKit reachable again");
