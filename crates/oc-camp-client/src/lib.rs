@@ -21,6 +21,7 @@
 //! ```
 
 mod device;
+mod events;
 mod http;
 pub mod transport;
 
@@ -34,6 +35,7 @@ use oc_proto::{
 };
 
 pub use device::DeviceKey;
+pub use events::CampEvents;
 
 /// Why a camp request failed.
 #[derive(Debug)]
@@ -191,6 +193,14 @@ impl CampClient {
     pub fn voice_url(&self) -> String {
         transport::pin(&self.http.authority, self.fingerprint);
         format!("wss://{}", self.http.authority)
+    }
+
+    /// Live camp state (members, who is at which campfire) until dropped (ADR-0021).
+    ///
+    /// # Errors
+    /// [`ErrorCode::Unauthorized`] for an expired session; network/TLS errors.
+    pub async fn events(&self, session: &Session) -> Result<CampEvents, ClientError> {
+        CampEvents::connect(&self.http.authority, self.fingerprint, &session.token).await
     }
 
     /// The camp's current friends link, for "copy invite".

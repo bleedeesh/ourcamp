@@ -1,6 +1,7 @@
 import { createStore, type Store } from "../lib/store.ts";
 import type { MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
-import { applyRoster } from "./roster.ts";
+import type { CampState } from "../engine/camp-api.ts";
+import { applyCampState, applyRoster } from "./roster.ts";
 import type { Camp, UserId } from "./types.ts";
 import type { VolumeBook, VolumePrefs } from "./volume.ts";
 
@@ -41,6 +42,7 @@ export class VoiceController {
   #micBeforeDeafen = false;
   #unsubscribeLevels: (() => void) | null = null;
   #unsubscribeParticipants: (() => void) | null = null;
+  #unsubscribeDisconnected: (() => void) | null = null;
   /** Members whose saved volume the engine already has for the current channel. */
   #volumesSent = new Set<UserId>();
 
@@ -64,6 +66,7 @@ export class VoiceController {
   start(): void {
     this.#unsubscribeLevels ??= this.#engine.onLevels((levels) => this.#applyLevels(levels));
     this.#unsubscribeParticipants ??= this.#engine.onParticipants((update) => this.#applyParticipants(update));
+    this.#unsubscribeDisconnected ??= this.#engine.onDisconnected((reason) => this.#onDisconnected(reason));
   }
 
   dispose(): void {
@@ -71,6 +74,8 @@ export class VoiceController {
     this.#unsubscribeLevels = null;
     this.#unsubscribeParticipants?.();
     this.#unsubscribeParticipants = null;
+    this.#unsubscribeDisconnected?.();
+    this.#unsubscribeDisconnected = null;
   }
 
   /** Switches to another camp: leaves the current campfire first. */
@@ -193,6 +198,18 @@ export class VoiceController {
 
   #setPrefs(userId: UserId, prefs: VolumePrefs): void {
     this.store.update((s) => ({ ...s, prefs: { ...s.prefs, [userId]: prefs } }));
+  }
+
+  /** The camp server's snapshot: who sits where, names and crowns (ADR-0021). */
+  applyCampState(state: CampState): void {
+    const { camp, channelId, selfId } = this.store.get();
+    this.store.patch({ camp: applyCampState(camp, state, channelId, selfId) });
+  }
+
+  /** The server ended our session: we are no longer at the campfire; say why. */
+  #onDisconnected(reason: string): void {
+    if (this.store.get().channelId === null) return;
+    this.store.patch({ channelId: null, speaking: {}, volumeMenu: null, error: reason });
   }
 
   #applyParticipants(update: ParticipantsUpdate): void {

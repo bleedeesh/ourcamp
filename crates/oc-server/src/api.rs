@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::extract::rejection::JsonRejection;
+use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -13,9 +14,12 @@ use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
-    login_message, user_id, verify, CampInfo, Challenge, CurrentInvite, ErrorBody, ErrorCode,
-    InviteInfo, InviteKindDto, LoginRequest, LoginResponse, RoomToken, API_VERSION, PUBLIC_KEY_LEN,
+    login_message, user_id, verify, CampEvent, CampInfo, CampState, Challenge, CurrentInvite,
+    ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse, RoomToken,
+    API_VERSION, PUBLIC_KEY_LEN,
 };
+
+use tokio::sync::watch;
 
 use crate::store::{canonical_token, Device, LoginError, Store, StoreResult};
 use crate::LiveKit;
@@ -41,6 +45,10 @@ pub struct AppState {
     livekit: Arc<LiveKit>,
     /// `host:port` of LiveKit, validated at startup (`ws://` only: it is on loopback).
     livekit_authority: Arc<str>,
+    /// Latest camp snapshot (ADR-0021), streamed by `/api/v1/events`.
+    events: watch::Receiver<Arc<CampState>>,
+    /// Turns true when the server stops; open event streams close on it.
+    shutdown: watch::Receiver<bool>,
 }
 
 impl AppState {
@@ -51,14 +59,23 @@ impl AppState {
         fingerprint: Fingerprint,
         livekit: LiveKit,
         livekit_authority: &str,
+        events: watch::Receiver<Arc<CampState>>,
+        shutdown: watch::Receiver<bool>,
     ) -> Self {
         Self {
             livekit_authority: Arc::from(livekit_authority),
+            events,
+            shutdown,
             store: Arc::new(Mutex::new(store)),
             nonces: Arc::default(),
             fingerprint,
             livekit: Arc::new(livekit),
         }
+    }
+
+    /// The store, for the presence poller.
+    pub fn store_handle(&self) -> Arc<Mutex<Store>> {
+        Arc::clone(&self.store)
     }
 
     /// Runs a store call on the blocking pool: SQLite I/O must not stall the async
@@ -156,6 +173,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/channels/{id}/token", post(room_token))
+        .route("/api/v1/events", get(events))
         .route("/rtc", any(crate::rtc::proxy))
         .route("/rtc/{*rest}", any(crate::rtc::proxy))
         .with_state(state)
@@ -324,4 +342,79 @@ async fn room_token(
             ApiError(ErrorCode::Internal)
         })?;
     Ok(Json(RoomToken { token }))
+}
+
+/// Keeps idle event connections alive through NATs and proxies.
+const EVENTS_PING: Duration = Duration::from_secs(30);
+
+/// `GET /api/v1/events`: a WebSocket of [`CampEvent`]s for members (ADR-0021). The session
+/// is checked before the upgrade, so strangers get a plain 401.
+async fn events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    let hash = session_hash(&headers)?;
+    state
+        .with_store(move |s| s.session_member(&hash))
+        .await?
+        .ok_or(ApiError(ErrorCode::Unauthorized))?;
+    let events = state.events.clone();
+    let shutdown = state.shutdown.clone();
+    Ok(upgrade.on_upgrade(move |socket| stream_events(socket, events, shutdown)))
+}
+
+async fn stream_events(
+    mut socket: WebSocket,
+    mut events: watch::Receiver<Arc<CampState>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    // `wait_for` hands back a read guard (`watch::Ref`, not `Send`); drop it right away
+    // so it is not held across the `await` that sends the close frame.
+    let stopping = async move {
+        let _ = shutdown.wait_for(|&stopping| stopping).await;
+    };
+    tokio::pin!(stopping);
+    let send = |state: &CampState| {
+        serde_json::to_string(&CampEvent::State(state.clone()))
+            .map(|json| Message::Text(json.into()))
+    };
+    let first = send(&events.borrow_and_update());
+    let Ok(first) = first else { return };
+    if socket.send(first).await.is_err() {
+        return;
+    }
+    let mut ping = tokio::time::interval(EVENTS_PING);
+    ping.tick().await; // the first tick is immediate
+    loop {
+        tokio::select! {
+            changed = events.changed() => {
+                if changed.is_err() {
+                    break; // the poller is gone: the server is stopping
+                }
+                let Ok(message) = send(&events.borrow_and_update()) else { return };
+                if socket.send(message).await.is_err() {
+                    return;
+                }
+            }
+            incoming = socket.recv() => match incoming {
+                // Clients send nothing but control frames; any close or error ends it.
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return,
+                Some(Ok(_)) => {}
+            },
+            () = &mut stopping => break,
+            _ = ping.tick() => {
+                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+    // Stopping says so at once instead of leaving clients to notice a dead connection:
+    // they show the camp as offline right away.
+    let close = CloseFrame {
+        code: close_code::AWAY,
+        reason: "camp server stopping".into(),
+    };
+    let _ = socket.send(Message::Close(Some(close))).await;
 }

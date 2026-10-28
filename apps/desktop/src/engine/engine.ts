@@ -56,4 +56,9 @@ export interface VoiceEngine {
   onLevels(listener: (levels: readonly MemberLevel[]) => void): () => void;
   /** Subscribes to channel membership updates; returns an unsubscribe function. */
   onParticipants(listener: (update: ParticipantsUpdate) => void): () => void;
+  /**
+   * The server ended the voice session (same person joined elsewhere, campfire closed,
+   * connection lost). `reason` is a sentence for the user. Returns an unsubscribe function.
+   */
+  onDisconnected(listener: (reason: string) => void): () => void;
 }

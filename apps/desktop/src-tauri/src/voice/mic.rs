@@ -268,7 +268,10 @@ fn run(
     let mut mic = Frame::new(capture.sample_rate);
     // An output rate that does not give whole 10 ms frames (very rare) means no echo
     // reference; everything else still works.
-    let mut reference = (tap.sample_rate() % 100 == 0).then(|| Frame::new(tap.sample_rate()));
+    let mut reference = tap
+        .sample_rate()
+        .is_multiple_of(100)
+        .then(|| Frame::new(tap.sample_rate()));
     if reference.is_none() {
         eprintln!(
             "[oc-voice] output rate {} Hz: echo cancellation disabled",

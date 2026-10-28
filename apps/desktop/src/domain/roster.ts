@@ -1,3 +1,4 @@
+import type { CampState } from "../engine/camp-api.ts";
 import type { ParticipantsUpdate } from "../engine/engine.ts";
 import type { Camp, Member, UserId } from "./types.ts";
 
@@ -46,5 +47,31 @@ export function applyRoster(camp: Camp, channelId: string, update: ParticipantsU
       ? { ...c, memberIds: update.members.map((m) => m.userId) }
       : { ...c, memberIds: c.memberIds.filter((id) => !here.has(id)) },
   );
+  return { ...camp, members, channels };
+}
+
+/**
+ * Applies the camp server's snapshot (ADR-0021): profiles (names, crowns) for everyone,
+ * and who sits at every campfire — except the one you are in, whose room reports it
+ * sooner and more precisely (`applyRoster`). You are never listed by presence: the tree
+ * adds you to your own campfire itself.
+ */
+export function applyCampState(camp: Camp, state: CampState, currentChannelId: string | null, selfId: UserId): Camp {
+  const members: Record<UserId, Member> = { ...camp.members };
+  for (const info of state.members) {
+    const known = members[info.userId] ?? newcomer(info.userId, info.name);
+    members[info.userId] = { ...known, name: info.name, isAdmin: info.isAdmin };
+  }
+  const presence = new Map(state.presence.map((p) => [p.channelId, p.members]));
+  const roomMembers = new Set(camp.channels.find((c) => c.id === currentChannelId)?.memberIds ?? []);
+  const channels = camp.channels.map((c) => {
+    if (c.id === currentChannelId) return c;
+    const here = (presence.get(c.id) ?? []).filter((p) => p.userId !== selfId && !roomMembers.has(p.userId));
+    for (const p of here) {
+      const m = members[p.userId] ?? newcomer(p.userId, p.userId);
+      members[p.userId] = { ...m, micMuted: p.micMuted };
+    }
+    return { ...c, memberIds: here.map((p) => p.userId) };
+  });
   return { ...camp, members, channels };
 }

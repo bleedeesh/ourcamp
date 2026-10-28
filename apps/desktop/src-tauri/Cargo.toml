@@ -28,7 +28,7 @@ oc-camp-client = { path = "../../../crates/oc-camp-client" }
 oc-invite = { path = "../../../crates/oc-invite" }
 oc-proto = { path = "../../../crates/oc-proto" }
 serde_json = "1"
-tokio = { version = "1", features = ["sync", "rt"] }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
 futures-util = { version = "0.3", default-features = false }
 
 [dev-dependencies]

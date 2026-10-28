@@ -1,4 +1,4 @@
-import type { CampApi, CampPreview, CampSummary, OpenCamp } from "../engine/camp-api.ts";
+import type { CampApi, CampLive, CampPreview, CampSummary, OpenCamp } from "../engine/camp-api.ts";
 import { createStore, type Store } from "../lib/store.ts";
 import { avatarColor } from "./roster.ts";
 import type { Camp } from "./types.ts";
@@ -89,6 +89,7 @@ export class CampsController {
   readonly #toCamp: (open: OpenCamp) => Camp;
   /** Bumped per link check; answers to older checks are dropped. */
   #checkSeq = 0;
+  #unsubscribeLive: (() => void) | null = null;
 
   constructor(api: CampApi, voice: VoiceController, options: CampsOptions) {
     this.#api = api;
@@ -114,6 +115,7 @@ export class CampsController {
 
   /** Loads the camp list and opens the last camp (or shows the first-run screen). */
   async start(): Promise<void> {
+    this.#unsubscribeLive ??= this.#api.onLive((live) => this.#onLive(live));
     try {
       const list = await this.#api.list();
       this.store.patch({ displayName: list.displayName, camps: list.camps, name: list.displayName });
@@ -215,6 +217,13 @@ export class CampsController {
     } catch (err) {
       this.store.patch({ error: message(err) });
     }
+  }
+
+  /** Live state of the open camp (ADR-0021); updates for a camp we already left are dropped. */
+  #onLive(live: CampLive): void {
+    if (live.campId !== this.store.get().currentId) return;
+    this.store.patch({ offline: !live.online });
+    if (live.state) this.#voice.applyCampState(live.state);
   }
 
   dismissNotice(): void {

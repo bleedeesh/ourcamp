@@ -573,3 +573,209 @@ async fn a_saved_session_keeps_working() {
     assert!(client.room_token(&restored, "c0").await.is_ok());
     camp.stop().await;
 }
+
+// ---- step 4b: live camp state ----
+
+type Room = std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>;
+
+/// Stands in for LiveKit's Twirp API: one room, `c0`, holding whoever the test puts in
+/// `room` as (identity, mic muted). Answers in LiveKit's own `snake_case` JSON shape.
+async fn fake_twirp(room: Room) -> String {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((tcp, _)) = listener.accept().await {
+            let room = room.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(tcp);
+                let mut line = String::new();
+                let mut path = String::new();
+                let mut length = 0usize;
+                let mut authorized = false;
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if path.is_empty() {
+                        path = line.split(' ').nth(1).unwrap_or("").to_owned();
+                    } else if let Some(v) = lower.strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    } else if lower.starts_with("authorization: bearer ") {
+                        authorized = true;
+                    } else if line == "\r\n" {
+                        break;
+                    }
+                }
+                let mut body = vec![0u8; length];
+                let _ = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut body).await;
+                let json = if !authorized {
+                    String::from(r#"{"code":"unauthenticated"}"#)
+                } else if path.ends_with("/ListRooms") {
+                    String::from(r#"{"rooms":[{"sid":"RM_1","name":"c0","empty_timeout":300}]}"#)
+                } else {
+                    let people: Vec<String> = room
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(id, muted)| {
+                            format!(
+                                r#"{{"sid":"PA","identity":"{id}","state":"ACTIVE","tracks":[{{"type":"AUDIO","source":"MICROPHONE","muted":{muted}}}]}}"#
+                            )
+                        })
+                        .collect();
+                    format!(r#"{{"participants":[{}]}}"#, people.join(","))
+                };
+                let status = if authorized {
+                    "200 OK"
+                } else {
+                    "401 Unauthorized"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}",
+                    json.len()
+                );
+                let _ = reader.get_mut().write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    format!("ws://{addr}")
+}
+
+/// Waits for a snapshot that satisfies `ready` (snapshots are published once a second,
+/// so a change shows up in the next one or two).
+async fn state_where(
+    events: &mut oc_camp_client::CampEvents,
+    ready: impl Fn(&oc_proto::CampState) -> bool,
+) -> oc_proto::CampState {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.next())
+            .await
+            .expect("the expected state within 5 s")
+            .expect("stream open")
+            .expect("valid event");
+        let oc_proto::CampEvent::State(state) = event;
+        if ready(&state) {
+            return state;
+        }
+    }
+}
+
+#[tokio::test]
+async fn everyone_sees_who_sits_at_which_campfire_with_roles() {
+    let room: Room = std::sync::Arc::default();
+    let camp = camp_with_upstream(&fake_twirp(room.clone()).await).await;
+    let client = camp.client();
+    let host_key = DeviceKey::generate();
+    let host = client
+        .login(&host_key, "Дима", Some(&camp.claim()))
+        .await
+        .unwrap();
+    let friend_key = DeviceKey::generate();
+    let friend = client
+        .login(&friend_key, "Ангелина", Some(&camp.join()))
+        .await
+        .unwrap();
+
+    // The friend opens the camp without joining voice: nobody at any campfire yet.
+    let mut events = client.events(&friend).await.unwrap();
+    let state = state_where(&mut events, |s| s.members.len() == 2).await;
+    assert_eq!(state.presence, []);
+    let dima = state
+        .members
+        .iter()
+        .find(|m| m.user_id == host.user_id)
+        .unwrap();
+    assert_eq!(
+        (dima.name.as_str(), dima.is_admin),
+        ("Дима", true),
+        "the crown is visible"
+    );
+    let angelina = state
+        .members
+        .iter()
+        .find(|m| m.user_id == friend.user_id)
+        .unwrap();
+    assert!(!angelina.is_admin);
+
+    // Dima sits down at the Lobby with his mic off: the friend sees it without joining.
+    room.lock().unwrap().push((host.user_id.clone(), true));
+    let state = state_where(&mut events, |s| !s.presence.is_empty()).await;
+    assert_eq!(state.presence.len(), 1);
+    assert_eq!(state.presence[0].channel_id, "c0");
+    assert_eq!(state.presence[0].members[0].user_id, host.user_id);
+    assert!(state.presence[0].members[0].mic_muted);
+
+    // He unmutes; then leaves.
+    room.lock().unwrap()[0].1 = false;
+    state_where(&mut events, |s| {
+        s.presence.first().is_some_and(|c| !c.members[0].mic_muted)
+    })
+    .await;
+    room.lock().unwrap().clear();
+    state_where(&mut events, |s| s.presence.is_empty()).await;
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn the_event_stream_is_for_members_only() {
+    let camp = camp_with_upstream(&fake_twirp(Room::default()).await).await;
+    let stranger = oc_camp_client::Session::restore("AAAA".into(), "x".into(), Role::Member);
+    match camp.client().events(&stranger).await {
+        Err(ClientError::Api(ErrorCode::Unauthorized)) => {}
+        Err(other) => panic!("expected unauthorized, got {other:?}"),
+        Ok(_) => panic!("expected unauthorized, got a stream"),
+    }
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn with_livekit_down_the_camp_still_streams_its_members() {
+    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let upstream = format!("ws://{}", free.local_addr().unwrap());
+    drop(free);
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let session = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut events = client.events(&session).await.unwrap();
+    let state = state_where(&mut events, |s| s.members.len() == 1).await;
+    assert_eq!(state.presence, []);
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn stopping_the_camp_closes_event_streams_at_once() {
+    // LiveKit that accepts and never answers: a poll round hangs until its timeout, and
+    // stopping must not wait for it (on Windows a refused connect alone takes ~2 s).
+    let hung = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let camp = camp_with_upstream(&format!("ws://{}", hung.local_addr().unwrap())).await;
+    let client = camp.client();
+    let session = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut events = client.events(&session).await.unwrap();
+    let first = events.next().await.unwrap().unwrap();
+    let oc_proto::CampEvent::State(first) = first;
+    assert_eq!(
+        first.presence,
+        [],
+        "the first snapshot comes without LiveKit"
+    );
+
+    camp.stop().await;
+    let closed = tokio::time::timeout(std::time::Duration::from_millis(500), events.next())
+        .await
+        .expect("closed promptly, not after a poll round");
+    assert!(closed.is_none(), "a clean close, got {closed:?}");
+    drop(hung);
+}

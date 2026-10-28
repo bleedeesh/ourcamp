@@ -54,6 +54,9 @@ pub struct Participants {
 /// Receives [`Participants`] updates (the app forwards them to the UI).
 pub type ParticipantsListener = Arc<dyn Fn(Participants) + Send + Sync>;
 
+/// Receives the reason, in Russian, when the server ends a voice session (ADR-0020).
+pub type DisconnectListener = Arc<dyn Fn(String) + Send + Sync>;
+
 /// User-facing error text (shown in the UI toast).
 pub type EngineError = String;
 
@@ -73,6 +76,8 @@ impl Default for Prefs {
 }
 
 struct Session {
+    /// Tells a late server disconnect apart from the session that replaced it.
+    id: u64,
     room: VoiceRoom,
     mic: MicPipeline,
 }
@@ -93,6 +98,8 @@ struct Live {
     local_level: Option<Arc<LocalLevel>>,
     listener: Option<ParticipantsListener>,
     self_id: String,
+    disconnect_listener: Option<DisconnectListener>,
+    next_session_id: u64,
     output_latency: DeviceLatency,
     output_rate: u32,
     _output: Output,
@@ -191,6 +198,8 @@ impl Engine {
                 session: None,
                 local_level: None,
                 listener: None,
+                disconnect_listener: None,
+                next_session_id: 0,
                 // Set when a camp is opened (`set_self_id`).
                 self_id: String::new(),
                 output_latency: output.latency(),
@@ -208,6 +217,11 @@ impl Engine {
     /// Where participant updates go.
     pub fn set_participants_listener(&self, listener: ParticipantsListener) {
         self.lock().listener = Some(listener);
+    }
+
+    /// Where "the server ended your session" goes.
+    pub fn set_disconnect_listener(&self, listener: DisconnectListener) {
+        self.lock().disconnect_listener = Some(listener);
     }
 
     /// Whether joining needs a room ([`RoomAccess`]) — false for synthetic voices.
@@ -292,8 +306,15 @@ impl Engine {
         // tap to `taps` (see `TapSlot`).
         let mic = MicPipeline::start(&taps, output_latency, mic_muted)
             .map_err(|message| format!("Микрофон: {message}"))?;
+        let session_id = {
+            let mut live = self.lock();
+            live.next_session_id += 1;
+            live.next_session_id
+        };
         let host: Arc<dyn RoomHost> = Arc::new(Host {
             live: Arc::downgrade(&self.live),
+            transitions: Arc::clone(&self.transitions),
+            session_id,
         });
         let params = RoomParams {
             url: access.url,
@@ -304,7 +325,11 @@ impl Engine {
             Ok(room) => {
                 let mut live = self.lock();
                 live.local_level = Some(mic.level());
-                live.session = Some(Session { room, mic });
+                live.session = Some(Session {
+                    id: session_id,
+                    room,
+                    mic,
+                });
                 Ok(())
             }
             Err(e) => {
@@ -329,7 +354,7 @@ impl Engine {
             live.local_level = None;
             live.session.take()
         };
-        if let Some(Session { room, mic }) = session {
+        if let Some(Session { room, mic, .. }) = session {
             room.close().await;
             mic.stop();
         }
@@ -422,6 +447,8 @@ impl Engine {
 /// engine (and with it the room) alive.
 struct Host {
     live: Weak<Mutex<Live>>,
+    transitions: Arc<tokio::sync::Mutex<()>>,
+    session_id: u64,
 }
 
 impl RoomHost for Host {
@@ -451,5 +478,38 @@ impl RoomHost for Host {
         if let Some(live) = self.live.upgrade() {
             lock(&live).announce(members);
         }
+    }
+
+    fn disconnected(&self, message: String) {
+        let (live, transitions, id) = (
+            self.live.clone(),
+            Arc::clone(&self.transitions),
+            self.session_id,
+        );
+        // Not inline: we are on the room's event task, which closing the room awaits.
+        tauri::async_runtime::spawn(async move {
+            let Some(live) = live.upgrade() else { return };
+            let _transition = transitions.lock().await;
+            let session = {
+                let mut live = lock(&live);
+                if live.session.as_ref().is_none_or(|s| s.id != id) {
+                    return; // already left, or a newer session replaced it
+                }
+                live.local_level = None;
+                live.session.take()
+            };
+            if let Some(Session { room, mic, .. }) = session {
+                room.close().await;
+                mic.stop();
+            }
+            let live = &mut lock(&live);
+            if let Err(e) = live.clear_voices() {
+                eprintln!("[oc-voice] cleanup after disconnect: {e}");
+            }
+            live.announce(Vec::new());
+            if let Some(listener) = &live.disconnect_listener {
+                listener(message);
+            }
+        });
     }
 }

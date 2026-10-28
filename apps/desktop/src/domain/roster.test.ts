@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Camp } from "./types.ts";
-import { applyRoster, avatarColor } from "./roster.ts";
+import { applyCampState, applyRoster, avatarColor } from "./roster.ts";
 
 const member = (id: string, extra = {}) => ({
   id,
@@ -78,4 +78,39 @@ test("self id from the room gets a profile and is never listed as a remote membe
 test("avatar colour is deterministic", () => {
   assert.equal(avatarColor("artem"), avatarColor("artem"));
   assert.match(avatarColor(""), /^#[0-9A-F]{6}$/i);
+});
+
+const state = (presence: Record<string, Array<[string, boolean]>>) => ({
+  members: [
+    { userId: "me", name: "ME", isAdmin: false },
+    { userId: "artem", name: "Артём", isAdmin: true },
+    { userId: "zhenya", name: "Женя", isAdmin: false },
+  ],
+  presence: Object.entries(presence).map(([channelId, people]) => ({
+    channelId,
+    members: people.map(([userId, micMuted]) => ({ userId, micMuted })),
+  })),
+});
+
+test("presence fills every campfire, with names and crowns from the camp", () => {
+  const next = applyCampState(camp, state({ katka: [["zhenya", true]], lobby: [["artem", false]] }), null, "me");
+  assert.deepEqual(next.channels[0]?.memberIds, ["artem"]);
+  assert.deepEqual(next.channels[1]?.memberIds, ["zhenya"]);
+  assert.equal(next.members["zhenya"]?.name, "Женя");
+  assert.equal(next.members["zhenya"]?.micMuted, true);
+  assert.equal(next.members["artem"]?.isAdmin, true, "the crown comes from the server");
+});
+
+test("empty campfires empty out; you are never listed by presence", () => {
+  const next = applyCampState(camp, state({ lobby: [["me", false]] }), null, "me");
+  assert.deepEqual(next.channels[0]?.memberIds, []);
+  assert.deepEqual(next.channels[1]?.memberIds, []);
+});
+
+test("your own campfire keeps the room's view; nobody shows up twice", () => {
+  const inLobby = { ...camp, channels: camp.channels.map((c) => (c.id === "lobby" ? { ...c, memberIds: ["lena"] } : c)) };
+  // A stale poll still places Lena at Katka and Artem at the Lobby.
+  const next = applyCampState(inLobby, state({ lobby: [["artem", false]], katka: [["lena", false]] }), "lobby", "me");
+  assert.deepEqual(next.channels[0]?.memberIds, ["lena"], "room roster wins for your campfire");
+  assert.deepEqual(next.channels[1]?.memberIds, [], "Lena is with you, not at Katka");
 });

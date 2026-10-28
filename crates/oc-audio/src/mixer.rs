@@ -628,16 +628,16 @@ fn mix_into(out: &mut [f32], out_ch: usize, input: &[f32], in_ch: usize, ramp: &
             }
         }
         (2, 1) => {
-            for (o, pair) in out.iter_mut().zip(input.chunks_exact(2)) {
-                *o += (pair[0] + pair[1]) * 0.5 * ramp.next_gain();
+            for (o, &[left, right]) in out.iter_mut().zip(input.as_chunks::<2>().0) {
+                *o += f32::midpoint(left, right) * ramp.next_gain();
             }
         }
         _ => {
             // Stereo into stereo (or wider): channel-for-channel on the first two.
-            for (frame, pair) in out.chunks_mut(out_ch).zip(input.chunks_exact(2)) {
+            for (frame, &[left, right]) in out.chunks_mut(out_ch).zip(input.as_chunks::<2>().0) {
                 let g = ramp.next_gain();
-                frame[0] += pair[0] * g;
-                frame[1] += pair[1] * g;
+                frame[0] += left * g;
+                frame[1] += right * g;
             }
         }
     }
@@ -909,8 +909,14 @@ mod tests {
         core.process(&mut out);
         let mut mono = [0.0_f32; 4];
         assert_eq!(tap.read(&mut mono), 2, "one tap sample per output frame");
-        assert!(approx(mono[0], (out[0] + out[1]) / 2.0), "{out:?} {mono:?}");
-        assert!(approx(mono[1], (out[2] + out[3]) / 2.0), "{out:?} {mono:?}");
+        assert!(
+            approx(mono[0], f32::midpoint(out[0], out[1])),
+            "{out:?} {mono:?}"
+        );
+        assert!(
+            approx(mono[1], f32::midpoint(out[2], out[3])),
+            "{out:?} {mono:?}"
+        );
     }
 
     #[test]

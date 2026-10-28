@@ -49,4 +49,24 @@ export interface CampApi {
   forget(id: string): Promise<void>;
   /** The camp's friends link, to copy. */
   invite(id: string): Promise<string>;
+  /** Live state of the camp opened last (who sits where, profiles); returns an unsubscribe. */
+  onLive(listener: (live: CampLive) => void): () => void;
+}
+
+/** The camp's live state (ADR-0021), mirrors `oc_proto::CampState`. */
+export interface CampState {
+  readonly members: ReadonlyArray<{ readonly userId: UserId; readonly name: string; readonly isAdmin: boolean }>;
+  readonly presence: ReadonlyArray<{
+    readonly channelId: string;
+    readonly members: ReadonlyArray<{ readonly userId: UserId; readonly micMuted: boolean }>;
+  }>;
+}
+
+/** A live update about the open camp. */
+export interface CampLive {
+  readonly campId: string;
+  /** The camp's event stream is connected. */
+  readonly online: boolean;
+  /** Latest snapshot; `null` while offline. */
+  readonly state: CampState | null;
 }

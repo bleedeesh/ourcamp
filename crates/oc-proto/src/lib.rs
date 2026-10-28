@@ -165,6 +165,59 @@ pub struct RoomToken {
     pub token: String,
 }
 
+// ---- live camp state ----
+
+/// A message on `GET /api/v1/events` (WebSocket, `Authorization: Bearer`): JSON text
+/// frames tagged by `type`. The server sends `state` on connect and on every change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CampEvent {
+    /// Full snapshot: a missed message can never leave a client out of sync.
+    State(CampState),
+}
+
+/// Who is in the camp and who sits at which campfire.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CampState {
+    /// Every member of the camp, sorted by id.
+    pub members: Vec<MemberInfo>,
+    /// Campfires with people in them, in channel order.
+    pub presence: Vec<ChannelPresence>,
+}
+
+/// A camp member's profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberInfo {
+    /// See [`user_id`].
+    pub user_id: String,
+    /// Display name.
+    pub name: String,
+    /// Redeemed the admin key.
+    pub is_admin: bool,
+}
+
+/// People at one campfire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelPresence {
+    /// Channel id.
+    pub channel_id: String,
+    /// Sorted by user id.
+    pub members: Vec<PresentMember>,
+}
+
+/// Someone at a campfire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PresentMember {
+    /// See [`user_id`].
+    pub user_id: String,
+    /// No microphone published, or it is muted.
+    pub mic_muted: bool,
+}
+
 // ---- errors ----
 
 /// Machine-readable error code; the client maps it to a message.
@@ -246,6 +299,30 @@ mod tests {
         assert_eq!(id.len(), 16);
         assert_eq!(id, user_id(&public(&k)));
         assert_ne!(id, user_id(&public(&key())));
+    }
+
+    #[test]
+    fn camp_events_are_tagged_by_type() {
+        let event = CampEvent::State(CampState {
+            members: vec![MemberInfo {
+                user_id: "u".into(),
+                name: "Лена".into(),
+                is_admin: false,
+            }],
+            presence: vec![ChannelPresence {
+                channel_id: "c0".into(),
+                members: vec![PresentMember {
+                    user_id: "u".into(),
+                    mic_muted: true,
+                }],
+            }],
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "state");
+        assert_eq!(json["members"][0]["isAdmin"], false);
+        assert_eq!(json["presence"][0]["channelId"], "c0");
+        assert_eq!(json["presence"][0]["members"][0]["micMuted"], true);
+        assert_eq!(serde_json::from_value::<CampEvent>(json).unwrap(), event);
     }
 
     #[test]

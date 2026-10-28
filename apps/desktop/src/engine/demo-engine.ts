@@ -65,6 +65,11 @@ export class DemoEngine implements VoiceEngine {
     return () => this.#participantListeners.delete(listener);
   }
 
+  onDisconnected(): () => void {
+    // The demo room never drops anyone.
+    return () => {};
+  }
+
   #announce(update: ParticipantsUpdate): void {
     for (const l of this.#participantListeners) l(update);
   }

@@ -35,7 +35,7 @@
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
   пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
   `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
-- `crates/oc-server` — M3 шаги 1–3 (прокси `/rtc` → LiveKit на loopback, ADR-0019): headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
+- `crates/oc-server` — M3 шаги 1–4 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
   сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018), 26 тестов.
 - `apps/desktop/src-tauri`: `audio/` — устройства (`output.rs`, `input.rs`), `Engine`
   (режимы livekit / `OC_VOICE=synthetic`, громкости в `prefs`); `voice/` — `mic.rs`
@@ -43,6 +43,8 @@
   `camps.rs` — лагеря устройства (`device.key`, `camps.json`, ADR-0020): вход по ссылке,
   токен комнаты от лагеря, повторный вход при истёкшей сессии. Dev-токенов нет; второй
   клиент на ПК — `OC_PROFILE=<имя>` (debug). Событие `voice://participants` (ADR-0011).
+  Одна копия на профиль (`instance.lock`); разрыв комнаты сервером → `voice://disconnected`.
+  Присутствие и роли: `Camps::follow` → `/api/v1/events` → `camp://state` (ADR-0021).
   Синхронные вызовы LiveKit SDK — только внутри `runtime.enter()` (команды Tauri без
   `async` идут на UI-потоке без tokio). Тесты с сервером — `#[ignore]`, нужен `pnpm livekit`.
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
@@ -58,8 +60,8 @@
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — по шагам из `docs/roadmap.md` (ADR-0014–0020). Готовы шаги 1–3 и 4a (лагерь в приложении);
-дальше 4b — присутствие во всех кострах (сервер опрашивает LiveKit, WebSocket клиентам).
+M3 — по шагам из `docs/roadmap.md` (ADR-0014–0021). Готовы шаги 1–4 (лагерь в приложении, присутствие
+во всех кострах); дальше шаг 5 — LiveKit `managed` (дочерний процесс сервера).
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

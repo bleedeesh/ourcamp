@@ -143,7 +143,9 @@ pub async fn camp_join(
     link: String,
     name: String,
 ) -> Result<OpenCamp, String> {
-    let camp = camps(&state)?.join(&link, &name).await?;
+    let camps = camps(&state)?;
+    let camp = camps.join(&link, &name).await?;
+    camps.follow(&camp.id);
     if let Ok(engine) = engine(&engine_state) {
         engine.set_self_id(&camp.me.user_id);
     }
@@ -157,7 +159,9 @@ pub async fn camp_open(
     engine_state: State<'_, EngineState>,
     id: String,
 ) -> Result<OpenCamp, String> {
-    let camp = camps(&state)?.open(&id).await?;
+    let camps = camps(&state)?;
+    let camp = camps.open(&id).await?;
+    camps.follow(&camp.id);
     if let Ok(engine) = engine(&engine_state) {
         engine.set_self_id(&camp.me.user_id);
     }

@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CampApi, CampList, CampPreview, OpenCamp } from "./camp-api.ts";
+import type { CampApi, CampList, CampLive, CampPreview, OpenCamp } from "./camp-api.ts";
+import { subscribe } from "./tauri-events.ts";
+
+/** Event emitted by `src-tauri/src/lib.rs` (`CAMP_STATE_EVENT`). */
+const CAMP_STATE_EVENT = "camp://state";
 
 /** Camp commands of `src-tauri/src/commands.rs`. */
 export class TauriCampApi implements CampApi {
@@ -25,5 +29,9 @@ export class TauriCampApi implements CampApi {
 
   invite(id: string): Promise<string> {
     return invoke("camp_invite", { id });
+  }
+
+  onLive(listener: (live: CampLive) => void): () => void {
+    return subscribe<CampLive>(CAMP_STATE_EVENT, listener);
   }
 }

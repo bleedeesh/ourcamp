@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { CampApi, CampList, CampPreview, OpenCamp } from "../engine/camp-api.ts";
+import type { CampApi, CampList, CampLive, CampPreview, OpenCamp } from "../engine/camp-api.ts";
 import { campfires, CampsController, campShort, NO_CAMP } from "./camps.ts";
 import { FakeEngine, MemoryStorage } from "./test-support.ts";
 import { VoiceController } from "./voice.ts";
@@ -54,6 +54,14 @@ class FakeCampApi implements CampApi {
   invite(id: string): Promise<string> {
     this.calls.push(`invite:${id}`);
     return Promise.resolve(LINK);
+  }
+  #live: ((live: CampLive) => void) | null = null;
+  onLive(listener: (live: CampLive) => void) {
+    this.#live = listener;
+    return () => (this.#live = null);
+  }
+  emitLive(live: CampLive) {
+    this.#live?.(live);
   }
 }
 
@@ -223,4 +231,33 @@ test("badges and counts read naturally", () => {
   assert.equal(campfires(5), "5 костров");
   assert.equal(campfires(11), "11 костров");
   assert.equal(campfires(22), "22 костра");
+});
+
+test("live state of the open camp reaches the tree; other camps and outages are handled", async () => {
+  const { api, camps, voice } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  const live = (campId: string, online: boolean, withBob: boolean) => ({
+    campId,
+    online,
+    state: online
+      ? {
+          members: [{ userId: "bob", name: "Боб", isAdmin: true }],
+          presence: withBob ? [{ channelId: "c1", members: [{ userId: "bob", micMuted: true }] }] : [],
+        }
+      : null,
+  });
+
+  api.emitLive(live("other-camp", true, true));
+  assert.deepEqual(voice.store.get().camp.channels[1]?.memberIds, [], "not the open camp");
+
+  api.emitLive(live("vk", true, true));
+  const camp = voice.store.get().camp;
+  assert.deepEqual(camp.channels[1]?.memberIds, ["bob"]);
+  assert.equal(camp.members["bob"]?.isAdmin, true);
+  assert.equal(camps.store.get().offline, false);
+
+  api.emitLive(live("vk", false, false));
+  assert.equal(camps.store.get().offline, true);
+  assert.deepEqual(voice.store.get().camp.channels[1]?.memberIds, ["bob"], "last known state kept while offline");
 });
