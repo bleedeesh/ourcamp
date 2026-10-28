@@ -12,6 +12,7 @@
 //! ```
 
 mod api;
+mod presence;
 mod rtc;
 mod serve;
 pub mod store;
@@ -21,6 +22,7 @@ use std::fmt;
 use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use oc_invite::{Fingerprint, Host, Invite, InviteKind, Token};
 use tokio::net::TcpListener;
@@ -180,13 +182,22 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     };
 
     let (shutdown, shutdown_rx) = watch::channel(false);
-    let app = api::router(api::AppState::new(
+    let (events, events_rx) = watch::channel(Arc::default());
+    let state = api::AppState::new(
         store,
         identity.fingerprint,
         config.livekit.clone(),
         &livekit_authority,
+        events_rx,
+    );
+    tokio::spawn(presence::run(
+        state.store_handle(),
+        config.livekit.clone(),
+        livekit_authority.clone(),
+        events,
+        shutdown_rx.clone(),
     ));
-    let task = tokio::spawn(serve::serve(listener, tls, app, shutdown_rx));
+    let task = tokio::spawn(serve::serve(listener, tls, api::router(state), shutdown_rx));
     Ok(Running {
         local_addr,
         fingerprint: identity.fingerprint,

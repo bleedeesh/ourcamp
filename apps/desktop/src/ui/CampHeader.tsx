@@ -9,6 +9,7 @@ export function CampHeader() {
   const campsCtl = useCampsController();
   const camp = useVoice((s) => s.camp);
   const open = useCamps((s) => s.switcherOpen);
+  const offline = useCamps((s) => s.offline);
   return (
     <div className="camp-header">
       <button
@@ -21,7 +22,10 @@ export function CampHeader() {
         <span className="camp-switcher__badge" style={{ background: camp.color }}>
           {camp.short}
         </span>
-        <span className="camp-switcher__name">{camp.name}</span>
+        <span className="camp-switcher__text">
+          <span className="camp-switcher__name">{camp.name}</span>
+          {offline && <span className="camp-switcher__offline">нет связи с лагерем</span>}
+        </span>
         <Icon name="chevron" size={16} className="camp-switcher__chevron" />
       </button>
       {/* Friends arrive with accounts (roadmap M4). */}

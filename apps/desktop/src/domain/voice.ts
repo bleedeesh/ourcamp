@@ -1,6 +1,7 @@
 import { createStore, type Store } from "../lib/store.ts";
 import type { MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
-import { applyRoster } from "./roster.ts";
+import type { CampState } from "../engine/camp-api.ts";
+import { applyCampState, applyRoster } from "./roster.ts";
 import type { Camp, UserId } from "./types.ts";
 import type { VolumeBook, VolumePrefs } from "./volume.ts";
 
@@ -197,6 +198,12 @@ export class VoiceController {
 
   #setPrefs(userId: UserId, prefs: VolumePrefs): void {
     this.store.update((s) => ({ ...s, prefs: { ...s.prefs, [userId]: prefs } }));
+  }
+
+  /** The camp server's snapshot: who sits where, names and crowns (ADR-0021). */
+  applyCampState(state: CampState): void {
+    const { camp, channelId, selfId } = this.store.get();
+    this.store.patch({ camp: applyCampState(camp, state, channelId, selfId) });
   }
 
   /** The server ended our session: we are no longer at the campfire; say why. */

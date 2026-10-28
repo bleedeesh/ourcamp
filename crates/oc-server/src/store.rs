@@ -380,6 +380,24 @@ impl Store {
         }))
     }
 
+    /// Every member, sorted by id.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn members(&self) -> StoreResult<Vec<oc_proto::MemberInfo>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT user_id, name, role FROM members ORDER BY user_id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(oc_proto::MemberInfo {
+                user_id: r.get(0)?,
+                name: r.get(1)?,
+                is_admin: r.get::<_, String>(2)? == "admin",
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Whether a channel with this id exists.
     ///
     /// # Errors

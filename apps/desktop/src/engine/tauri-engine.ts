@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import type { UserId } from "../domain/types.ts";
 import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
+import { subscribe } from "./tauri-events.ts";
 
 /** Event emitted by `src-tauri/src/levels.rs`. */
 const LEVELS_EVENT = "voice://levels";
@@ -54,20 +54,6 @@ export class TauriEngine implements VoiceEngine {
   onDisconnected(listener: (reason: string) => void): () => void {
     return subscribe<string>(DISCONNECTED_EVENT, listener);
   }
-}
-
-function subscribe<T>(event: string, listener: (payload: T) => void): () => void {
-  let disposed = false;
-  let unlisten: (() => void) | null = null;
-  void listen<T>(event, (e) => listener(e.payload)).then((fn) => {
-    // The subscription resolves asynchronously; honour an unsubscribe that came first.
-    if (disposed) fn();
-    else unlisten = fn;
-  });
-  return () => {
-    disposed = true;
-    unlisten?.();
-  };
 }
 
 /** True inside the Tauri webview, false in a regular browser (`pnpm dev`). */

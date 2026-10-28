@@ -10,11 +10,12 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use oc_camp_client::{CampClient, ClientError, DeviceKey, Session};
 use oc_invite::{Fingerprint, Host, Invite, InviteError};
-use oc_proto::{Channel, ErrorCode, InviteKindDto, Role};
+use oc_proto::{CampEvent, CampState, Channel, ErrorCode, InviteKindDto, Role};
 use serde::{Deserialize, Serialize};
 
 use crate::voice::room::RoomAccess;
@@ -142,7 +143,29 @@ pub struct Camps {
     file: PathBuf,
     key: DeviceKey,
     saved: Mutex<Saved>,
+    /// Where live camp state goes (the app forwards it to the webview).
+    listener: Mutex<Option<StateListener>>,
+    /// The task following the open camp's events; replaced when another camp opens.
+    follower: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
+
+/// Live state of the open camp, as sent to the UI (ADR-0021).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CampLive {
+    /// Which camp this is about.
+    pub camp_id: String,
+    /// Whether the event stream is connected right now.
+    pub online: bool,
+    /// The latest snapshot; `None` while offline.
+    pub state: Option<CampState>,
+}
+
+/// Receives [`CampLive`] updates.
+pub type StateListener = Arc<dyn Fn(CampLive) + Send + Sync>;
+
+/// Reconnect delays for the event stream: 1 s, doubling, at most this.
+const MAX_BACKOFF: Duration = Duration::from_secs(15);
 
 impl Camps {
     /// Loads (or creates) the device key and the camp list in `dir`.
@@ -170,6 +193,8 @@ impl Camps {
             file,
             key,
             saved: Mutex::new(saved),
+            listener: Mutex::new(None),
+            follower: Mutex::new(None),
         })
     }
 
@@ -326,6 +351,9 @@ impl Camps {
     /// # Errors
     /// If the list cannot be saved.
     pub fn forget(&self, id: &str) -> Result<(), CampError> {
+        if self.lock().current.as_deref() == Some(id) {
+            self.unfollow();
+        }
         self.update(|saved| {
             saved.camps.retain(|c| c.id != id);
             if saved.current.as_deref() == Some(id) {
@@ -372,6 +400,101 @@ impl Camps {
         }
         .map_err(describe)?;
         Ok(invite.to_string())
+    }
+
+    /// Where live camp state goes.
+    pub fn set_state_listener(&self, listener: StateListener) {
+        *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(listener);
+    }
+
+    fn notify(&self, live: CampLive) {
+        let listener = self
+            .listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(listener) = listener {
+            listener(live);
+        }
+    }
+
+    /// Follows `id`'s live state until another camp is followed or this one forgotten:
+    /// reconnects with backoff, re-logs in when the session expired.
+    pub fn follow(self: &Arc<Self>, id: &str) {
+        let task = tauri::async_runtime::spawn(Arc::clone(self).follow_loop(id.to_owned()));
+        let previous = self
+            .follower
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(task);
+        if let Some(previous) = previous {
+            previous.abort();
+        }
+    }
+
+    fn unfollow(&self) {
+        let current = self
+            .follower
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(task) = current {
+            task.abort();
+        }
+    }
+
+    async fn follow_loop(self: Arc<Self>, id: String) {
+        let mut backoff = Duration::from_secs(1);
+        let mut was_online = false;
+        loop {
+            match self.open_events(&id).await {
+                Ok(mut events) => {
+                    backoff = Duration::from_secs(1);
+                    while let Some(event) = events.next().await {
+                        match event {
+                            Ok(CampEvent::State(state)) => {
+                                was_online = true;
+                                self.notify(CampLive {
+                                    camp_id: id.clone(),
+                                    online: true,
+                                    state: Some(state),
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("[ourcamp] camp events: {}", describe(e));
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Logged once per outage, not on every retry.
+                Err(e) if was_online => eprintln!("[ourcamp] camp events: {e}"),
+                Err(_) => {}
+            }
+            if was_online {
+                was_online = false;
+                self.notify(CampLive {
+                    camp_id: id.clone(),
+                    online: false,
+                    state: None,
+                });
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+    }
+
+    async fn open_events(&self, id: &str) -> Result<oc_camp_client::CampEvents, CampError> {
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        match client.events(&camp.session()).await {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(&camp, &client).await?;
+                client.events(&session).await
+            }
+            other => other,
+        }
+        .map_err(describe)
     }
 
     /// The session expired: log in again with the device key (no invite needed — the
@@ -581,6 +704,54 @@ mod tests {
             for d in [host_dir, friend_dir, server_dir] {
                 let _ = fs::remove_dir_all(d);
             }
+        });
+    }
+
+    #[test]
+    fn the_open_camp_is_followed_live_and_going_offline_is_reported() {
+        tauri::async_runtime::block_on(async {
+            let (server, server_dir) = camp("follow").await;
+            let dir = temp_dir("follow");
+            let camps = Arc::new(Camps::load(&dir).unwrap());
+            let seen: Arc<Mutex<Vec<CampLive>>> = Arc::default();
+            let sink = Arc::clone(&seen);
+            camps.set_state_listener(Arc::new(move |live| sink.lock().unwrap().push(live)));
+
+            let link = server.links.claim.as_ref().unwrap().to_string();
+            let opened = camps.join(&link, "Дима").await.unwrap();
+            camps.follow(&opened.id);
+
+            let wait_for = |pred: &dyn Fn(&CampLive) -> bool| {
+                let seen = Arc::clone(&seen);
+                let found = (0..60).any(|_| {
+                    if seen.lock().unwrap().iter().any(pred) {
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                    false
+                });
+                found
+            };
+            let me = opened.me.user_id.clone();
+            assert!(
+                wait_for(&|l| l.online
+                    && l.state
+                        .as_ref()
+                        .is_some_and(|s| s.members.iter().any(|m| m.user_id == me && m.is_admin))),
+                "a snapshot with us, crowned: {:?}",
+                seen.lock().unwrap()
+            );
+            assert!(seen.lock().unwrap().iter().all(|l| l.camp_id == opened.id));
+
+            server.stop().await;
+            assert!(
+                wait_for(&|l| !l.online && l.state.is_none()),
+                "offline is reported"
+            );
+
+            camps.forget(&opened.id).unwrap();
+            let _ = fs::remove_dir_all(dir);
+            let _ = fs::remove_dir_all(server_dir);
         });
     }
 

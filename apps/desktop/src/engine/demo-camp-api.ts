@@ -47,6 +47,11 @@ export class DemoCampApi implements CampApi {
     return Promise.resolve(DEMO_LINK);
   }
 
+  onLive(): () => void {
+    // The demo camp brings its people with it (see `main.tsx`); nothing goes live.
+    return () => {};
+  }
+
   #open(): OpenCamp {
     return {
       id: DEMO_ID,

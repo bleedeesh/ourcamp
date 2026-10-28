@@ -18,6 +18,10 @@ use camps::Camps;
 use commands::{CampsState, EngineState};
 use tauri::Manager;
 
+/// Live camp state for the webview. Must match `CAMP_STATE_EVENT` in
+/// `src/engine/tauri-camp-api.ts`.
+const CAMP_STATE_EVENT: &str = "camp://state";
+
 /// Starts the application. Called from `main.rs` (desktop) and mobile entry points.
 ///
 /// # Panics
@@ -60,6 +64,14 @@ pub fn run() {
                 .map_err(|e| format!("Папка данных приложения недоступна: {e}"));
             if let Err(reason) = &camps {
                 eprintln!("[ourcamp] {reason}");
+            }
+            if let Ok(camps) = &camps {
+                let app = app.handle().clone();
+                camps.set_state_listener(Arc::new(move |live| {
+                    if let Err(e) = tauri::Emitter::emit(&app, CAMP_STATE_EVENT, live) {
+                        eprintln!("[ourcamp] camp state event: {e}");
+                    }
+                }));
             }
             app.manage(camps);
             if let Some(engine) = for_levels {

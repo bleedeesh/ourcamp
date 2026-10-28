@@ -110,6 +110,18 @@
   text-overflow: ellipsis;
 }
 
+.camp-switcher__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.camp-switcher__offline {
+  font-size: 11px;
+  color: #ff8a98; /* --danger lightened to 4.5:1 on --bg-2 */
+}
+
 .camp-switcher__chevron {
   color: var(--text-muted);
 }

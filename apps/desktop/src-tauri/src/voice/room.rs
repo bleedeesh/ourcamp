@@ -371,6 +371,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// ADR-0021 against the real LiveKit: someone sits down at the Lobby through the camp,
+    /// and a member who has not joined voice sees it on the camp's event stream (admin
+    /// token scope, Twirp JSON and filtering all real).
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn presence_is_seen_by_members_outside_voice() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("presence").await;
+            let room = connect(params).await;
+
+            let watcher = CampClient::new(&camp.links.join);
+            let session = watcher
+                .login(
+                    &DeviceKey::generate(),
+                    "Ангелина",
+                    Some(camp.links.join.token.as_str()),
+                )
+                .await
+                .unwrap();
+            let mut events = watcher.events(&session).await.unwrap();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            let state = loop {
+                let event = tokio::time::timeout_at(deadline, events.next())
+                    .await
+                    .expect("presence within 10 s")
+                    .expect("stream open")
+                    .expect("valid event");
+                let oc_proto::CampEvent::State(state) = event;
+                if !state.presence.is_empty() {
+                    break state;
+                }
+            };
+            assert_eq!(state.presence[0].channel_id, "c0");
+            let sitter = &state.presence[0].members[0].user_id;
+            let profile = state.members.iter().find(|m| &m.user_id == sitter).unwrap();
+            assert_eq!(profile.name, "presence", "the person who joined voice");
+            assert!(
+                !state.presence[0].members[0].mic_muted,
+                "published and unmuted"
+            );
+
+            room.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
     /// Records server-side disconnects.
     struct Watcher(std::sync::Mutex<Vec<String>>);
 
