@@ -1,6 +1,7 @@
 {
   "name": "ourcamp",
   "private": true,
+  "type": "module",
   "engines": {
     "node": ">=22.18"
   },
@@ -8,7 +9,9 @@
     "dev": "pnpm --filter @ourcamp/desktop tauri dev",
     "livekit": "docker compose -f dev/compose.yaml up",
     "livekit:down": "docker compose -f dev/compose.yaml down",
+    "livekit:fetch": "node dev/fetch-livekit.ts",
     "server": "cargo run -p oc-server -- --data target/camp-data",
+    "server:docker": "cargo run -p oc-server -- --data target/camp-data --livekit-url ws://127.0.0.1:7880",
     "test": "pnpm -r test && cargo test",
     "typecheck": "pnpm -r typecheck",
     "lint:rust": "cargo clippy --all-targets -- -D warnings && cargo fmt --check"

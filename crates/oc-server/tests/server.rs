@@ -4,33 +4,20 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use oc_camp_client::{CampClient, ClientError, DeviceKey};
 use oc_invite::{Fingerprint, Host, Invite, InviteKind};
 use oc_proto::{ErrorCode, InviteKindDto, Role, API_VERSION};
-use oc_server::{start, Config, LiveKit, Running};
+use oc_server::{start, Config, LiveKit, LiveKitMode, Running};
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
-use rustls::pki_types::ServerName;
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio_rustls::TlsConnector;
+use tokio::io::AsyncWriteExt;
+
+mod support;
+use support::{data_dir, raw};
 
 const LIVEKIT_URL: &str = "ws://127.0.0.1:7880";
-
-/// A fresh data directory per test (tests run in parallel).
-fn data_dir() -> PathBuf {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "oc-server-test-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
 
 fn config(data_dir: PathBuf) -> Config {
     Config {
@@ -39,12 +26,18 @@ fn config(data_dir: PathBuf) -> Config {
         public_host: Host::Domain("camp.example".into()),
         public_port: None,
         camp_name: "Вечерний кооп".into(),
-        livekit: LiveKit {
-            url: LIVEKIT_URL.into(),
-            api_key: "devkey".into(),
-            api_secret: "secret".into(),
-        },
+        livekit: livekit(LIVEKIT_URL),
     }
+}
+
+/// An external LiveKit at `url` with the `--dev` keys.
+fn livekit(url: &str) -> LiveKitMode {
+    LiveKit {
+        url: url.to_owned(),
+        api_key: "devkey".into(),
+        api_secret: "secret".into(),
+    }
+    .into()
 }
 
 struct Camp {
@@ -89,34 +82,6 @@ impl Camp {
         self.running.stop().await;
         let _ = std::fs::remove_dir_all(self.dir);
     }
-}
-
-/// One raw HTTP/1.1 request over pinned TLS. Returns (status, JSON body).
-async fn raw(
-    addr: SocketAddr,
-    pin: Fingerprint,
-    method: &str,
-    path: &str,
-    body: Option<&Value>,
-) -> std::io::Result<(u16, Value)> {
-    let tcp = TcpStream::connect(addr).await?;
-    let connector = TlsConnector::from(oc_tls::client_config(pin));
-    let mut tls = connector
-        .connect(ServerName::try_from("ourcamp").unwrap(), tcp)
-        .await?;
-    let body = body.map(Value::to_string).unwrap_or_default();
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: ourcamp\r\nConnection: close\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    );
-    tls.write_all(request.as_bytes()).await?;
-    let mut response = Vec::new();
-    tls.read_to_end(&mut response).await?;
-    let text = String::from_utf8(response).unwrap();
-    let (head, body) = text.split_once("\r\n\r\n").expect("HTTP response");
-    let status = head.split(' ').nth(1).unwrap().parse().unwrap();
-    Ok((status, serde_json::from_str(body).unwrap_or(Value::Null)))
 }
 
 fn api_error(result: Result<impl std::fmt::Debug, ClientError>) -> ErrorCode {
@@ -432,7 +397,7 @@ async fn fake_livekit() -> String {
 async fn camp_with_upstream(upstream: &str) -> Camp {
     let dir = data_dir();
     let mut cfg = config(dir.clone());
-    cfg.livekit.url = upstream.to_owned();
+    cfg.livekit = livekit(upstream);
     Camp {
         running: start(cfg).await.unwrap(),
         dir,
@@ -521,7 +486,7 @@ async fn livekit_down_is_a_bad_gateway_not_a_hang() {
 #[tokio::test]
 async fn a_livekit_url_with_tls_or_without_port_is_rejected_at_startup() {
     let mut cfg = config(data_dir());
-    cfg.livekit.url = "wss://127.0.0.1:7880".into();
+    cfg.livekit = livekit("wss://127.0.0.1:7880");
     let err = start(cfg).await.err().expect("must refuse");
     assert!(err.to_string().contains("ws://host:port"), "{err}");
 }

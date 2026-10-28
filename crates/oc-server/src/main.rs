@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! oc-server [--data DIR] [--bind ADDR] [--host HOST] [--port PORT] [--name NAME]
-//!           [--livekit-url URL] [--livekit-key KEY] [--livekit-secret SECRET]
+//!           [--livekit-bin PATH] [--rtc-tcp-port N] [--rtc-udp-port N]      managed
+//!           [--livekit-url URL [--livekit-key KEY] [--livekit-secret S]]    external
 //! ```
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -11,10 +12,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use oc_invite::{Host, DEFAULT_PORT};
-use oc_server::{start, Config, LiveKit};
+use oc_server::{
+    find_livekit, start, Config, LiveKit, LiveKitMode, ManagedLiveKit, DEFAULT_RTC_TCP_PORT,
+    DEFAULT_RTC_UDP_PORT,
+};
 
-// The LiveKit defaults are those of `livekit-server --dev` (`pnpm livekit`). A camp for
-// real people runs its own LiveKit with generated keys (M3 step 5, `managed` mode).
 const HELP: &str = "\
 OurCamp Server (headless)
 
@@ -23,15 +25,40 @@ OurCamp Server (headless)
   --host HOST             address friends use, put into links   [this PC's LAN IPv4]
   --port PORT             port put into links                   [the bound port]
   --name NAME             name of a new camp                    [Мой лагерь]
-  --livekit-url URL       LiveKit address handed to clients     [ws://127.0.0.1:7880]
-  --livekit-key KEY       LiveKit API key                       [devkey]
-  --livekit-secret SECRET LiveKit API secret                    [secret]
+
+Voice — the camp's own LiveKit (managed, the default):
+  --livekit-bin PATH      livekit-server to run   [next to oc-server, dev/bin, PATH]
+  --rtc-tcp-port N        media over TCP                        [7881]
+  --rtc-udp-port N        media over UDP                        [7882]
+
+Voice — a LiveKit already running (external, e.g. `pnpm livekit` in Docker):
+  --livekit-url URL       ws://host:port of that LiveKit
+  --livekit-key KEY       its API key                           [devkey]
+  --livekit-secret SECRET its API secret                        [secret]
+
   -h, --help              this text
 ";
 
+/// Which LiveKit, as the flags say. The binary is looked up only after parsing, so
+/// parsing stays a pure function.
+#[derive(Debug)]
+enum Voice {
+    Managed {
+        binary: Option<PathBuf>,
+        rtc_tcp_port: u16,
+        rtc_udp_port: u16,
+    },
+    External(LiveKit),
+}
+
 #[derive(Debug)]
 struct Args {
-    config: Config,
+    data_dir: PathBuf,
+    bind: SocketAddr,
+    host: Option<Host>,
+    port: Option<u16>,
+    name: String,
+    voice: Voice,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
@@ -40,39 +67,71 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
     let mut host: Option<Host> = None;
     let mut port: Option<u16> = None;
     let mut name = String::from("Мой лагерь");
-    let mut livekit = LiveKit {
-        url: "ws://127.0.0.1:7880".into(),
-        api_key: "devkey".into(),
-        api_secret: "secret".into(),
-    };
+    let mut binary: Option<PathBuf> = None;
+    let mut rtc_tcp_port: Option<u16> = None;
+    let mut rtc_udp_port: Option<u16> = None;
+    let mut url: Option<String> = None;
+    // The defaults of `livekit-server --dev` (`pnpm livekit`).
+    let mut key: Option<String> = None;
+    let mut secret: Option<String> = None;
 
     while let Some(flag) = args.next() {
         if flag == "-h" || flag == "--help" {
             return Ok(None);
         }
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
+        let port_value = |v: String| v.parse::<u16>().map_err(|e| format!("{flag}: {e}"));
         match flag.as_str() {
             "--data" => data_dir = PathBuf::from(value()?),
             "--bind" => bind = value()?.parse().map_err(|e| format!("--bind: {e}"))?,
             "--host" => host = Some(value()?.parse().map_err(|e| format!("--host: {e}"))?),
             "--port" => port = Some(value()?.parse().map_err(|e| format!("--port: {e}"))?),
             "--name" => name = value()?,
-            "--livekit-url" => livekit.url = value()?,
-            "--livekit-key" => livekit.api_key = value()?,
-            "--livekit-secret" => livekit.api_secret = value()?,
+            "--livekit-bin" => binary = Some(PathBuf::from(value()?)),
+            "--rtc-tcp-port" => rtc_tcp_port = Some(port_value(value()?)?),
+            "--rtc-udp-port" => rtc_udp_port = Some(port_value(value()?)?),
+            "--livekit-url" => url = Some(value()?),
+            "--livekit-key" => key = Some(value()?),
+            "--livekit-secret" => secret = Some(value()?),
             other => return Err(format!("unknown argument {other} (see --help)")),
         }
     }
 
+    let voice = if let Some(url) = url {
+        if binary.is_some() || rtc_tcp_port.is_some() || rtc_udp_port.is_some() {
+            return Err(
+                "--livekit-url runs no LiveKit of its own: drop --livekit-bin and \
+                        --rtc-*-port (they belong to the camp's own LiveKit)"
+                    .into(),
+            );
+        }
+        Voice::External(LiveKit {
+            url,
+            api_key: key.unwrap_or_else(|| "devkey".into()),
+            api_secret: secret.unwrap_or_else(|| "secret".into()),
+        })
+    } else {
+        if key.is_some() || secret.is_some() {
+            return Err(
+                "--livekit-key/--livekit-secret are for --livekit-url; the camp's \
+                        own LiveKit gets a generated key"
+                    .into(),
+            );
+        }
+        Voice::Managed {
+            binary,
+            rtc_tcp_port: rtc_tcp_port.unwrap_or(DEFAULT_RTC_TCP_PORT),
+            rtc_udp_port: rtc_udp_port.unwrap_or(DEFAULT_RTC_UDP_PORT),
+        }
+    };
+
     Ok(Some(Args {
-        config: Config {
-            data_dir,
-            bind,
-            public_host: host.unwrap_or_else(lan_address),
-            public_port: port,
-            camp_name: name,
-            livekit,
-        },
+        data_dir,
+        bind,
+        host,
+        port,
+        name,
+        voice,
     }))
 }
 
@@ -91,8 +150,8 @@ fn lan_address() -> Host {
     }
 }
 
-/// Warns early if the LiveKit the camp will hand out is not listening. Voice rooms
-/// arrive in step 2 of M3; the camp itself works without them.
+/// Warns early if an external LiveKit is not listening; the camp works without it,
+/// only voice does not.
 async fn check_livekit(url: &str) {
     let authority = url
         .split_once("://")
@@ -108,9 +167,32 @@ async fn check_livekit(url: &str) {
     .await
     .is_ok_and(|r| r.is_ok());
     if reachable {
-        eprintln!("[oc-server] LiveKit: {url}");
+        eprintln!("[oc-server] LiveKit (external): {url}");
     } else {
         eprintln!("[oc-server] LiveKit is not reachable at {url} (start it with `pnpm livekit`)");
+    }
+}
+
+/// The flags' voice choice, with the binary found.
+fn livekit_mode(voice: Voice) -> Result<LiveKitMode, String> {
+    match voice {
+        Voice::External(livekit) => Ok(LiveKitMode::External(livekit)),
+        Voice::Managed {
+            binary,
+            rtc_tcp_port,
+            rtc_udp_port,
+        } => {
+            let binary = binary.or_else(find_livekit).ok_or(
+                "livekit-server not found (next to oc-server, in dev/bin, on PATH). \
+                 Get it with `pnpm livekit:fetch`, point to it with --livekit-bin PATH, \
+                 or use a running one: --livekit-url ws://127.0.0.1:7880 (`pnpm livekit`)",
+            )?;
+            Ok(LiveKitMode::Managed(ManagedLiveKit {
+                binary,
+                rtc_tcp_port,
+                rtc_udp_port,
+            }))
+        }
     }
 }
 
@@ -127,18 +209,37 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let external_url = match &args.voice {
+        Voice::External(livekit) => Some(livekit.url.clone()),
+        Voice::Managed { .. } => None,
+    };
+    let livekit = match livekit_mode(args.voice) {
+        Ok(mode) => mode,
+        Err(e) => {
+            eprintln!("oc-server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let data_dir = std::path::absolute(&args.data_dir).unwrap_or_else(|_| args.data_dir.clone());
+    let config = Config {
+        data_dir: args.data_dir,
+        bind: args.bind,
+        public_host: args.host.unwrap_or_else(lan_address),
+        public_port: args.port,
+        camp_name: args.name,
+        livekit,
+    };
 
-    let data_dir =
-        std::path::absolute(&args.config.data_dir).unwrap_or_else(|_| args.config.data_dir.clone());
-    let livekit_url = args.config.livekit.url.clone();
-    let running = match start(args.config).await {
+    let running = match start(config).await {
         Ok(running) => running,
         Err(e) => {
             eprintln!("oc-server: {e}");
             return ExitCode::FAILURE;
         }
     };
-    check_livekit(&livekit_url).await;
+    if let Some(url) = external_url {
+        check_livekit(&url).await;
+    }
 
     eprintln!("[oc-server] data: {}", data_dir.display());
     eprintln!("[oc-server] listening on {} (TLS)", running.local_addr);
@@ -167,12 +268,44 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_a_real_camp_on_7780() {
+    fn defaults_are_a_real_camp_on_7780_with_its_own_livekit() {
         let args = parse(&[]).unwrap().unwrap();
-        assert_eq!(args.config.bind.port(), DEFAULT_PORT);
-        assert_eq!(args.config.public_port, None);
-        assert_eq!(args.config.livekit.url, "ws://127.0.0.1:7880");
-        assert_eq!(args.config.livekit.api_key, "devkey");
+        assert_eq!(args.bind.port(), DEFAULT_PORT);
+        assert_eq!(args.port, None);
+        match args.voice {
+            Voice::Managed {
+                binary,
+                rtc_tcp_port,
+                rtc_udp_port,
+            } => {
+                assert_eq!(binary, None, "looked up later");
+                assert_eq!((rtc_tcp_port, rtc_udp_port), (7881, 7882));
+            }
+            Voice::External(_) => panic!("managed is the default"),
+        }
+    }
+
+    #[test]
+    fn a_livekit_url_means_external_with_dev_keys() {
+        let args = parse(&["--livekit-url", "ws://127.0.0.1:7880"])
+            .unwrap()
+            .unwrap();
+        let Voice::External(livekit) = args.voice else {
+            panic!("external")
+        };
+        assert_eq!(livekit.url, "ws://127.0.0.1:7880");
+        assert_eq!(
+            (livekit.api_key.as_str(), livekit.api_secret.as_str()),
+            ("devkey", "secret")
+        );
+    }
+
+    #[test]
+    fn flags_of_the_two_modes_do_not_mix() {
+        let err = parse(&["--livekit-url", "ws://x:1", "--rtc-udp-port", "9"]).unwrap_err();
+        assert!(err.contains("--livekit-url runs no LiveKit"), "{err}");
+        let err = parse(&["--livekit-key", "k"]).unwrap_err();
+        assert!(err.contains("generated key"), "{err}");
     }
 
     #[test]
@@ -186,13 +319,29 @@ mod tests {
             "127.0.0.1:9000",
             "--name",
             "Кооп",
+            "--livekit-bin",
+            "/opt/livekit-server",
+            "--rtc-tcp-port",
+            "17881",
+            "--rtc-udp-port",
+            "17882",
         ])
         .unwrap()
         .unwrap();
-        assert_eq!(args.config.public_host, Host::Domain("camp.example".into()));
-        assert_eq!(args.config.public_port, Some(443));
-        assert_eq!(args.config.bind, "127.0.0.1:9000".parse().unwrap());
-        assert_eq!(args.config.camp_name, "Кооп");
+        assert_eq!(args.host, Some(Host::Domain("camp.example".into())));
+        assert_eq!(args.port, Some(443));
+        assert_eq!(args.bind, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(args.name, "Кооп");
+        let Voice::Managed {
+            binary,
+            rtc_tcp_port,
+            rtc_udp_port,
+        } = args.voice
+        else {
+            panic!("managed")
+        };
+        assert_eq!(binary, Some(PathBuf::from("/opt/livekit-server")));
+        assert_eq!((rtc_tcp_port, rtc_udp_port), (17881, 17882));
     }
 
     #[test]
@@ -201,6 +350,9 @@ mod tests {
         assert!(parse(&["--host", "999.1.1.1"])
             .unwrap_err()
             .starts_with("--host"));
+        assert!(parse(&["--rtc-udp-port", "70000"])
+            .unwrap_err()
+            .starts_with("--rtc-udp-port"));
         assert!(parse(&["--wat"]).unwrap_err().contains("unknown argument"));
         assert!(parse(&["--help"]).unwrap().is_none());
     }

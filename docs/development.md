@@ -35,22 +35,29 @@ pnpm dev
 
 Клиент заходит в лагерь по ссылке `ourcamp://`, а голос идёт через сервер лагеря
 ([ADR-0019](decisions/0019-voice-through-the-camp-port.md), [ADR-0020](decisions/0020-camps-in-the-app.md)).
-Для разработки нужны три процесса, каждый в своём терминале:
+Сервер лагеря сам запускает свой LiveKit ([ADR-0022](decisions/0022-managed-livekit.md)),
+поэтому для разработки нужны два процесса, каждый в своём терминале:
 
-1. LiveKit в Docker ([ADR-0013](decisions/0013-dev-livekit-in-docker.md)), ничего ставить не нужно
-   (`pnpm livekit:down` — остановить):
+1. Один раз — скачать livekit-server (закреплённая версия, проверка SHA-256, кладётся в
+   `dev/bin`, ~20 МБ). На macOS готового бинарника нет: `brew install livekit`.
 
    ```powershell
-   pnpm livekit
+   pnpm livekit:fetch
    ```
 
-2. Сервер лагеря — напечатает две ссылки, «для друзей» и «для вас» (ключ админа):
+2. Сервер лагеря — поднимет LiveKit и напечатает две ссылки, «для друзей» и «для вас»
+   (ключ админа):
 
    ```powershell
    pnpm server
    ```
 
 3. Клиент: `pnpm dev` → «Войти по ссылке» → вставить ссылку «для вас» → имя → «Войти в лагерь».
+
+LiveKit в Docker ([ADR-0013](decisions/0013-dev-livekit-in-docker.md), `pnpm livekit`) остаётся
+для тестов голоса приложения (`cargo test -p ourcamp-desktop -- --ignored`) и для
+`pnpm server:docker` (лагерь без своего LiveKit). Оба LiveKit берут порты 7881/7882 —
+одновременно работает только один: `pnpm livekit:down` перед `pnpm server`.
 
 Второй клиент на этой же машине — **другой профиль** (своя папка данных, свой ключ
 устройства, то есть другой человек в лагере). UI отдаёт тот же `pnpm dev`:
@@ -69,8 +76,9 @@ target\debug\ourcamp-desktop.exe
 В нём — «Войти по ссылке» и ссылка «для друзей» (или «Скопировать приглашение» в меню
 лагеря у первого клиента).
 
-С другого компьютера в той же сети: LiveKit запустить как `$env:OC_NODE_IP = "<IP этого ПК>"; pnpm livekit`,
-сервер сам кладёт в ссылки IP этого ПК в локальной сети. Windows может спросить разрешение
+С другого компьютера в той же сети ничего настраивать не нужно: сервер кладёт в ссылки IP
+этого ПК в локальной сети и его же сообщает своему LiveKit для медиа (с Docker —
+`$env:OC_NODE_IP = "<IP этого ПК>"; pnpm livekit`). Windows может спросить разрешение
 брандмауэра: 7780/tcp (сервер лагеря), 7881/tcp и 7882/udp (голос).
 
 | Переменная | Что делает | По умолчанию |
@@ -100,6 +108,17 @@ target\debug\ourcamp-desktop.exe
 3. Второе окно **без** `OC_PROFILE` не открывается: в консоли подсказка про профиль.
 4. Остановить `pnpm server` — в шапке «нет связи с лагерем»; запустить снова — подпись
    исчезает, костры снова живые (переподключение само, без перезапуска клиента).
+
+### Что проверить в M3 (шаг 5)
+
+1. `pnpm livekit:down`, затем `pnpm server`: в логе `LiveKit (managed): pid …`, строки
+   LiveKit идут с префиксом `[livekit]`. Клиенты слышат друг друга как раньше.
+2. С запущенным `pnpm livekit` сервер не стартует и объясняет: порты 7881/7882 заняты.
+3. Убить `livekit-server.exe` в диспетчере задач — в логе «LiveKit exited … restarting»,
+   через секунду «LiveKit is back». Клиент в костре либо переподключится сам, либо покажет
+   «Связь с костром потеряна — зайдите в него снова»; повторный вход в костёр работает.
+4. Ctrl+C в терминале сервера — LiveKit останавливается вместе с ним (в диспетчере задач
+   `livekit-server.exe` пропадает). То же, если закрыть окно терминала крестиком.
 
 ### Что проверить в M2
 
@@ -132,8 +151,9 @@ target\debug\ourcamp-desktop.exe
 
 ## Сервер лагеря (M3)
 
-Пока без окна: `pnpm server` (данные — в `target/camp-data`, LiveKit — из `pnpm livekit`).
-При первом запуске создаются база, каналы, самоподписанный сертификат и две ссылки:
+Пока без окна: `pnpm server` (данные — в `target/camp-data`, LiveKit — свой, из `dev/bin`).
+При первом запуске создаются база, каналы, самоподписанный сертификат, ключ API для
+LiveKit (`livekit-keys.json`) и две ссылки:
 
 ```text
 [oc-server] fingerprint: _Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8
@@ -149,8 +169,10 @@ target\debug\ourcamp-desktop.exe
 
 | Команда | Что делает |
 |---|---|
+| `pnpm livekit:fetch` | скачать закреплённый livekit-server в `dev/bin` (один раз) |
 | `pnpm livekit` / `pnpm livekit:down` | локальный LiveKit в Docker: запустить / остановить |
-| `pnpm server` | сервер лагеря без окна (данные в `target/camp-data`) |
+| `pnpm server` | сервер лагеря без окна со своим LiveKit (данные в `target/camp-data`) |
+| `pnpm server:docker` | то же, но с LiveKit из `pnpm livekit` |
 | `pnpm dev` | клиент в режиме разработки (горячая перезагрузка UI) |
 | `pnpm test` | тесты фронтенда (`node --test`) и Rust (`cargo test`) |
 | `pnpm typecheck` | проверка типов TypeScript |

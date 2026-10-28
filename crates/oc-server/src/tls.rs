@@ -87,7 +87,7 @@ impl Identity {
     }
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp: PathBuf = path.with_extension("tmp");
     fs::write(&tmp, bytes)?;
     restrict_to_owner(&tmp)?;

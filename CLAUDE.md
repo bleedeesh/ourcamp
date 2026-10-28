@@ -35,8 +35,12 @@
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
   пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
   `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
-- `crates/oc-server` — M3 шаги 1–4 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
-  сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018), 26 тестов.
+- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v2: участники, роли,
+  сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018).
+  `livekit/` — свой LiveKit (`managed` по умолчанию, ADR-0022): ключ в `livekit-keys.json`, конфиг через
+  окружение, перезапуск, job object (Windows) / сторож на `sh` (unix). Бинарник — `pnpm livekit:fetch`
+  (`dev/bin`, хеши в `dev/fetch-livekit.ts`); `tests/managed.rs` — `#[ignore]`, нужен бинарник.
+  `pnpm server:docker` — с LiveKit из Docker (порты 7881/7882 у них общие: одновременно один).
 - `apps/desktop/src-tauri`: `audio/` — устройства (`output.rs`, `input.rs`), `Engine`
   (режимы livekit / `OC_VOICE=synthetic`, громкости в `prefs`); `voice/` — `mic.rs`
   (поток микрофона: APM AEC3+NS+AGC → `NativeAudioSource`), `room.rs` (LiveKit, ADR-0008).
@@ -53,15 +57,15 @@
   (`desktop-ui`, Vite + демо-режим, окно 380×752).
 - Сборка на Windows: статический CRT (`.cargo/config.toml`), короткий путь (ADR-0012).
 - Node в среде агента — через nvs: `%LOCALAPPDATA%\nvs\node\24.21.0\x64` (не в PATH).
-- CI зелёный (6 задач, вкл. Miri и тесты с LiveKit в Docker). Linux-сборке нужен clang ≥ 21.
+- CI зелёный (8 задач, вкл. Miri, тесты с LiveKit в Docker и `managed` на Ubuntu + Windows). Linux-сборке нужен clang ≥ 21.
   Remote: github.com/bleedeesh/ourcamp (публичный). Известные пробелы M2: нет статуса «подключаемся /
   переподключаемся» в UI; смена устройства — только перезапуском (M7).
 - CI: `.github/workflows/ci.yml`, задача `voice` поднимает `dev/compose.yaml` и гоняет
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — по шагам из `docs/roadmap.md` (ADR-0014–0021). Готовы шаги 1–4 (лагерь в приложении, присутствие
-во всех кострах); дальше шаг 5 — LiveKit `managed` (дочерний процесс сервера).
+M3 — по шагам из `docs/roadmap.md` (ADR-0014–0022). Готовы шаги 1–5 (лагерь в приложении, присутствие
+во всех кострах, свой LiveKit); дальше шаг 6 — окно сервера (Tauri: статус, ссылки, трей).
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 
@@ -73,5 +77,5 @@ M3 — по шагам из `docs/roadmap.md` (ADR-0014–0021). Готовы ш
   заменять новой записью). Заглушки помечать этапом roadmap («arrives in M2»).
 
 ## Команды
-`pnpm livekit` (LiveKit в Docker) · `pnpm server` (лагерь) · `pnpm dev` · `pnpm test` · `pnpm typecheck` · `pnpm lint:rust` (clippy pedantic, -D warnings + fmt).
+`pnpm livekit:fetch` (бинарник LiveKit) · `pnpm livekit` (LiveKit в Docker) · `pnpm server` (лагерь со своим LiveKit) · `pnpm dev` · `pnpm test` · `pnpm typecheck` · `pnpm lint:rust` (clippy pedantic, -D warnings + fmt).
 Тесты TS — `node --test` (Node ≥ 22.18, только «стираемый» TS, импорты с `.ts`).

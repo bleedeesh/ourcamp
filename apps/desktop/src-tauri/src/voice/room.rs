@@ -321,7 +321,8 @@ mod tests {
                 url: "ws://127.0.0.1:7880".into(),
                 api_key: "devkey".into(),
                 api_secret: "secret".into(),
-            },
+            }
+            .into(),
         })
         .await
         .unwrap();

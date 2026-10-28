@@ -28,6 +28,29 @@ jobs:
       - run: cargo clippy -p oc-audio -p oc-invite -p oc-tls -p oc-proto -p oc-camp-client -p oc-server --all-targets -- -D warnings
       - run: cargo test -p oc-audio -p oc-invite -p oc-tls -p oc-proto -p oc-camp-client -p oc-server
 
+  managed-livekit:
+    name: Camp's own LiveKit (${{ matrix.os }})
+    # The camp runs livekit-server as a child (ADR-0022). The tie to the parent differs
+    # per OS — a job object on Windows, a `sh` guardian on unix — so both are linted and
+    # tested against the real binary. macOS has no release binary to test with.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node dev/fetch-livekit.ts
+      - run: cargo clippy -p oc-server --all-targets -- -D warnings
+      - run: cargo test -p oc-server -- --include-ignored
+
   miri:
     name: Miri (unsafe code in oc-audio)
     runs-on: ubuntu-latest
