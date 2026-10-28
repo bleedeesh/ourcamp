@@ -142,6 +142,8 @@ pub struct Running {
     pub fingerprint: Fingerprint,
     /// Links to hand out.
     pub links: Links,
+    /// Name and campfires, as at start (the server window labels presence with them).
+    pub camp: store::Camp,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
     /// `Some` in `managed` mode.
@@ -234,6 +236,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
             .map_err(StartError::Store)?
             .map(|t| link(InviteKind::ClaimAdmin, t)),
     };
+    let camp = store.camp().map_err(StartError::Store)?;
 
     // Last of all: nothing after it can fail for a managed LiveKit (whose address is
     // ours), so a started one is never left behind.
@@ -273,11 +276,29 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         local_addr,
         fingerprint: identity.fingerprint,
         links,
+        camp,
         shutdown,
         task,
         livekit: supervisor,
         state: state_rx,
     })
+}
+
+/// This machine's LAN address — the default for links. It is the source address the OS
+/// would pick to reach the internet; `connect` on UDP only selects a route, no packet
+/// is sent. Falls back to loopback without a network.
+#[must_use]
+pub fn lan_address() -> Host {
+    let ip = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|s| {
+            s.connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 9))?; // TEST-NET-1, never routed
+            s.local_addr()
+        })
+        .map(|a| a.ip());
+    match ip {
+        Ok(std::net::IpAddr::V4(v4)) if !v4.is_unspecified() => Host::Ipv4(v4),
+        _ => Host::Ipv4(std::net::Ipv4Addr::LOCALHOST),
+    }
 }
 
 /// `ws://host:port[/]` → `host:port`. Plain `ws` only: LiveKit sits next to the server;

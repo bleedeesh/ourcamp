@@ -6,15 +6,15 @@
 //!           [--livekit-url URL [--livekit-key KEY] [--livekit-secret S]]    external
 //! ```
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use oc_invite::{Host, DEFAULT_PORT};
 use oc_server::{
-    find_livekit, start, Config, LiveKit, LiveKitMode, ManagedLiveKit, DEFAULT_RTC_TCP_PORT,
-    DEFAULT_RTC_UDP_PORT,
+    find_livekit, lan_address, start, Config, LiveKit, LiveKitMode, ManagedLiveKit,
+    DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
 };
 
 const HELP: &str = "\
@@ -133,21 +133,6 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
         name,
         voice,
     }))
-}
-
-/// This machine's LAN address: the source address the OS would pick to reach the
-/// internet. `connect` on UDP only selects a route — no packet is sent.
-fn lan_address() -> Host {
-    let ip = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .and_then(|s| {
-            s.connect((Ipv4Addr::new(192, 0, 2, 1), 9))?; // TEST-NET-1, never routed
-            s.local_addr()
-        })
-        .map(|a| a.ip());
-    match ip {
-        Ok(IpAddr::V4(v4)) if !v4.is_unspecified() => Host::Ipv4(v4),
-        _ => Host::Ipv4(Ipv4Addr::LOCALHOST),
-    }
 }
 
 /// Warns early if an external LiveKit is not listening; the camp works without it,
