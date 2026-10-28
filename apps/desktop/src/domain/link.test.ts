@@ -9,7 +9,6 @@ test("the panel shows the ping; the quality is in the bars and the tooltip", () 
     bars: 3,
     tone: "good",
   });
-  assert.equal(linkView({ quality: "good", rttMs: null }).text, "Подключение…", "not measured yet");
   assert.equal(linkView({ quality: "poor", rttMs: 180 }).tone, "weak");
   assert.equal(linkView({ quality: "excellent", rttMs: 0 }).text, "<1 ms", "a LAN server");
   assert.deepEqual(linkView({ quality: "lost", rttMs: 300 }), {
@@ -18,5 +17,14 @@ test("the panel shows the ping; the quality is in the bars and the tooltip", () 
     bars: 0,
     tone: "bad",
   });
-  assert.equal(linkView(null).text, "Подключение…");
+});
+
+test("bars stay grey until measured and while the server is out of reach", () => {
+  assert.deepEqual(linkView(null), { text: "Подключение…", quality: "Связь проверяется", bars: 0, tone: "pending" });
+  const unmeasured = linkView({ quality: "excellent", rttMs: null });
+  assert.equal(unmeasured.tone, "pending", "LiveKit's rating alone is no measurement yet");
+  assert.equal(unmeasured.text, "Подключение…");
+  const offline = linkView({ quality: "excellent", rttMs: 12 }, false);
+  assert.equal(offline.tone, "pending");
+  assert.equal(offline.quality, "Нет связи с сервером");
 });

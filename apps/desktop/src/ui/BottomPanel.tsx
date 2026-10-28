@@ -1,5 +1,6 @@
 import { linkView, type LinkView } from "../domain/link.ts";
 import { Avatar } from "./ChannelTree.tsx";
+import { useCamps } from "./camps-context.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
@@ -31,6 +32,7 @@ export function BottomPanel() {
   const micMuted = useVoice((s) => s.micMuted);
   const deafened = useVoice((s) => s.deafened);
   const link = useVoice((s) => s.link);
+  const campOffline = useCamps((s) => s.offline);
   // A moderator forbade speaking (ADR-0028): the button is locked until lifted.
   const silenced = self?.silenced === true;
   const micOff = micMuted || silenced;
@@ -39,7 +41,7 @@ export function BottomPanel() {
     <section className="panel" aria-label="Голос и управление">
       {channelName !== null ? (
         <div className="panel__connection">
-          <Connection view={linkView(link)} channel={channelName} />
+          <Connection view={linkView(link, !campOffline)} channel={channelName} />
           <button type="button" className="square-button square-button--danger" aria-label="Выйти из голосового канала" onClick={() => void voice.leave()}>
             <Icon name="leave" size={16} />
           </button>

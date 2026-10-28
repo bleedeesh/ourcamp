@@ -361,6 +361,12 @@
   fill: var(--admin);
 }
 
+/* Connecting, or the server out of reach: every bar grey, none lit (ADR-0030). */
+.link-status[data-tone="pending"] rect {
+  fill: var(--text-faint);
+  opacity: 0.45;
+}
+
 .link-status__ping {
   font-weight: 600;
   color: var(--text);
