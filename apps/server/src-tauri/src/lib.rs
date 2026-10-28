@@ -16,7 +16,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use oc_server::{find_livekit, lan_address, Config, LiveKitMode, ManagedLiveKit, Running};
 use status::{snapshot, Base, ServerStatus};
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tokio::sync::watch;
 
 /// Event with the whole [`ServerStatus`].
@@ -157,6 +159,47 @@ fn lock_dir(dir: &Path) -> std::io::Result<DirLock> {
     }
 }
 
+/// Shows the window again (from the tray).
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// The tray icon: a click opens the window, the menu also stops the camp.
+fn tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Открыть", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Остановить лагерь и выйти", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("OurCamp Server")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => show_window(app),
+            // `RunEvent::Exit` below stops the camp and LiveKit before the process ends.
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 /// Runs the window until it is closed.
 ///
 /// # Panics
@@ -182,7 +225,16 @@ pub fn run() {
             });
             tauri::async_runtime::spawn(Arc::clone(&host).start(app.handle().clone()));
             app.manage(host);
+            tray(app)?;
             Ok(())
+        })
+        // The close button hides the window: the camp keeps running for friends;
+        // it stops from the tray menu (ADR-0023).
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![server_status, server_retry])
         .build(tauri::generate_context!())

@@ -16,7 +16,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 oc-server = { path = "../../../crates/oc-server" }
 oc-proto = { path = "../../../crates/oc-proto" }
