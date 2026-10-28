@@ -34,6 +34,7 @@ futures-util = { version = "0.3", default-features = false }
 [dev-dependencies]
 # End-to-end voice through a real camp server (ignored tests, need `pnpm livekit`).
 oc-server = { path = "../../../crates/oc-server" }
+tokio = { version = "1", features = ["time"] }
 
 [lints]
 workspace = true

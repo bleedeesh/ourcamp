@@ -7,6 +7,8 @@ import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "
 const LEVELS_EVENT = "voice://levels";
 /** Event emitted by `src-tauri/src/participants.rs`. */
 const PARTICIPANTS_EVENT = "voice://participants";
+/** Event emitted by `src-tauri/src/participants.rs` when the server ends a session. */
+const DISCONNECTED_EVENT = "voice://disconnected";
 
 /**
  * Talks to the Rust media engine. Command names and argument shapes must match
@@ -47,6 +49,10 @@ export class TauriEngine implements VoiceEngine {
 
   onParticipants(listener: (update: ParticipantsUpdate) => void): () => void {
     return subscribe<ParticipantsUpdate>(PARTICIPANTS_EVENT, listener);
+  }
+
+  onDisconnected(listener: (reason: string) => void): () => void {
+    return subscribe<string>(DISCONNECTED_EVENT, listener);
   }
 }
 

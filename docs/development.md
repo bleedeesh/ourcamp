@@ -2,7 +2,7 @@
 
 ## Что нужно установить (Windows)
 
-1. **Rust** (stable, ≥ 1.80): <https://rustup.rs>. Установщик сам предложит
+1. **Rust** (stable, ≥ 1.89): <https://rustup.rs>. Установщик сам предложит
    «Visual Studio C++ Build Tools» — согласиться, нужен компонент «Desktop development with C++».
 2. **Node.js ≥ 22.18** (в нём TypeScript запускается без сборки — так работают тесты).
 3. **pnpm**: `corepack enable` (идёт с Node).

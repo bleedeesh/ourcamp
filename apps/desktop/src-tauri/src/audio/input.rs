@@ -123,7 +123,7 @@ fn choose_config(device: &cpal::Device) -> Result<(StreamConfig, SampleFormat), 
         config
     } else {
         let default = device.default_input_config().map_err(backend)?;
-        if !usable(default.sample_format()) || default.sample_rate().0 % 100 != 0 {
+        if !usable(default.sample_format()) || !default.sample_rate().0.is_multiple_of(100) {
             return Err(InputError::UnsupportedFormat);
         }
         default

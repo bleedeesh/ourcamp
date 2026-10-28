@@ -43,6 +43,9 @@ pub trait RoomHost: Send + Sync + 'static {
     fn voice_stopped(&self, user_id: &str);
     /// The set of remote members or their mic state changed. Always the full list.
     fn members_changed(&self, members: Vec<RemoteMember>);
+    /// The server ended our session (not our own `close`): the room is gone, the host
+    /// should tidy up and tell the user `message`.
+    fn disconnected(&self, message: String);
 }
 
 /// Where and how to join one voice room, as the camp hands it out.
@@ -234,6 +237,9 @@ async fn handle_events(
             }
             RoomEvent::Disconnected { reason } => {
                 eprintln!("[oc-voice] disconnected: {reason:?}");
+                if reason != livekit::DisconnectReason::ClientInitiated {
+                    host.disconnected(disconnect_message(reason).to_owned());
+                }
                 break;
             }
             _ => {}
@@ -253,6 +259,21 @@ async fn handle_events(
         stop_voice(&mut voices, &user_id);
     }
     host.members_changed(Vec::new());
+}
+
+/// Why the server ended the session, for the user.
+fn disconnect_message(reason: livekit::DisconnectReason) -> &'static str {
+    match reason {
+        livekit::DisconnectReason::DuplicateIdentity => {
+            "Вы зашли в этот лагерь из другого окна или с другого устройства — здесь голос отключён"
+        }
+        livekit::DisconnectReason::ParticipantRemoved => "Вас убрали из костра",
+        livekit::DisconnectReason::RoomDeleted | livekit::DisconnectReason::RoomClosed => {
+            "Костёр закрыт на сервере"
+        }
+        livekit::DisconnectReason::ServerShutdown => "Сервер голоса остановлен",
+        _ => "Связь с костром потеряна — зайдите в него снова",
+    }
 }
 
 /// Copies one remote voice into its mixer source until the track ends.
@@ -281,6 +302,7 @@ mod tests {
         }
         fn voice_stopped(&self, _: &str) {}
         fn members_changed(&self, _: Vec<RemoteMember>) {}
+        fn disconnected(&self, _: String) {}
     }
 
     /// A camp server in this process (LiveKit from `pnpm livekit`), a fresh device logged
@@ -347,6 +369,57 @@ mod tests {
             camp.stop().await;
         });
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Records server-side disconnects.
+    struct Watcher(std::sync::Mutex<Vec<String>>);
+
+    impl RoomHost for Watcher {
+        fn voice_started(&self, _: &str) -> Option<SourceInput> {
+            None
+        }
+        fn voice_stopped(&self, _: &str) {}
+        fn members_changed(&self, _: Vec<RemoteMember>) {}
+        fn disconnected(&self, message: String) {
+            self.0.lock().unwrap().push(message);
+        }
+    }
+
+    /// The same person joining twice (a second window on the same profile): LiveKit drops
+    /// the first session, and the user must be told why instead of seeing a frozen UI.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_duplicate_login_is_reported_to_the_first_session() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("dup").await;
+            let second = RoomParams {
+                url: params.url.clone(),
+                token: params.token.clone(),
+                playback_rate: 48_000,
+            };
+            let watcher = Arc::new(Watcher(std::sync::Mutex::default()));
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let first = VoiceRoom::connect(params, source, false, watcher.clone())
+                .await
+                .expect("first session");
+            let again = connect(second).await;
+
+            let mut seen = Vec::new();
+            for _ in 0..50 {
+                seen = watcher.0.lock().unwrap().clone();
+                if !seen.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            assert_eq!(seen.len(), 1, "exactly one disconnect, got {seen:?}");
+            assert!(seen[0].contains("другого окна"), "{}", seen[0]);
+
+            again.close().await;
+            first.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
     }
 
     /// The whole M3 path: camp server (in-process) → login with a device key → room token →

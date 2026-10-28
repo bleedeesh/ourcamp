@@ -274,9 +274,9 @@ fn render_callback(
             let frames = chunk.len() / channels;
             let stereo = &mut scratch[..frames * 2];
             core.process(stereo);
-            for (dst, src) in chunk.chunks_mut(channels).zip(stereo.chunks_exact(2)) {
-                dst[0] = src[0];
-                dst[1] = src[1];
+            for (dst, &[left, right]) in chunk.chunks_mut(channels).zip(stereo.as_chunks::<2>().0) {
+                dst[0] = left;
+                dst[1] = right;
                 dst[2..].fill(0.0);
             }
         }

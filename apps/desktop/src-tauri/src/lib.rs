@@ -35,11 +35,27 @@ pub fn run() {
     tauri::Builder::default()
         .manage(engine)
         .setup(move |app| {
-            let camps: CampsState = data_dir(app.path().app_data_dir())
-                .and_then(|dir| {
-                    eprintln!("[ourcamp] data: {}", dir.display());
-                    Camps::load(&dir).map_err(|e| e.to_string())
-                })
+            let dir = data_dir(app.path().app_data_dir());
+            if let Ok(dir) = &dir {
+                eprintln!("[ourcamp] data: {}", dir.display());
+                match lock_profile(dir) {
+                    Ok(lock) => {
+                        app.manage(lock);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // A second window would join voice as the same person and LiveKit
+                        // would throw the first one out (`DuplicateIdentity`).
+                        eprintln!(
+                            "[ourcamp] OurCamp is already running with this profile; \n                             for a second person on this PC set OC_PROFILE=<name> (debug builds)"
+                        );
+                        std::process::exit(0);
+                    }
+                    // Cannot lock (exotic file system): run anyway rather than not at all.
+                    Err(e) => eprintln!("[ourcamp] profile lock unavailable: {e}"),
+                }
+            }
+            let camps: CampsState = dir
+                .and_then(|dir| Camps::load(&dir).map_err(|e| e.to_string()))
                 .map(Arc::new)
                 .map_err(|e| format!("Папка данных приложения недоступна: {e}"));
             if let Err(reason) = &camps {
@@ -82,4 +98,43 @@ fn data_dir(base: tauri::Result<PathBuf>) -> Result<PathBuf, String> {
         Some(p) => base.join("profiles").join(p.trim()),
         None => base,
     })
+}
+
+/// Held for the life of the process: one running OurCamp per profile (data directory).
+/// The OS releases the lock when the process ends, however it ends.
+struct ProfileLock(#[allow(dead_code, reason = "held only to keep the lock")] std::fs::File);
+
+fn lock_profile(dir: &std::path::Path) -> std::io::Result<ProfileLock> {
+    std::fs::create_dir_all(dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("instance.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(ProfileLock(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(std::io::ErrorKind::WouldBlock.into()),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lock_profile;
+
+    #[test]
+    fn a_profile_can_be_locked_once_until_released() {
+        let dir = std::env::temp_dir().join(format!("oc-lock-{}", std::process::id()));
+        let first = lock_profile(&dir).expect("first lock");
+        let second = lock_profile(&dir).err().expect("second must fail");
+        assert_eq!(second.kind(), std::io::ErrorKind::WouldBlock);
+        let other = lock_profile(&dir.join("profiles").join("artem"));
+        assert!(other.is_ok(), "another profile is independent");
+        drop(first);
+        assert!(
+            lock_profile(&dir).is_ok(),
+            "released when the holder goes away"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

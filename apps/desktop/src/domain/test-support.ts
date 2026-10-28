@@ -57,4 +57,12 @@ export class FakeEngine implements VoiceEngine {
   announce(update: ParticipantsUpdate) {
     this.#participants?.(update);
   }
+  #disconnected: ((reason: string) => void) | null = null;
+  onDisconnected(listener: (reason: string) => void) {
+    this.#disconnected = listener;
+    return () => (this.#disconnected = null);
+  }
+  disconnect(reason: string) {
+    this.#disconnected?.(reason);
+  }
 }

@@ -9,6 +9,8 @@ use crate::audio::engine::{Engine, Participants};
 
 /// Must match `PARTICIPANTS_EVENT` in `src/engine/tauri-engine.ts`.
 pub const PARTICIPANTS_EVENT: &str = "voice://participants";
+/// Must match `DISCONNECTED_EVENT` in `src/engine/tauri-engine.ts`. Payload: the reason.
+pub const DISCONNECTED_EVENT: &str = "voice://disconnected";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -42,11 +44,17 @@ impl From<Participants> for ParticipantsDto {
     }
 }
 
-/// Sends every participants update from `engine` to the webview.
+/// Sends participant updates and server-side disconnects from `engine` to the webview.
 pub fn forward(app: AppHandle, engine: &Engine) {
+    let for_disconnects = app.clone();
     engine.set_participants_listener(Arc::new(move |participants| {
         if let Err(e) = app.emit(PARTICIPANTS_EVENT, ParticipantsDto::from(participants)) {
             eprintln!("[ourcamp] participants event: {e}");
+        }
+    }));
+    engine.set_disconnect_listener(Arc::new(move |reason| {
+        if let Err(e) = for_disconnects.emit(DISCONNECTED_EVENT, reason) {
+            eprintln!("[ourcamp] disconnected event: {e}");
         }
     }));
 }
