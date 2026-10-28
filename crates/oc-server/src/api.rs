@@ -19,8 +19,9 @@ use oc_proto::{
     API_VERSION, PUBLIC_KEY_LEN,
 };
 
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
+use crate::manage::Directive;
 use crate::store::{canonical_token, Device, LoginError, Store, StoreResult};
 use crate::LiveKit;
 
@@ -49,6 +50,8 @@ pub struct AppState {
     events: watch::Receiver<Arc<CampState>>,
     /// Turns true when the server stops; open event streams close on it.
     shutdown: watch::Receiver<bool>,
+    /// Events for one member (`moved`, `kicked`; ADR-0028), sent by the manager.
+    directives: broadcast::Sender<Directive>,
 }
 
 impl AppState {
@@ -61,11 +64,13 @@ impl AppState {
         livekit_authority: &str,
         events: watch::Receiver<Arc<CampState>>,
         shutdown: watch::Receiver<bool>,
+        directives: broadcast::Sender<Directive>,
     ) -> Self {
         Self {
             livekit_authority: Arc::from(livekit_authority),
             events,
             shutdown,
+            directives,
             store: Arc::new(Mutex::new(store)),
             nonces: Arc::default(),
             fingerprint,
@@ -350,7 +355,8 @@ async fn room_token(
         .with_grants(VideoGrants {
             room_join: true,
             room: channel,
-            can_publish: Some(true),
+            // A silenced member joins listening only; LiveKit enforces it (ADR-0028).
+            can_publish: Some(!member.silenced),
             can_subscribe: Some(true),
             ..VideoGrants::default()
         })
@@ -373,31 +379,44 @@ async fn events(
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     let hash = session_hash(&headers)?;
-    state
+    let member = state
         .with_store(move |s| s.session_member(&hash))
         .await?
         .ok_or(ApiError(ErrorCode::Unauthorized))?;
-    let events = state.events.clone();
-    let shutdown = state.shutdown.clone();
-    Ok(upgrade.on_upgrade(move |socket| stream_events(socket, events, shutdown)))
+    let stream = EventStream {
+        user_id: member.user_id,
+        events: state.events.clone(),
+        directives: state.directives.subscribe(),
+        shutdown: state.shutdown.clone(),
+    };
+    Ok(upgrade.on_upgrade(move |socket| stream_events(socket, stream)))
 }
 
-async fn stream_events(
-    mut socket: WebSocket,
-    mut events: watch::Receiver<Arc<CampState>>,
-    mut shutdown: watch::Receiver<bool>,
-) {
+/// One member's `/api/v1/events` stream.
+struct EventStream {
+    /// Whose stream it is: directives for anyone else are skipped.
+    user_id: String,
+    events: watch::Receiver<Arc<CampState>>,
+    directives: broadcast::Receiver<Directive>,
+    shutdown: watch::Receiver<bool>,
+}
+
+async fn stream_events(mut socket: WebSocket, stream: EventStream) {
+    let EventStream {
+        user_id,
+        mut events,
+        mut directives,
+        mut shutdown,
+    } = stream;
     // `wait_for` hands back a read guard (`watch::Ref`, not `Send`); drop it right away
     // so it is not held across the `await` that sends the close frame.
     let stopping = async move {
         let _ = shutdown.wait_for(|&stopping| stopping).await;
     };
     tokio::pin!(stopping);
-    let send = |state: &CampState| {
-        serde_json::to_string(&CampEvent::State(state.clone()))
-            .map(|json| Message::Text(json.into()))
-    };
-    let first = send(&events.borrow_and_update());
+    let send =
+        |event: &CampEvent| serde_json::to_string(event).map(|json| Message::Text(json.into()));
+    let first = send(&CampEvent::State((**events.borrow_and_update()).clone()));
     let Ok(first) = first else { return };
     if socket.send(first).await.is_err() {
         return;
@@ -410,11 +429,33 @@ async fn stream_events(
                 if changed.is_err() {
                     break; // the poller is gone: the server is stopping
                 }
-                let Ok(message) = send(&events.borrow_and_update()) else { return };
+                let state = (**events.borrow_and_update()).clone();
+                let Ok(message) = send(&CampEvent::State(state)) else { return };
                 if socket.send(message).await.is_err() {
                     return;
                 }
             }
+            directive = directives.recv() => match directive {
+                Ok(directive) if directive.user_id == user_id => {
+                    let Ok(message) = send(&directive.event) else { return };
+                    if socket.send(message).await.is_err() {
+                        return;
+                    }
+                    if directive.event == CampEvent::Kicked {
+                        // No longer a member: say goodbye and end the stream.
+                        let close = CloseFrame {
+                            code: close_code::POLICY,
+                            reason: "removed from the camp".into(),
+                        };
+                        let _ = socket.send(Message::Close(Some(close))).await;
+                        return;
+                    }
+                }
+                // Someone else's, or missed while slow: a missed `kicked` still ends in
+                // a refused reconnect, a missed `moved` is only a missed move.
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
             incoming = socket.recv() => match incoming {
                 // Clients send nothing but control frames; any close or error ends it.
                 Some(Ok(Message::Close(_)) | Err(_)) | None => return,

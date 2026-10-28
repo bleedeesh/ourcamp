@@ -608,7 +608,9 @@ async fn state_where(
             .expect("the expected state within 5 s")
             .expect("stream open")
             .expect("valid event");
-        let oc_proto::CampEvent::State(state) = event;
+        let oc_proto::CampEvent::State(state) = event else {
+            continue;
+        };
         if ready(&state) {
             return state;
         }
@@ -713,7 +715,9 @@ async fn stopping_the_camp_closes_event_streams_at_once() {
         .unwrap();
     let mut events = client.events(&session).await.unwrap();
     let first = events.next().await.unwrap().unwrap();
-    let oc_proto::CampEvent::State(first) = first;
+    let oc_proto::CampEvent::State(first) = first else {
+        panic!("the first event is the snapshot, got {first:?}")
+    };
     assert_eq!(
         first.presence,
         [],
@@ -825,7 +829,9 @@ async fn state_within(
             .expect("the change within the time")
             .expect("stream open")
             .expect("valid event");
-        let oc_proto::CampEvent::State(state) = event;
+        let oc_proto::CampEvent::State(state) = event else {
+            continue;
+        };
         if ready(&state) {
             return state;
         }
@@ -932,5 +938,126 @@ async fn removing_a_campfire_closes_its_room_and_afk_stays() {
         api_error(client.room_token(&session, "c0").await),
         ErrorCode::NotFound
     );
+    camp.stop().await;
+}
+
+// ---- ADR-0028: moderation ----
+
+/// The next event that is not a snapshot (directives come between snapshots).
+async fn next_directive(events: &mut oc_camp_client::CampEvents) -> Option<oc_proto::CampEvent> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.next())
+            .await
+            .expect("a directive within 5 s")?
+            .expect("valid event");
+        if !matches!(event, oc_proto::CampEvent::State(_)) {
+            return Some(event);
+        }
+    }
+}
+
+fn can_publish(token: &str) -> Option<bool> {
+    livekit_token::TokenVerifier::with_api_key("devkey", "secret")
+        .verify(token)
+        .unwrap()
+        .video
+        .can_publish
+}
+
+#[tokio::test]
+async fn moderation_reaches_the_member_and_livekit_enforces_it() {
+    let room: Room = std::sync::Arc::default();
+    let (upstream, calls) = fake_twirp_logged(room.clone()).await;
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let bob = client
+        .login(&DeviceKey::generate(), "Боб", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut lena_events = client.events(&lena).await.unwrap();
+    let mut bob_events = client.events(&bob).await.unwrap();
+    room.lock().unwrap().push((lena.user_id.clone(), false)); // Лена в голосе, в c0
+    let manager = camp.running.manager();
+    let calls_of = |method: &str| {
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == method)
+            .count()
+    };
+
+    // Silenced: the snapshot says so, LiveKit takes her mic down, new tokens listen only.
+    manager.set_silenced(&lena.user_id, true).await.unwrap();
+    state_where(&mut lena_events, |s| {
+        s.members
+            .iter()
+            .any(|m| m.user_id == lena.user_id && m.silenced)
+    })
+    .await;
+    assert_eq!(calls_of("UpdateParticipant"), 1);
+    let token = client.room_token(&lena, "c0").await.unwrap();
+    assert_eq!(can_publish(&token.token), Some(false));
+    manager.set_silenced(&lena.user_id, false).await.unwrap();
+    assert_eq!(calls_of("UpdateParticipant"), 2, "lifted in the room too");
+    let token = client.room_token(&lena, "c0").await.unwrap();
+    assert_eq!(can_publish(&token.token), Some(true));
+
+    // Moved: only she is told; chats and people outside voice are refused.
+    let katka = manager
+        .create_channel("Катка", ChannelKind::Voice)
+        .await
+        .unwrap();
+    manager.move_member(&lena.user_id, &katka.id).await.unwrap();
+    assert_eq!(
+        next_directive(&mut lena_events).await,
+        Some(oc_proto::CampEvent::Moved {
+            channel_id: katka.id.clone()
+        })
+    );
+    assert!(matches!(
+        manager.move_member(&lena.user_id, "c1").await,
+        Err(oc_server::ManageError::NotACampfire)
+    ));
+    assert!(matches!(
+        manager.move_member(&bob.user_id, &katka.id).await,
+        Err(oc_server::ManageError::NotInVoice)
+    ));
+
+    // Kicked: told, stream closed, out of the room, back only with an invite.
+    manager.kick(&lena.user_id).await.unwrap();
+    assert_eq!(
+        next_directive(&mut lena_events).await,
+        Some(oc_proto::CampEvent::Kicked)
+    );
+    let after = tokio::time::timeout(std::time::Duration::from_secs(2), lena_events.next())
+        .await
+        .expect("the stream ends");
+    assert!(after.is_none(), "closed after the kick, got {after:?}");
+    assert_eq!(calls_of("RemoveParticipant"), 1);
+    assert_eq!(
+        api_error(client.events(&lena).await.map(|_| ())),
+        ErrorCode::Unauthorized
+    );
+
+    // Bob's stream goes on: he sees Лена gone, and none of what was meant for her.
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), bob_events.next())
+            .await
+            .expect("Bob's snapshots keep coming")
+            .expect("stream open")
+            .expect("valid event");
+        let oc_proto::CampEvent::State(state) = event else {
+            panic!("a directive for someone else reached Bob: {event:?}")
+        };
+        if state.members.len() == 1 && state.members[0].user_id == bob.user_id {
+            break;
+        }
+    }
     camp.stop().await;
 }

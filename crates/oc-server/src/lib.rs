@@ -259,6 +259,8 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
 
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (events, events_rx) = watch::channel(Arc::new(initial));
+    // Events for one member (ADR-0028); a few in flight at most, so 64 is plenty.
+    let (directives, _) = tokio::sync::broadcast::channel(64);
     let state_rx = events_rx.clone();
     let state = api::AppState::new(
         store,
@@ -267,6 +269,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         &livekit_authority,
         events_rx,
         shutdown_rx.clone(),
+        directives.clone(),
     );
     let rooms = Arc::new(rooms::RoomService::new(livekit_authority.clone(), livekit));
     let refresh = Arc::new(tokio::sync::Notify::new());
@@ -274,6 +277,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         state.store_handle(),
         Arc::clone(&rooms),
         Arc::clone(&refresh),
+        directives,
     );
     tokio::spawn(presence::run(
         state.store_handle(),
