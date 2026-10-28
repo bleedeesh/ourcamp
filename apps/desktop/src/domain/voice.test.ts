@@ -180,11 +180,11 @@ test("a server-side disconnect leaves the campfire and says why", async () => {
   const { engine, voice } = setup();
   await voice.join("lobby");
   engine.emit([{ userId: "lena", levelDb: -20, speaking: true }]);
-  engine.disconnect("Вы зашли в этот лагерь из другого окна");
+  engine.disconnect("Вы зашли на этот сервер из другого окна");
   const s = voice.store.get();
   assert.equal(s.channelId, null);
   assert.deepEqual(s.speaking, {});
-  assert.equal(s.error, "Вы зашли в этот лагерь из другого окна");
+  assert.equal(s.error, "Вы зашли на этот сервер из другого окна");
 
   // A stale event after we already left changes nothing.
   voice.dismissError();

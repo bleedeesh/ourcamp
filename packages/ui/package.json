@@ -9,7 +9,8 @@
     "./base.css": "./src/base.css",
     "./Campfire.tsx": "./src/Campfire.tsx",
     "./clipboard.ts": "./src/clipboard.ts",
-    "./tauri-events.ts": "./src/tauri-events.ts"
+    "./tauri-events.ts": "./src/tauri-events.ts",
+    "./Icon.tsx": "./src/Icon.tsx"
   },
   "peerDependencies": {
     "react": "^19.2.0",

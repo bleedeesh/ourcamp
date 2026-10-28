@@ -24,7 +24,7 @@ OurCamp Server (headless)
   --bind ADDR             listen address                        [0.0.0.0:7780]
   --host HOST             address friends use, put into links   [this PC's LAN IPv4]
   --port PORT             port put into links                   [the bound port]
-  --name NAME             name of a new camp                    [Мой лагерь]
+  --name NAME             name of a new camp                    [Мой сервер]
 
 Voice — the camp's own LiveKit (managed, the default):
   --livekit-bin PATH      livekit-server to run   [next to oc-server, dev/bin, PATH]
@@ -66,7 +66,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
     let mut bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PORT));
     let mut host: Option<Host> = None;
     let mut port: Option<u16> = None;
-    let mut name = String::from("Мой лагерь");
+    let mut name = String::from("Мой сервер");
     let mut binary: Option<PathBuf> = None;
     let mut rtc_tcp_port: Option<u16> = None;
     let mut rtc_udp_port: Option<u16> = None;

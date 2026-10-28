@@ -50,11 +50,11 @@ export const STARTING: ServerStatus = {
 export function headline(status: ServerStatus): string {
   switch (status.phase.kind) {
     case "starting":
-      return "Лагерь запускается…";
+      return "Сервер запускается…";
     case "failed":
-      return "Лагерь не запустился";
+      return "Сервер не запустился";
     case "running":
-      return "Лагерь работает";
+      return "Сервер работает";
   }
 }
 
@@ -62,8 +62,8 @@ export function headline(status: ServerStatus): string {
 export function crowd(members: readonly Member[]): string {
   if (members.length === 0) return "Пока никого — отправьте друзьям ссылку";
   const seated = members.filter((m) => m.campfire !== null).length;
-  const people = `${members.length} ${plural(members.length, "человек", "человека", "человек")} в лагере`;
-  return seated === 0 ? people : `${people} · ${seated} у костра`;
+  const people = `${members.length} ${plural(members.length, "человек", "человека", "человек")} на сервере`;
+  return seated === 0 ? people : `${people} · ${seated} в голосе`;
 }
 
 /** Voice status for the footer. */

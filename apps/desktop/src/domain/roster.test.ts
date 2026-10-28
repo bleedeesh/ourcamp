@@ -125,22 +125,22 @@ test("your own campfire keeps the room's view; nobody shows up twice", () => {
 test("renames and campfire changes arrive live; chats stay out of the tree", () => {
   const live: CampState = {
     ...state({ katka: [["zhenya", false]] }),
-    name: "Новый лагерь",
+    name: "Новый сервер",
     channels: [
       { id: "katka", name: "Катка 2", kind: "voice", afk: false },
       { id: "chat", name: "Chat", kind: "text", afk: false },
-      { id: "fresh", name: "Новый костёр", kind: "voice", afk: false },
+      { id: "fresh", name: "Новый канал", kind: "voice", afk: false },
     ],
   };
   const inLobby = { ...camp, channels: camp.channels.map((c) => (c.id === "lobby" ? { ...c, memberIds: ["lena"] } : c)) };
   const next = applyCampState(inLobby, live, "lobby", "me");
-  assert.equal(next.name, "Новый лагерь");
-  assert.equal(next.short, "НЛ", "the badge follows the name");
+  assert.equal(next.name, "Новый сервер");
+  assert.equal(next.short, "НС", "the badge follows the name");
   assert.deepEqual(
     next.channels.map((c) => [c.id, c.name, c.memberIds]),
     [
       ["katka", "Катка 2", ["zhenya"]],
-      ["fresh", "Новый костёр", []],
+      ["fresh", "Новый канал", []],
     ],
     "the removed Lobby is gone, the chat is not a campfire, order follows the camp",
   );

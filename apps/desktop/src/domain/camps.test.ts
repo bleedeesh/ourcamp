@@ -229,13 +229,13 @@ test("cancel returns where you came from", async () => {
 
 test("badges and counts read naturally", () => {
   assert.equal(campShort("Вечерний кооп"), "ВК");
-  assert.equal(campShort("лагерь"), "ЛА");
+  assert.equal(campShort("сервер"), "СЕ");
   assert.equal(campShort("  "), "?");
-  assert.equal(campfires(1), "1 костёр");
-  assert.equal(campfires(3), "3 костра");
-  assert.equal(campfires(5), "5 костров");
-  assert.equal(campfires(11), "11 костров");
-  assert.equal(campfires(22), "22 костра");
+  assert.equal(campfires(1), "1 канал");
+  assert.equal(campfires(3), "3 канала");
+  assert.equal(campfires(5), "5 каналов");
+  assert.equal(campfires(11), "11 каналов");
+  assert.equal(campfires(22), "22 канала");
 });
 
 test("live state of the open camp reaches the tree; other camps and outages are handled", async () => {
@@ -302,7 +302,7 @@ test("leaving asks first, leaves voice, then opens the next camp", async () => {
     ["own"],
   );
   assert.equal(state.currentId, "own", "the next camp opens");
-  assert.equal(state.notice, "Вы покинули лагерь «Вечерний кооп»");
+  assert.equal(state.notice, "Вы покинули сервер «Вечерний кооп»");
   assert.equal(state.switcherOpen || state.leaveAsk, false);
 });
 

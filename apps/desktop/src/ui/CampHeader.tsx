@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { campShort } from "../domain/camps.ts";
 import { avatarColor } from "../domain/roster.ts";
 import type { Role } from "../domain/types.ts";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useCamps, useCampsController } from "./camps-context.tsx";
 import { useVoice } from "./voice-context.tsx";
 
@@ -32,7 +32,7 @@ export function CampHeader() {
         </span>
         <span className="camp-switcher__text">
           <span className="camp-switcher__name">{camp.name}</span>
-          {offline && <span className="camp-switcher__offline">нет связи с лагерем</span>}
+          {offline && <span className="camp-switcher__offline">нет связи с сервером</span>}
         </span>
         <Icon name="chevron" size={16} className="camp-switcher__chevron" />
       </button>
@@ -76,7 +76,7 @@ function CampMenu() {
     return (
       <div ref={ref} className="camp-menu camp-menu--confirm" role="alertdialog" aria-labelledby="leave-title">
         <p id="leave-title" className="camp-menu__question">
-          Покинуть лагерь «{name}»?
+          Покинуть сервер «{name}»?
         </p>
         <p className="camp-menu__hint">Он пропадёт из списка, а вернуться можно будет только по новому приглашению.</p>
         <div className="camp-menu__actions">
@@ -92,7 +92,7 @@ function CampMenu() {
   }
 
   return (
-    <div ref={ref} className="camp-menu" role="menu" aria-label="Лагеря">
+    <div ref={ref} className="camp-menu" role="menu" aria-label="Серверы">
       {camps.map((c) => (
         <button
           key={c.id}
@@ -121,14 +121,14 @@ function CampMenu() {
         <Icon name="link" size={18} />
         Войти по ссылке
       </button>
-      <button type="button" role="menuitem" className="menu-button" aria-disabled="true" title="Скоро: окно сервера лагеря">
+      <button type="button" role="menuitem" className="menu-button" aria-disabled="true" title="Скоро: окно сервера">
         <Icon name="plus" size={18} />
-        Создать свой лагерь
+        Создать свой сервер
       </button>
       <span className="camp-menu__sep" role="separator" />
       <button type="button" role="menuitem" className="menu-button" data-danger onClick={() => campsCtl.askLeave()}>
         <Icon name="leave" size={18} />
-        Покинуть лагерь
+        Покинуть сервер
       </button>
     </div>
   );

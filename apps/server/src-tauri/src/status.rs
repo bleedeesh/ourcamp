@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn a_fresh_camp_shows_its_name_channels_and_link() {
         let state = CampState {
-            name: "Мой лагерь".into(),
+            name: "Мой сервер".into(),
             channels: vec![
                 channel("c0", "Voice", ChannelKind::Voice),
                 channel("c1", "Chat", ChannelKind::Text),
@@ -174,7 +174,7 @@ mod tests {
         };
         let status = snapshot(&base(), &state, Some(42));
         assert_eq!(status.phase, Phase::Running);
-        assert_eq!(status.camp_name, "Мой лагерь");
+        assert_eq!(status.camp_name, "Мой сервер");
         assert_eq!(status.channels.len(), 2);
         assert_eq!(status.join_link.as_deref(), Some("ourcamp://join"));
         assert_eq!(status.members, []);

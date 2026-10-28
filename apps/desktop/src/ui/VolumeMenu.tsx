@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { MAX_VOLUME, MIN_VOLUME, VOLUME_STEP } from "../domain/volume.ts";
 import { Avatar } from "./ChannelTree.tsx";
-import { Icon } from "./icons.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
 const MARGIN = 8;

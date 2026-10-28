@@ -1,25 +1,12 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
+import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { copyText } from "@ourcamp/ui/clipboard.ts";
 
 import { isTauri, type ServerApi } from "../api.ts";
 import { crowd, headline, ROLE_LABEL, STARTING, voice, type Member, type Role, type ServerStatus } from "../status.ts";
 import { CampName, Channels } from "./CampSettings.tsx";
-
-function Glyph({ d }: { d: string }) {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={d} />
-    </svg>
-  );
-}
-
-const MINIMIZE = "M5 12h14";
-const CLOSE = "M18 6 6 18M6 6l12 12";
-const CROWN = "M3 18h18M4 18 3 8l5 4 4-7 4 7 5-4-1 10";
-const SHIELD = "M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z";
-const MIC_OFF = "M2 2l20 20M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.6M19 10v2a7 7 0 0 1-.6 2.9M5 10v2a7 7 0 0 0 11.5 5.4M12 19v3";
 
 function TitleBar() {
   const win = () => (isTauri() ? getCurrentWindow() : null);
@@ -32,7 +19,7 @@ function TitleBar() {
         </span>
       </span>
       <button type="button" className="titlebar__button" aria-label="Свернуть" onClick={() => void win()?.minimize()}>
-        <Glyph d={MINIMIZE} />
+        <Icon name="minimize" size={14} />
       </button>
       <button
         type="button"
@@ -40,7 +27,7 @@ function TitleBar() {
         aria-label="Закрыть"
         onClick={() => void win()?.close()}
       >
-        <Glyph d={CLOSE} />
+        <Icon name="close" size={14} />
       </button>
     </header>
   );
@@ -89,17 +76,17 @@ function MemberRow({ member, api }: { member: Member; api: ServerApi }) {
       <span className="member__name">{member.name}</span>
       {member.role === "admin" && (
         <span className="member__crown" title="Админ">
-          <Glyph d={CROWN} />
+          <Icon name="crown" size={14} />
         </span>
       )}
       {member.role === "moderator" && (
         <span className="member__shield" title="Модератор">
-          <Glyph d={SHIELD} />
+          <Icon name="shield" size={14} />
         </span>
       )}
       {member.campfire !== null && member.micMuted && (
         <span className="member__muted" title="Микрофон выключен">
-          <Glyph d={MIC_OFF} />
+          <Icon name="mic" off size={14} />
         </span>
       )}
       <span className={member.campfire === null ? "member__where" : "member__where member__where--seated"}>
@@ -163,7 +150,7 @@ export function App({ api }: { api: ServerApi }) {
           <>
             <section className="links">
               {status.joinLink !== null && (
-                <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте в лагерь." link={status.joinLink} />
+                <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте на сервер." link={status.joinLink} />
               )}
             </section>
 

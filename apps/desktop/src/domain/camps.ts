@@ -170,7 +170,7 @@ export class CampsController {
     this.store.patch({ name, joinError: null });
   }
 
-  /** Whether "Войти в лагерь" can be pressed. */
+  /** Whether "Войти на сервер" can be pressed. */
   canJoin(): boolean {
     const { check, name, joining } = this.store.get();
     return !joining && check.state === "ok" && check.preview.usable && name.trim() !== "";
@@ -200,7 +200,7 @@ export class CampsController {
     this.store.patch({ switcherOpen: false, leaveAsk: false });
   }
 
-  /** "Покинуть лагерь" in the menu: ask first — coming back takes a new invite. */
+  /** "Покинуть сервер" in the menu: ask first — coming back takes a new invite. */
   askLeave(): void {
     this.store.patch({ leaveAsk: true });
   }
@@ -228,8 +228,8 @@ export class CampsController {
       else await this.#open(next);
       this.store.patch({
         notice: told
-          ? `Вы покинули лагерь «${name}»`
-          : `Лагерь «${name}» убран из списка. Он сейчас недоступен, поэтому там вы пока числитесь участником`,
+          ? `Вы покинули сервер «${name}»`
+          : `Сервер «${name}» убран из списка. Он сейчас недоступен, поэтому там вы пока числитесь участником`,
       });
     } catch (err) {
       this.store.patch({ error: message(err) });
@@ -290,7 +290,7 @@ export class CampsController {
       view: "camp",
       currentId: opened.id,
       offline: opened.offline,
-      error: opened.offline ? "Сервер лагеря сейчас недоступен — показаны последние известные костры" : null,
+      error: opened.offline ? "Сервер сейчас недоступен — показаны последние известные каналы" : null,
     });
   }
 }
@@ -299,11 +299,11 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** "3 костра", "5 костров", "1 костёр". */
+/** "3 канала", "5 каналов", "1 канал". */
 export function campfires(n: number): string {
   const mod10 = n % 10;
   const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return `${n} костёр`;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} костра`;
-  return `${n} костров`;
+  if (mod10 === 1 && mod100 !== 11) return `${n} канал`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} канала`;
+  return `${n} каналов`;
 }

@@ -265,14 +265,14 @@ async fn handle_events(
 fn disconnect_message(reason: livekit::DisconnectReason) -> &'static str {
     match reason {
         livekit::DisconnectReason::DuplicateIdentity => {
-            "Вы зашли в этот лагерь из другого окна или с другого устройства — здесь голос отключён"
+            "Вы зашли на этот сервер из другого окна или с другого устройства — здесь голос отключён"
         }
-        livekit::DisconnectReason::ParticipantRemoved => "Вас убрали из костра",
+        livekit::DisconnectReason::ParticipantRemoved => "Вас убрали из канала",
         // The camp removes a campfire by closing its room (ADR-0026).
-        livekit::DisconnectReason::RoomDeleted => "Костёр удалён",
-        livekit::DisconnectReason::RoomClosed => "Костёр закрыт на сервере",
+        livekit::DisconnectReason::RoomDeleted => "Канал удалён",
+        livekit::DisconnectReason::RoomClosed => "Канал закрыт на сервере",
         livekit::DisconnectReason::ServerShutdown => "Сервер голоса остановлен",
-        _ => "Связь с костром потеряна — зайдите в него снова",
+        _ => "Связь с каналом потеряна — зайдите в него снова",
     }
 }
 
