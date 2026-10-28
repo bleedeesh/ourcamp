@@ -15,6 +15,12 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 /// Channels a new camp starts with. The admin edits them later (M3 window / M5).
 const DEFAULT_CHANNELS: [&str; 3] = ["Лобби", "Катка", "Отошёл (AFK)"];
 
+/// Adds the AFK campfire at the end unless the camp has one (ADR-0025). `MAX()` sits in a
+/// subquery: an aggregate over rows the `WHERE` filtered out still yields one row.
+const ENSURE_AFK: &str = "INSERT INTO channels (id, name, position, afk)
+     SELECT 'afk', 'AFK', (SELECT COALESCE(MAX(position), -1) + 1 FROM channels), 1
+     WHERE NOT EXISTS (SELECT 1 FROM channels WHERE afk = 1)";
+
 /// Storage failure (disk, corruption). Not something the user can fix from a request.
 #[derive(Debug)]
 pub struct StoreError(rusqlite::Error);
@@ -178,6 +184,20 @@ impl Store {
             tx.pragma_update(None, "user_version", 2)?;
             tx.commit()?;
         }
+        if version < 3 {
+            // The system AFK campfire (ADR-0025). The third default campfire of v1,
+            // "Отошёл (AFK)", becomes it (same id = same LiveKit room); a camp without
+            // it gets a new one at the end.
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE channels ADD COLUMN afk INTEGER NOT NULL DEFAULT 0;
+                 UPDATE channels SET afk = 1, name = 'AFK'
+                  WHERE id = 'c2' AND name = 'Отошёл (AFK)';",
+            )?;
+            tx.execute(ENSURE_AFK, [])?;
+            tx.pragma_update(None, "user_version", 3)?;
+            tx.commit()?;
+        }
         Ok(())
     }
 
@@ -193,12 +213,13 @@ impl Store {
                 })?;
         let mut stmt = self
             .conn
-            .prepare("SELECT id, name FROM channels ORDER BY position")?;
+            .prepare("SELECT id, name, afk FROM channels ORDER BY position")?;
         let channels = stmt
             .query_map([], |r| {
                 Ok(Channel {
                     id: r.get(0)?,
                     name: r.get(1)?,
+                    afk: r.get(2)?,
                 })
             })?
             .collect::<Result<_, _>>()?;
@@ -479,12 +500,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_camp_without_the_old_afk_campfire_gets_exactly_one_at_the_end() {
+        let store = Store::open_in_memory("x").unwrap();
+        store
+            .conn
+            .execute("DELETE FROM channels WHERE afk = 1", [])
+            .unwrap();
+        store.conn.execute(ENSURE_AFK, []).unwrap();
+        store.conn.execute(ENSURE_AFK, []).unwrap();
+        let ids: Vec<_> = store
+            .camp()
+            .unwrap()
+            .channels
+            .into_iter()
+            .map(|c| (c.id, c.afk))
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                ("c0".into(), false),
+                ("c1".into(), false),
+                ("afk".into(), true)
+            ],
+            "once, last, even when asked twice"
+        );
+    }
+
+    #[test]
     fn new_camp_has_name_default_channels_and_both_links() {
         let store = Store::open_in_memory("Вечерний кооп").unwrap();
         let camp = store.camp().unwrap();
         assert_eq!(camp.name, "Вечерний кооп");
         let names: Vec<_> = camp.channels.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, DEFAULT_CHANNELS);
+        assert_eq!(
+            names,
+            ["Лобби", "Катка", "AFK"],
+            "v3 turns the third into AFK"
+        );
+        let afk: Vec<_> = camp
+            .channels
+            .iter()
+            .filter(|c| c.afk)
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(afk, ["c2"], "one AFK campfire, same LiveKit room as before");
         assert_eq!(store.join_token().unwrap().as_str().len(), 16);
         assert_eq!(
             store

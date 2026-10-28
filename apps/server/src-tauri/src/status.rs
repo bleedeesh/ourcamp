@@ -154,10 +154,12 @@ mod tests {
                     Channel {
                         id: "c0".into(),
                         name: "Лобби".into(),
+                        afk: false,
                     },
                     Channel {
                         id: "c1".into(),
                         name: "Катка".into(),
+                        afk: false,
                     },
                 ],
             },
