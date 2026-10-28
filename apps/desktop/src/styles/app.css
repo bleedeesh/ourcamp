@@ -337,16 +337,48 @@
   padding: 2px 4px 0 8px;
 }
 
-.panel__connection-text {
+/* Connection quality and ping (ADR-0030). */
+.link-status {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   color: var(--text-2);
 }
 
-.panel__connection-text b {
-  color: var(--text);
+.link-status__bars rect {
+  fill: var(--surface-2);
+  transition: fill 0.2s;
+}
+
+.link-status[data-tone="good"] rect[data-on] {
+  fill: var(--online);
+}
+
+.link-status[data-tone="weak"] rect[data-on] {
+  fill: var(--admin);
+}
+
+.link-status[data-tone="bad"] .link-status__label {
+  color: #ff8a98; /* --danger lightened to 4.5:1 */
+}
+
+.link-status__label {
   font-weight: 600;
+  color: var(--text);
+}
+
+.link-status__ping {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.link-status__ping::before {
+  content: "·";
+  margin-right: 8px;
+  color: var(--text-faint);
 }
 
 .panel__hint {
@@ -354,17 +386,6 @@
   padding: 4px 8px;
   font-size: 13px;
   color: var(--text-muted);
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.dot--online {
-  background: var(--online);
 }
 
 .panel__self {

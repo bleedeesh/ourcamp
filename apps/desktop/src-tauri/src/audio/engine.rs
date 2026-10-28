@@ -16,7 +16,7 @@ use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
 use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
-use crate::voice::room::{RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
+use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
 /// A remote member to play when joining a channel.
 #[derive(Debug, Clone)]
@@ -56,6 +56,9 @@ pub type ParticipantsListener = Arc<dyn Fn(Participants) + Send + Sync>;
 
 /// Receives the reason, in Russian, when the server ends a voice session (ADR-0020).
 pub type DisconnectListener = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Receives the connection's quality and ping while in a channel (ADR-0030).
+pub type LinkListener = Arc<dyn Fn(Link) + Send + Sync>;
 
 /// User-facing error text (shown in the UI toast).
 pub type EngineError = String;
@@ -99,6 +102,7 @@ struct Live {
     listener: Option<ParticipantsListener>,
     self_id: String,
     disconnect_listener: Option<DisconnectListener>,
+    link_listener: Option<LinkListener>,
     next_session_id: u64,
     output_latency: DeviceLatency,
     output_rate: u32,
@@ -199,6 +203,7 @@ impl Engine {
                 local_level: None,
                 listener: None,
                 disconnect_listener: None,
+                link_listener: None,
                 next_session_id: 0,
                 // Set when a camp is opened (`set_self_id`).
                 self_id: String::new(),
@@ -222,6 +227,10 @@ impl Engine {
     /// Where "the server ended your session" goes.
     pub fn set_disconnect_listener(&self, listener: DisconnectListener) {
         self.lock().disconnect_listener = Some(listener);
+    }
+
+    pub fn set_link_listener(&self, listener: LinkListener) {
+        self.lock().link_listener = Some(listener);
     }
 
     /// Whether joining needs a room ([`RoomAccess`]) — false for synthetic voices.
@@ -477,6 +486,23 @@ impl RoomHost for Host {
     fn members_changed(&self, members: Vec<RemoteMember>) {
         if let Some(live) = self.live.upgrade() {
             lock(&live).announce(members);
+        }
+    }
+
+    fn link_changed(&self, link: Link) {
+        let Some(live) = self.live.upgrade() else {
+            return;
+        };
+        let live = lock(&live);
+        // A room being replaced may still report once; only the current one counts.
+        if live
+            .session
+            .as_ref()
+            .is_some_and(|s| s.id == self.session_id)
+        {
+            if let Some(listener) = &live.link_listener {
+                listener(link);
+            }
         }
     }
 

@@ -239,3 +239,18 @@ test("leaving AFK any way gives the sound back", async () => {
   assert.equal(voice.store.get().deafened, false);
   assert.equal(voice.store.get().micMuted, false);
 });
+
+test("the connection report shows while in a channel and goes with it", async () => {
+  const { engine, voice } = setup();
+  engine.report({ quality: "excellent", rttMs: 20 });
+  assert.equal(voice.store.get().link, null, "not in a channel: nothing to show");
+  await voice.join("lobby");
+  assert.equal(voice.store.get().link, null, "measuring");
+  engine.report({ quality: "good", rttMs: 41 });
+  assert.deepEqual(voice.store.get().link, { quality: "good", rttMs: 41 });
+  await voice.join("afk");
+  assert.equal(voice.store.get().link, null, "a new room is measured anew");
+  engine.report({ quality: "excellent", rttMs: 18 });
+  await voice.leave();
+  assert.equal(voice.store.get().link, null);
+});

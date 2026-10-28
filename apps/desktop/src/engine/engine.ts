@@ -26,6 +26,16 @@ export interface ParticipantsUpdate {
   readonly members: readonly RemoteParticipant[];
 }
 
+/**
+ * Our connection to the voice server while in a channel (ADR-0030): LiveKit's quality
+ * rating and the round trip of the media path.
+ */
+export interface LinkStatus {
+  readonly quality: "excellent" | "good" | "poor" | "lost";
+  /** Ping in ms; null until ICE has measured it. */
+  readonly rttMs: number | null;
+}
+
 export interface JoinRequest {
   readonly campId: string;
   readonly channelId: string;
@@ -61,4 +71,6 @@ export interface VoiceEngine {
    * connection lost). `reason` is a sentence for the user. Returns an unsubscribe function.
    */
   onDisconnected(listener: (reason: string) => void): () => void;
+  /** Connection quality and ping, on change, while in a channel. Returns an unsubscribe function. */
+  onLink(listener: (link: LinkStatus) => void): () => void;
 }

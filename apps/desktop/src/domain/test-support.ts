@@ -1,5 +1,5 @@
 // Fakes shared by the domain tests (not itself a test file).
-import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
+import type { JoinRequest, LinkStatus, MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
 import type { KeyValueStorage } from "./volume.ts";
 
 export class MemoryStorage implements KeyValueStorage {
@@ -64,5 +64,13 @@ export class FakeEngine implements VoiceEngine {
   }
   disconnect(reason: string) {
     this.#disconnected?.(reason);
+  }
+  #link: ((link: LinkStatus) => void) | null = null;
+  onLink(listener: (link: LinkStatus) => void) {
+    this.#link = listener;
+    return () => (this.#link = null);
+  }
+  report(link: LinkStatus) {
+    this.#link?.(link);
   }
 }

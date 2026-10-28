@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Server window icon source (ADR-0032): the client's campfire (apps/desktop/app-icon.svg)
+       moved up and left, with a server badge in the corner so the two apps differ in the
+       taskbar and the tray. `pnpm tauri icon app-icon.svg` in apps/server builds the set. -->
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#161616"/>
+  <g transform="translate(96 88) scale(10.6)" stroke-linejoin="round">
+    <rect x="10" y="46" width="44" height="9" rx="4.5" fill="#3E3470" stroke="#1B1633" stroke-width="1.6" transform="rotate(-16 32 50.5)"/>
+    <rect x="10" y="46" width="44" height="9" rx="4.5" fill="#3E3470" stroke="#1B1633" stroke-width="1.6" transform="rotate(16 32 50.5)"/>
+    <circle cx="15.4" cy="55.2" r="4.3" fill="#6E62B8" stroke="#1B1633" stroke-width="1.6"/>
+    <circle cx="15.4" cy="55.2" r="1.7" fill="#3E3470"/>
+    <circle cx="48.6" cy="55.2" r="4.3" fill="#6E62B8" stroke="#1B1633" stroke-width="1.6"/>
+    <circle cx="48.6" cy="55.2" r="1.7" fill="#3E3470"/>
+    <path d="M32 5C36.5 13 46.5 20 46.5 33C46.5 42 40 48.5 32 48.5C24 48.5 17.5 42 17.5 33C17.5 26 21.5 21.5 25 16.5C26 22.5 28 25 30.2 25C29 18 30 11 32 5Z" fill="#8B7CF6" stroke="#1B1633" stroke-width="1.6"/>
+    <path d="M32 18C35 24 40 28 40 36C40 42 36.5 46 32 46C27.5 46 24 42 24 36C24 31 27 28 29 25C30 29 31 30 32.5 30C31.5 26 31 22 32 18Z" fill="#B3A8FF"/>
+    <path d="M32 30C34 33 36 35.5 36 39C36 42.5 34.2 45 32 45C29.8 45 28 42.5 28 39C28 35.5 30 33 32 30Z" fill="#ECE8FF"/>
+    <circle cx="48" cy="11" r="1.7" fill="#C4BBFF"/>
+    <circle cx="15.5" cy="14" r="1.2" fill="#C4BBFF"/>
+    <circle cx="51.5" cy="20" r="1" fill="#C4BBFF"/>
+  </g>
+  <!-- The server badge: two rack units with lit lamps, cut out of the tile by a ring. -->
+  <rect x="560" y="584" width="400" height="376" rx="96" fill="#161616"/>
+  <rect x="592" y="616" width="336" height="312" rx="72" fill="#8B7CF6"/>
+  <rect x="644" y="670" width="232" height="92" rx="26" fill="#1B1633"/>
+  <rect x="644" y="782" width="232" height="92" rx="26" fill="#1B1633"/>
+  <circle cx="696" cy="716" r="17" fill="#3DDC84"/>
+  <circle cx="696" cy="828" r="17" fill="#3DDC84"/>
+  <rect x="744" y="706" width="92" height="20" rx="10" fill="#6E62B8"/>
+  <rect x="744" y="818" width="92" height="20" rx="10" fill="#6E62B8"/>
+</svg>
