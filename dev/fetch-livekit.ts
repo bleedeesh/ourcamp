@@ -7,7 +7,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Same version as dev/compose.yaml: upgrade both together.
@@ -65,8 +64,11 @@ async function main(): Promise<void> {
     throw new Error(`${archive.file}: SHA-256 ${actual}, expected ${archive.sha256} — not using it`);
   }
 
-  // Unpacked in a scratch directory; only the verified binary is moved into dev/bin.
-  const scratch = mkdtempSync(join(tmpdir(), "oc-livekit-"));
+  // Unpacked in a scratch directory inside dev/bin, then only the binary is moved out of
+  // it: a rename cannot cross volumes (on CI runners the system temp is C:, the
+  // checkout D:), so the scratch directory must sit on the target's volume.
+  mkdirSync(binDir, { recursive: true });
+  const scratch = mkdtempSync(join(binDir, ".download-"));
   try {
     const file = join(scratch, archive.file);
     writeFileSync(file, bytes);
@@ -75,7 +77,6 @@ async function main(): Promise<void> {
     const tar =
       process.platform === "win32" ? join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "tar.exe") : "tar";
     execFileSync(tar, ["-xf", file, "-C", scratch], { stdio: "inherit" });
-    mkdirSync(binDir, { recursive: true });
     rmSync(target, { force: true });
     renameSync(join(scratch, exe), target);
   } finally {
