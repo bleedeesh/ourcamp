@@ -12,6 +12,7 @@
     "livekit:fetch": "node dev/fetch-livekit.ts",
     "server": "cargo run -p oc-server -- --data target/camp-data",
     "server:docker": "cargo run -p oc-server -- --data target/camp-data --livekit-url ws://127.0.0.1:7880",
+    "server:window": "pnpm --filter @ourcamp/server tauri dev",
     "test": "pnpm -r test && cargo test",
     "typecheck": "pnpm -r typecheck",
     "lint:rust": "cargo clippy --all-targets -- -D warnings && cargo fmt --check"

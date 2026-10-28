@@ -78,9 +78,12 @@ jobs:
       - run: pnpm --filter @ourcamp/desktop typecheck
       - run: pnpm --filter @ourcamp/desktop test
       - run: pnpm --filter @ourcamp/desktop exec vite build
+      - run: pnpm --filter @ourcamp/server typecheck
+      - run: pnpm --filter @ourcamp/server test
+      - run: pnpm --filter @ourcamp/server exec vite build
 
   desktop:
-    name: Desktop app (${{ matrix.os }})
+    name: Desktop apps — client and server window (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -104,8 +107,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Tauri embeds the built frontend at compile time.
       - run: pnpm --filter @ourcamp/desktop exec vite build
-      - run: cargo clippy -p ourcamp-desktop --all-targets -- -D warnings
-      - run: cargo test -p ourcamp-desktop
+      - run: pnpm --filter @ourcamp/server exec vite build
+      - run: cargo clippy -p ourcamp-desktop -p ourcamp-server-app --all-targets -- -D warnings
+      - run: cargo test -p ourcamp-desktop -p ourcamp-server-app
 
   voice:
     name: Voice against a real LiveKit (ignored tests)
