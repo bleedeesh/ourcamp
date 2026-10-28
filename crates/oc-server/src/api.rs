@@ -148,8 +148,9 @@ impl IntoResponse for ApiError {
             ErrorCode::BadSignature | ErrorCode::NonceInvalid | ErrorCode::Unauthorized => {
                 StatusCode::UNAUTHORIZED
             }
-            ErrorCode::InviteRequired | ErrorCode::InviteInvalid => StatusCode::FORBIDDEN,
-            ErrorCode::ClaimUsed => StatusCode::CONFLICT,
+            ErrorCode::InviteRequired | ErrorCode::InviteInvalid | ErrorCode::Forbidden => {
+                StatusCode::FORBIDDEN
+            }
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -272,7 +273,6 @@ async fn login(
                 ApiError(match e {
                     LoginError::InviteRequired => ErrorCode::InviteRequired,
                     LoginError::InviteInvalid => ErrorCode::InviteInvalid,
-                    LoginError::ClaimUsed => ErrorCode::ClaimUsed,
                 })
             })?
     };
@@ -335,7 +335,7 @@ async fn room_token(
     let (member, exists) = {
         let channel = channel.clone();
         state
-            .with_store(move |s| Ok((s.session_member(&hash)?, s.channel_exists(&channel)?)))
+            .with_store(move |s| Ok((s.session_member(&hash)?, s.campfire_exists(&channel)?)))
             .await?
     };
     let member = member.ok_or_else(unauthorized)?;

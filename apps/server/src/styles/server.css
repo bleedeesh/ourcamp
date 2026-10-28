@@ -229,8 +229,6 @@
 /* ---------- Members ---------- */
 
 .members {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -324,4 +322,243 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   user-select: text;
+}
+
+.member__shield {
+  display: grid;
+  color: var(--accent-text);
+}
+
+/* ---------- Owner's controls (ADR-0026) ---------- */
+
+.camp-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-faint);
+}
+
+.icon-button:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.icon-button--danger:hover {
+  background: var(--danger-soft);
+  color: #ff8a98; /* --danger lightened to 4.5:1 on its soft background */
+}
+
+.small-button {
+  height: 30px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.small-button:hover {
+  background: var(--surface-2);
+}
+
+.small-button:disabled {
+  opacity: 0.45;
+}
+
+.small-button--accent {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.small-button--accent:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+.small-button--danger {
+  background: var(--danger-soft);
+  color: #ff8a98;
+}
+
+.name-edit,
+.new-channel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.name-edit__input {
+  flex: 1;
+  min-width: 120px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: var(--bg-0);
+  color: var(--text);
+  font-size: 14px;
+  user-select: text;
+}
+
+.name-edit__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.name-edit__error {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: #ff8a98;
+}
+
+.segmented {
+  display: flex;
+  padding: 2px;
+  border-radius: var(--radius-s);
+  background: var(--bg-0);
+}
+
+.segmented button {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.segmented button[aria-checked="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+/* ---------- Channels ---------- */
+
+.channels {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.channels__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.channel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-s);
+}
+
+.channel:hover {
+  background: var(--bg-2);
+}
+
+.channel--confirm {
+  padding: 8px;
+  background: var(--danger-soft);
+}
+
+.channel--confirm:hover {
+  background: var(--danger-soft);
+}
+
+.channel__icon {
+  display: grid;
+  width: 16px;
+  color: var(--text-faint);
+}
+
+.channel__name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.channel__tag {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.channel__tools {
+  display: flex;
+  gap: 2px;
+}
+
+.channel__question {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.channel__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.channels__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ---------- Roles ---------- */
+
+.member {
+  flex-wrap: wrap;
+  height: auto;
+  min-height: 36px;
+}
+
+.member__role {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-0);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.member__role:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.member__error {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: #ff8a98;
 }

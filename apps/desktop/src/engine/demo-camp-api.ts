@@ -24,7 +24,7 @@ export class DemoCampApi implements CampApi {
   async preview(link: string): Promise<CampPreview> {
     await delay(300);
     if (!link.trim().toLowerCase().startsWith("ourcamp://")) throw new Error("Это не ссылка OurCamp");
-    return { name: DEMO_CAMP.name, channels: DEMO_CAMP.channels.length, kind: link.includes("/claim/") ? "claim" : "join", usable: true };
+    return { name: DEMO_CAMP.name, channels: DEMO_CAMP.channels.length, kind: link.includes("/claim/") ? "claim" : "join", usable: !link.includes("/claim/") };
   }
 
   async join(_link: string, name: string): Promise<OpenCamp> {
@@ -56,8 +56,8 @@ export class DemoCampApi implements CampApi {
     return {
       id: DEMO_ID,
       name: DEMO_CAMP.name,
-      channels: DEMO_CAMP.channels.map((c) => ({ id: c.id, name: c.name, afk: c.afk })),
-      self: { userId: DEMO_SELF_ID, name: this.#name || "Дима", isAdmin: true },
+      channels: DEMO_CAMP.channels.map((c) => ({ id: c.id, name: c.name, kind: "voice" as const, afk: c.afk })),
+      self: { userId: DEMO_SELF_ID, name: this.#name || "Дима", role: "admin" as const },
       offline: false,
     };
   }

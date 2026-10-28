@@ -268,9 +268,9 @@ fn disconnect_message(reason: livekit::DisconnectReason) -> &'static str {
             "Вы зашли в этот лагерь из другого окна или с другого устройства — здесь голос отключён"
         }
         livekit::DisconnectReason::ParticipantRemoved => "Вас убрали из костра",
-        livekit::DisconnectReason::RoomDeleted | livekit::DisconnectReason::RoomClosed => {
-            "Костёр закрыт на сервере"
-        }
+        // The camp removes a campfire by closing its room (ADR-0026).
+        livekit::DisconnectReason::RoomDeleted => "Костёр удалён",
+        livekit::DisconnectReason::RoomClosed => "Костёр закрыт на сервере",
         livekit::DisconnectReason::ServerShutdown => "Сервер голоса остановлен",
         _ => "Связь с костром потеряна — зайдите в него снова",
     }

@@ -57,13 +57,27 @@ pub fn decode_bytes(s: &str) -> Option<Vec<u8>> {
 
 // ---- camp ----
 
-/// A voice channel ("костёр").
+/// What a channel is for (ADR-0026).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    /// A campfire: a LiveKit room.
+    #[default]
+    Voice,
+    /// A chat (M5).
+    Text,
+}
+
+/// A channel: a campfire ("костёр") or a chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
-    /// Stable id; also the LiveKit room name.
+    /// Stable id; for a campfire also the LiveKit room name.
     pub id: String,
     /// Display name.
     pub name: String,
+    /// Absent in older camps' answers = voice.
+    #[serde(default)]
+    pub kind: ChannelKind,
     /// The system AFK campfire: always there, cannot be removed; whoever sits there has
     /// mic and sound off (ADR-0025). Absent in older camps' answers = `false`.
     #[serde(default)]
@@ -123,19 +137,21 @@ pub struct LoginRequest {
     pub nonce: String,
     /// Signature of [`login_message`] (base64url).
     pub signature: String,
-    /// Invite or claim token: required on first login, optional later (a member
-    /// can still redeem the claim key).
+    /// Invite token: required on first login, ignored later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<String>,
 }
 
-/// Camp role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Camp role of a member (ADR-0026). The owner — whoever runs the server — is not a
+/// member and has no role here. Ordered: a role can do everything the ones below can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// Regular member.
+    /// Joined with the friends link.
     Member,
-    /// Redeemed the claim key.
+    /// Kicks, moves, mutes.
+    Moderator,
+    /// Plus the camp's name, channels and moderators.
     Admin,
 }
 
@@ -180,10 +196,15 @@ pub enum CampEvent {
     State(CampState),
 }
 
-/// Who is in the camp and who sits at which campfire.
+/// The camp as it is now: its name and channels, who is in it and who sits at which
+/// campfire. Renames and channel changes travel here too (ADR-0026).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CampState {
+    /// Display name of the camp.
+    pub name: String,
+    /// Channels in display order.
+    pub channels: Vec<Channel>,
     /// Every member of the camp, sorted by id.
     pub members: Vec<MemberInfo>,
     /// Campfires with people in them, in channel order.
@@ -198,8 +219,8 @@ pub struct MemberInfo {
     pub user_id: String,
     /// Display name.
     pub name: String,
-    /// Redeemed the admin key.
-    pub is_admin: bool,
+    /// Role in the camp.
+    pub role: Role,
 }
 
 /// People at one campfire.
@@ -232,10 +253,10 @@ pub enum ErrorCode {
     BadRequest,
     /// First login without an invite.
     InviteRequired,
-    /// Invite unknown.
+    /// Invite unknown, or an admin key (retired by ADR-0026).
     InviteInvalid,
-    /// Admin key already redeemed.
-    ClaimUsed,
+    /// The member's role does not allow the action (ADR-0026).
+    Forbidden,
     /// Signature does not verify.
     BadSignature,
     /// Nonce unknown, expired or reused.
@@ -308,10 +329,17 @@ mod tests {
     #[test]
     fn camp_events_are_tagged_by_type() {
         let event = CampEvent::State(CampState {
+            name: "Вечерний кооп".into(),
+            channels: vec![Channel {
+                id: "c1".into(),
+                name: "Chat".into(),
+                kind: ChannelKind::Text,
+                afk: false,
+            }],
             members: vec![MemberInfo {
                 user_id: "u".into(),
                 name: "Лена".into(),
-                is_admin: false,
+                role: Role::Moderator,
             }],
             presence: vec![ChannelPresence {
                 channel_id: "c0".into(),
@@ -323,7 +351,15 @@ mod tests {
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "state");
-        assert_eq!(json["members"][0]["isAdmin"], false);
+        assert_eq!(json["members"][0]["role"], "moderator");
+        assert_eq!(json["channels"][0]["kind"], "text");
+        assert!(Role::Admin > Role::Moderator && Role::Moderator > Role::Member);
+        let old: Channel = serde_json::from_str(r#"{"id":"c0","name":"Лобби"}"#).unwrap();
+        assert_eq!(
+            (old.kind, old.afk),
+            (ChannelKind::Voice, false),
+            "older camps"
+        );
         assert_eq!(json["presence"][0]["channelId"], "c0");
         assert_eq!(json["presence"][0]["members"][0]["micMuted"], true);
         assert_eq!(serde_json::from_value::<CampEvent>(json).unwrap(), event);

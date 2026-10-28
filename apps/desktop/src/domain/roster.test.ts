@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { CampState } from "../engine/camp-api.ts";
 import type { Camp } from "./types.ts";
 import { applyCampState, applyRoster, avatarColor } from "./roster.ts";
 
@@ -9,7 +10,7 @@ const member = (id: string, extra = {}) => ({
   color: "#888",
   micMuted: false,
   deafened: false,
-  isAdmin: false,
+  role: "member" as const,
   streaming: false,
   ...extra,
 });
@@ -23,7 +24,7 @@ const camp: Camp = {
     { id: "lobby", name: "Лобби", afk: false, memberIds: ["artem", "lena"] },
     { id: "katka", name: "Катка", afk: false, memberIds: ["olya"] },
   ],
-  members: { me: member("me"), artem: member("artem", { isAdmin: true }), lena: member("lena"), olya: member("olya") },
+  members: { me: member("me"), artem: member("artem", { role: "admin" as const }), lena: member("lena"), olya: member("olya") },
 };
 
 test("the joined channel holds exactly the room's members", () => {
@@ -49,7 +50,7 @@ test("known members keep their profile; mic state follows the room", () => {
     members: [{ userId: "artem", name: "someone else", micMuted: true }],
   });
   assert.equal(next.members["artem"]?.name, "ARTEM");
-  assert.equal(next.members["artem"]?.isAdmin, true);
+  assert.equal(next.members["artem"]?.role, "admin");
   assert.equal(next.members["artem"]?.micMuted, true);
 });
 
@@ -80,11 +81,16 @@ test("avatar colour is deterministic", () => {
   assert.match(avatarColor(""), /^#[0-9A-F]{6}$/i);
 });
 
-const state = (presence: Record<string, Array<[string, boolean]>>) => ({
+const state = (presence: Record<string, Array<[string, boolean]>>): CampState => ({
+  name: "Вечерний кооп",
+  channels: [
+    { id: "lobby", name: "Лобби", kind: "voice", afk: false },
+    { id: "katka", name: "Катка", kind: "voice", afk: false },
+  ],
   members: [
-    { userId: "me", name: "ME", isAdmin: false },
-    { userId: "artem", name: "Артём", isAdmin: true },
-    { userId: "zhenya", name: "Женя", isAdmin: false },
+    { userId: "me", name: "ME", role: "member" },
+    { userId: "artem", name: "Артём", role: "admin" },
+    { userId: "zhenya", name: "Женя", role: "moderator" },
   ],
   presence: Object.entries(presence).map(([channelId, people]) => ({
     channelId,
@@ -92,13 +98,14 @@ const state = (presence: Record<string, Array<[string, boolean]>>) => ({
   })),
 });
 
-test("presence fills every campfire, with names and crowns from the camp", () => {
+test("presence fills every campfire, with names and roles from the camp", () => {
   const next = applyCampState(camp, state({ katka: [["zhenya", true]], lobby: [["artem", false]] }), null, "me");
   assert.deepEqual(next.channels[0]?.memberIds, ["artem"]);
   assert.deepEqual(next.channels[1]?.memberIds, ["zhenya"]);
   assert.equal(next.members["zhenya"]?.name, "Женя");
   assert.equal(next.members["zhenya"]?.micMuted, true);
-  assert.equal(next.members["artem"]?.isAdmin, true, "the crown comes from the server");
+  assert.equal(next.members["artem"]?.role, "admin", "the crown comes from the server");
+  assert.equal(next.members["zhenya"]?.role, "moderator");
 });
 
 test("empty campfires empty out; you are never listed by presence", () => {
@@ -113,4 +120,28 @@ test("your own campfire keeps the room's view; nobody shows up twice", () => {
   const next = applyCampState(inLobby, state({ lobby: [["artem", false]], katka: [["lena", false]] }), "lobby", "me");
   assert.deepEqual(next.channels[0]?.memberIds, ["lena"], "room roster wins for your campfire");
   assert.deepEqual(next.channels[1]?.memberIds, [], "Lena is with you, not at Katka");
+});
+
+test("renames and campfire changes arrive live; chats stay out of the tree", () => {
+  const live: CampState = {
+    ...state({ katka: [["zhenya", false]] }),
+    name: "Новый лагерь",
+    channels: [
+      { id: "katka", name: "Катка 2", kind: "voice", afk: false },
+      { id: "chat", name: "Chat", kind: "text", afk: false },
+      { id: "fresh", name: "Новый костёр", kind: "voice", afk: false },
+    ],
+  };
+  const inLobby = { ...camp, channels: camp.channels.map((c) => (c.id === "lobby" ? { ...c, memberIds: ["lena"] } : c)) };
+  const next = applyCampState(inLobby, live, "lobby", "me");
+  assert.equal(next.name, "Новый лагерь");
+  assert.equal(next.short, "НЛ", "the badge follows the name");
+  assert.deepEqual(
+    next.channels.map((c) => [c.id, c.name, c.memberIds]),
+    [
+      ["katka", "Катка 2", ["zhenya"]],
+      ["fresh", "Новый костёр", []],
+    ],
+    "the removed Lobby is gone, the chat is not a campfire, order follows the camp",
+  );
 });

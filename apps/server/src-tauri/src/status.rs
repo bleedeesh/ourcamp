@@ -1,7 +1,7 @@
 //! What the server window shows (ADR-0023): one full snapshot, rebuilt on every change
 //! and sent as `server://status`. A missed event loses nothing — the next one is whole.
 
-use oc_proto::CampState;
+use oc_proto::{CampState, Channel, Role};
 use serde::Serialize;
 
 /// Where the camp is in its life.
@@ -22,7 +22,7 @@ pub enum Phase {
 pub struct Member {
     pub user_id: String,
     pub name: String,
-    pub is_admin: bool,
+    pub role: Role,
     /// Name of the campfire they sit at; `None` when not in voice.
     pub campfire: Option<String>,
     pub mic_muted: bool,
@@ -34,13 +34,13 @@ pub struct Member {
 pub struct ServerStatus {
     pub phase: Phase,
     pub camp_name: String,
+    /// Campfires and chats, in display order (ADR-0026).
+    pub channels: Vec<Channel>,
     /// `host:port` friends connect to.
     pub address: Option<String>,
     pub fingerprint: Option<String>,
     pub join_link: Option<String>,
-    /// The admin key link — only while nobody is admin yet (redeeming it makes one).
-    pub claim_link: Option<String>,
-    /// Admins first, then by name.
+    /// Admins first, then moderators, then by name.
     pub members: Vec<Member>,
     /// The camp's own LiveKit; `None` while it restarts.
     pub livekit_pid: Option<u32>,
@@ -51,10 +51,10 @@ impl ServerStatus {
         Self {
             phase: Phase::Starting,
             camp_name: String::new(),
+            channels: Vec::new(),
             address: None,
             fingerprint: None,
             join_link: None,
-            claim_link: None,
             members: Vec::new(),
             livekit_pid: None,
         }
@@ -68,25 +68,22 @@ impl ServerStatus {
     }
 }
 
-/// What does not change while the camp runs.
+/// What does not change while the camp runs. The camp's name and channels do — they
+/// come with every [`CampState`].
 #[derive(Debug, Clone)]
 pub struct Base {
-    pub camp: oc_server::store::Camp,
     pub address: String,
     pub fingerprint: String,
     pub join_link: String,
-    pub claim_link: Option<String>,
 }
 
 impl Base {
     pub fn of(running: &oc_server::Running) -> Self {
         let join = &running.links.join;
         Self {
-            camp: running.camp.clone(),
             address: format!("{}:{}", join.host, join.port),
             fingerprint: running.fingerprint.to_string(),
             join_link: join.to_string(),
-            claim_link: running.links.claim.as_ref().map(ToString::to_string),
         }
     }
 }
@@ -96,8 +93,7 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
     let seat = |user_id: &str| {
         state.presence.iter().find_map(|channel| {
             let present = channel.members.iter().find(|m| m.user_id == user_id)?;
-            let name = base
-                .camp
+            let name = state
                 .channels
                 .iter()
                 .find(|c| c.id == channel.channel_id)
@@ -113,29 +109,24 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
             Member {
                 user_id: m.user_id.clone(),
                 name: m.name.clone(),
-                is_admin: m.is_admin,
+                role: m.role,
                 mic_muted: seat.as_ref().is_some_and(|(_, muted)| *muted),
                 campfire: seat.map(|(name, _)| name),
             }
         })
         .collect();
     members.sort_by(|a, b| {
-        b.is_admin
-            .cmp(&a.is_admin)
+        b.role
+            .cmp(&a.role)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    let has_admin = members.iter().any(|m| m.is_admin);
     ServerStatus {
         phase: Phase::Running,
-        camp_name: base.camp.name.clone(),
+        camp_name: state.name.clone(),
+        channels: state.channels.clone(),
         address: Some(base.address.clone()),
         fingerprint: Some(base.fingerprint.clone()),
         join_link: Some(base.join_link.clone()),
-        claim_link: if has_admin {
-            None
-        } else {
-            base.claim_link.clone()
-        },
         members,
         livekit_pid,
     }
@@ -144,56 +135,65 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oc_proto::{Channel, ChannelPresence, MemberInfo, PresentMember};
+    use oc_proto::{ChannelKind, ChannelPresence, MemberInfo, PresentMember};
 
     fn base() -> Base {
         Base {
-            camp: oc_server::store::Camp {
-                name: "Вечерний кооп".into(),
-                channels: vec![
-                    Channel {
-                        id: "c0".into(),
-                        name: "Лобби".into(),
-                        afk: false,
-                    },
-                    Channel {
-                        id: "c1".into(),
-                        name: "Катка".into(),
-                        afk: false,
-                    },
-                ],
-            },
             address: "192.168.1.2:7780".into(),
             fingerprint: "fp".into(),
             join_link: "ourcamp://join".into(),
-            claim_link: Some("ourcamp://claim".into()),
         }
     }
 
-    fn member(id: &str, name: &str, is_admin: bool) -> MemberInfo {
+    fn channel(id: &str, name: &str, kind: ChannelKind) -> Channel {
+        Channel {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            afk: false,
+        }
+    }
+
+    fn member(id: &str, name: &str, role: Role) -> MemberInfo {
         MemberInfo {
             user_id: id.into(),
             name: name.into(),
-            is_admin,
+            role,
         }
     }
 
     #[test]
-    fn a_fresh_camp_offers_the_admin_link() {
-        let status = snapshot(&base(), &CampState::default(), Some(42));
+    fn a_fresh_camp_shows_its_name_channels_and_link() {
+        let state = CampState {
+            name: "Мой лагерь".into(),
+            channels: vec![
+                channel("c0", "Voice", ChannelKind::Voice),
+                channel("c1", "Chat", ChannelKind::Text),
+            ],
+            ..CampState::default()
+        };
+        let status = snapshot(&base(), &state, Some(42));
         assert_eq!(status.phase, Phase::Running);
-        assert_eq!(status.claim_link.as_deref(), Some("ourcamp://claim"));
+        assert_eq!(status.camp_name, "Мой лагерь");
+        assert_eq!(status.channels.len(), 2);
+        assert_eq!(status.join_link.as_deref(), Some("ourcamp://join"));
         assert_eq!(status.members, []);
         assert_eq!(status.livekit_pid, Some(42));
     }
 
     #[test]
-    fn members_show_their_campfire_by_name_admins_first() {
+    fn members_show_their_campfire_by_name_by_role_then_name() {
         let state = CampState {
+            name: "x".into(),
+            channels: vec![
+                channel("c0", "Лобби", ChannelKind::Voice),
+                channel("c1", "Катка", ChannelKind::Voice),
+            ],
             members: vec![
-                member("u2", "лена", false),
-                member("u3", "Артём", false),
-                member("u1", "Дима", true),
+                member("u2", "лена", Role::Member),
+                member("u4", "Боб", Role::Moderator),
+                member("u3", "Артём", Role::Member),
+                member("u1", "Дима", Role::Admin),
             ],
             presence: vec![ChannelPresence {
                 channel_id: "c1".into(),
@@ -207,13 +207,12 @@ mod tests {
         let names: Vec<_> = status.members.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(
             names,
-            ["Дима", "Артём", "лена"],
-            "admin, then by name, any case"
+            ["Дима", "Боб", "Артём", "лена"],
+            "admin, moderator, then by name in any case"
         );
-        let lena = &status.members[2];
+        let lena = &status.members[3];
         assert_eq!(lena.campfire.as_deref(), Some("Катка"));
         assert!(lena.mic_muted);
-        assert_eq!(status.members[1].campfire, None, "not in voice");
-        assert_eq!(status.claim_link, None, "redeemed: there is an admin");
+        assert_eq!(status.members[2].campfire, None, "not in voice");
     }
 }

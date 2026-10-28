@@ -14,10 +14,10 @@ const opened = (id: string, name: string, offline = false): OpenCamp => ({
   id,
   name,
   channels: [
-    { id: "c0", name: "Лобби", afk: false },
-    { id: "c1", name: "Катка", afk: false },
+    { id: "c0", name: "Лобби", kind: "voice", afk: false },
+    { id: "c1", name: "Катка", kind: "voice", afk: false },
   ],
-  self: { userId: "me", name: "Дима", isAdmin: id === "own" },
+  self: { userId: "me", name: "Дима", role: id === "own" ? "admin" : "member" },
   offline,
 });
 
@@ -242,12 +242,14 @@ test("live state of the open camp reaches the tree; other camps and outages are 
   const { api, camps, voice } = setup();
   api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
   await camps.start();
-  const live = (campId: string, online: boolean, withBob: boolean) => ({
+  const live = (campId: string, online: boolean, withBob: boolean, name = "Вечерний кооп"): CampLive => ({
     campId,
     online,
     state: online
       ? {
-          members: [{ userId: "bob", name: "Боб", isAdmin: true }],
+          name,
+          channels: opened("vk", name).channels,
+          members: [{ userId: "bob", name: "Боб", role: "admin" }],
           presence: withBob ? [{ channelId: "c1", members: [{ userId: "bob", micMuted: true }] }] : [],
         }
       : null,
@@ -259,12 +261,16 @@ test("live state of the open camp reaches the tree; other camps and outages are 
   api.emitLive(live("vk", true, true));
   const camp = voice.store.get().camp;
   assert.deepEqual(camp.channels[1]?.memberIds, ["bob"]);
-  assert.equal(camp.members["bob"]?.isAdmin, true);
+  assert.equal(camp.members["bob"]?.role, "admin");
   assert.equal(camps.store.get().offline, false);
 
   api.emitLive(live("vk", false, false));
   assert.equal(camps.store.get().offline, true);
   assert.deepEqual(voice.store.get().camp.channels[1]?.memberIds, ["bob"], "last known state kept while offline");
+
+  api.emitLive(live("vk", true, true, "Кооп на выходных"));
+  assert.equal(voice.store.get().camp.name, "Кооп на выходных", "a rename reaches the header");
+  assert.equal(camps.store.get().camps[0]?.name, "Кооп на выходных", "and the switcher");
 });
 
 test("leaving asks first, leaves voice, then opens the next camp", async () => {

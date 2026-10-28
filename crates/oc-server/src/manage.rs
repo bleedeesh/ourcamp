@@ -1,0 +1,201 @@
+//! What the owner of a camp changes (ADR-0026): its name, roles, channels. The server
+//! window calls it in-process; admins and moderators will reach the same code through
+//! the API, within their rights.
+//!
+//! Every change is written to the database first, then the presence loop is asked for
+//! a snapshot right away (`refresh`), so members see it within a moment, not a poll.
+
+use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use oc_proto::{Channel, ChannelKind, Role};
+use tokio::sync::Notify;
+
+use crate::rooms::{RoomError, RoomService};
+use crate::store::{Store, StoreError};
+
+/// Longest camp name, in characters.
+pub const MAX_CAMP_NAME: usize = 48;
+/// Longest channel name, in characters.
+pub const MAX_CHANNEL_NAME: usize = 32;
+
+/// Why a change was refused or failed.
+#[derive(Debug)]
+pub enum ManageError {
+    /// No such member or channel.
+    NotFound,
+    /// Empty, or longer than the limit (the limit is in the variant).
+    BadName(usize),
+    /// The AFK campfire stays (ADR-0025).
+    AfkIsPermanent,
+    /// The database refused.
+    Store(StoreError),
+    /// The channel is gone, but LiveKit did not close its room.
+    LiveKit(RoomError),
+}
+
+impl fmt::Display for ManageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "no such member or channel"),
+            Self::BadName(max) => write!(f, "a name is 1 to {max} characters"),
+            Self::AfkIsPermanent => write!(f, "the AFK campfire cannot be removed"),
+            Self::Store(e) => write!(f, "{e}"),
+            Self::LiveKit(e) => write!(f, "channel removed, its room was not: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ManageError {}
+
+impl From<StoreError> for ManageError {
+    fn from(e: StoreError) -> Self {
+        Self::Store(e)
+    }
+}
+
+/// A trimmed name within `max` characters.
+fn name(raw: &str, max: usize) -> Result<&str, ManageError> {
+    let name = raw.trim();
+    let chars = name.chars().count();
+    if chars == 0 || chars > max {
+        return Err(ManageError::BadName(max));
+    }
+    Ok(name)
+}
+
+/// The owner's handle on a running camp. Cheap to clone.
+#[derive(Clone)]
+pub struct Manager {
+    store: Arc<Mutex<Store>>,
+    rooms: Arc<RoomService>,
+    refresh: Arc<Notify>,
+}
+
+impl Manager {
+    pub(crate) fn new(
+        store: Arc<Mutex<Store>>,
+        rooms: Arc<RoomService>,
+        refresh: Arc<Notify>,
+    ) -> Self {
+        Self {
+            store,
+            rooms,
+            refresh,
+        }
+    }
+
+    /// Runs a store call off the async workers, then asks for a fresh snapshot.
+    async fn change<R: Send + 'static>(
+        &self,
+        call: impl FnOnce(&mut Store) -> Result<R, ManageError> + Send + 'static,
+    ) -> Result<R, ManageError> {
+        let store = Arc::clone(&self.store);
+        let result = tokio::task::spawn_blocking(move || {
+            let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+            call(&mut store)
+        })
+        .await
+        .expect("store task panicked")?;
+        // `notify_one` keeps a permit if the loop is mid-round: the change is never lost.
+        self.refresh.notify_one();
+        Ok(result)
+    }
+
+    /// Renames the camp.
+    ///
+    /// # Errors
+    /// [`ManageError::BadName`], [`ManageError::Store`].
+    pub async fn rename_camp(&self, new_name: &str) -> Result<(), ManageError> {
+        let new_name = name(new_name, MAX_CAMP_NAME)?.to_owned();
+        self.change(move |s| Ok(s.rename_camp(&new_name)?)).await
+    }
+
+    /// Gives a member a role (the owner may give any, ADR-0026).
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`], [`ManageError::Store`].
+    pub async fn set_role(&self, user_id: &str, role: Role) -> Result<(), ManageError> {
+        let user_id = user_id.to_owned();
+        self.change(move |s| {
+            if s.set_role(&user_id, role)? {
+                Ok(())
+            } else {
+                Err(ManageError::NotFound)
+            }
+        })
+        .await
+    }
+
+    /// Adds a campfire or a chat, before the AFK campfire.
+    ///
+    /// # Errors
+    /// [`ManageError::BadName`], [`ManageError::Store`].
+    pub async fn create_channel(
+        &self,
+        new_name: &str,
+        kind: ChannelKind,
+    ) -> Result<Channel, ManageError> {
+        let new_name = name(new_name, MAX_CHANNEL_NAME)?.to_owned();
+        self.change(move |s| Ok(s.create_channel(&new_name, kind)?))
+            .await
+    }
+
+    /// Renames a channel (the AFK campfire too).
+    ///
+    /// # Errors
+    /// [`ManageError::BadName`], [`ManageError::NotFound`], [`ManageError::Store`].
+    pub async fn rename_channel(&self, id: &str, new_name: &str) -> Result<(), ManageError> {
+        let new_name = name(new_name, MAX_CHANNEL_NAME)?.to_owned();
+        let id = id.to_owned();
+        self.change(move |s| {
+            if s.rename_channel(&id, &new_name)? {
+                Ok(())
+            } else {
+                Err(ManageError::NotFound)
+            }
+        })
+        .await
+    }
+
+    /// Removes a channel. For a campfire, LiveKit closes its room: whoever sits there is
+    /// disconnected and their app says the campfire was removed. LiveKit being down is
+    /// fine — then nobody can be sitting there.
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`], [`ManageError::AfkIsPermanent`], [`ManageError::Store`],
+    /// [`ManageError::LiveKit`] (the channel is gone either way).
+    pub async fn delete_channel(&self, id: &str) -> Result<(), ManageError> {
+        let id = id.to_owned();
+        let removed = self
+            .change(move |s| match s.channel(&id)? {
+                None => Err(ManageError::NotFound),
+                Some(channel) if channel.afk => Err(ManageError::AfkIsPermanent),
+                Some(_) => s.delete_channel(&id)?.ok_or(ManageError::NotFound),
+            })
+            .await?;
+        if removed.kind == ChannelKind::Voice {
+            match self.rooms.delete_room(&removed.id).await {
+                Ok(()) | Err(RoomError::Unreachable(_)) => {}
+                Err(e) => return Err(ManageError::LiveKit(e)),
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_trimmed_and_bounded_in_characters_not_bytes() {
+        assert_eq!(name("  Кооп  ", 48).unwrap(), "Кооп");
+        assert!(matches!(name("   ", 48), Err(ManageError::BadName(48))));
+        assert_eq!(name(&"я".repeat(32), 32).unwrap().chars().count(), 32);
+        assert!(matches!(
+            name(&"я".repeat(33), 32),
+            Err(ManageError::BadName(32))
+        ));
+    }
+}

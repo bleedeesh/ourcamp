@@ -117,8 +117,8 @@ pub struct SelfInfo {
     pub user_id: String,
     /// Display name.
     pub name: String,
-    /// Holder of the admin key.
-    pub is_admin: bool,
+    /// Role in the camp (ADR-0026).
+    pub role: Role,
 }
 
 /// An opened camp.
@@ -340,7 +340,7 @@ impl Camps {
             me: SelfInfo {
                 user_id: camp.user_id.clone(),
                 name: self.lock().display_name.clone(),
-                is_admin: camp.role == Role::Admin,
+                role: camp.role,
             },
             offline,
         }
@@ -586,7 +586,7 @@ fn describe(e: ClientError) -> CampError {
         ClientError::Api(code) => match code {
             ErrorCode::InviteRequired => "Для первого входа нужна ссылка-приглашение",
             ErrorCode::InviteInvalid => "Приглашение недействительно",
-            ErrorCode::ClaimUsed => "Этот ключ админа уже использован",
+            ErrorCode::Forbidden => "Для этого нужны права админа или модератора",
             ErrorCode::BadSignature | ErrorCode::NonceInvalid => {
                 "Не удалось подтвердить устройство — попробуйте ещё раз"
             }
@@ -666,13 +666,13 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let (server, server_dir) = camp("reopen").await;
             let dir = temp_dir("reopen");
-            let link = server.links.claim.as_ref().unwrap().to_string();
+            let link = server.links.join.to_string();
 
             let camps = Camps::load(&dir).unwrap();
             let preview = camps.preview(&link).await.unwrap();
             assert_eq!(preview.name, "Вечерний кооп");
             assert_eq!(preview.channels, 3);
-            assert_eq!((preview.kind, preview.usable), (InviteKindDto::Claim, true));
+            assert_eq!((preview.kind, preview.usable), (InviteKindDto::Join, true));
 
             let opened = camps.join(&link, "  Дима  ").await.unwrap();
             assert_eq!(
@@ -680,9 +680,13 @@ mod tests {
                 server.fingerprint.to_string(),
                 "camp id = its pin"
             );
-            assert_eq!(opened.channels[0].name, "Лобби");
+            assert_eq!(opened.channels[0].name, "Voice");
             assert_eq!(opened.me.name, "Дима", "trimmed");
-            assert!(opened.me.is_admin, "the claim link made us admin");
+            assert_eq!(
+                opened.me.role,
+                Role::Member,
+                "roles come from the owner, not links"
+            );
             assert_eq!(opened.me.user_id, camps.user_id());
             assert!(!opened.offline);
 
@@ -729,7 +733,7 @@ mod tests {
             let link = host.invite_link(&opened.id).await.unwrap();
             let friend = Camps::load(&friend_dir).unwrap();
             let joined = friend.join(&link, "Лена").await.unwrap();
-            assert!(!joined.me.is_admin);
+            assert_eq!(joined.me.role, Role::Member);
             assert_ne!(joined.me.user_id, opened.me.user_id, "a different device");
 
             // The camp goes down: it still opens from cache, flagged offline.
@@ -758,7 +762,7 @@ mod tests {
             let sink = Arc::clone(&seen);
             camps.set_state_listener(Arc::new(move |live| sink.lock().unwrap().push(live)));
 
-            let link = server.links.claim.as_ref().unwrap().to_string();
+            let link = server.links.join.to_string();
             let opened = camps.join(&link, "Дима").await.unwrap();
             camps.follow(&opened.id);
 
@@ -778,8 +782,8 @@ mod tests {
                 wait_for(&|l| l.online
                     && l.state
                         .as_ref()
-                        .is_some_and(|s| s.members.iter().any(|m| m.user_id == me && m.is_admin))),
-                "a snapshot with us, crowned: {:?}",
+                        .is_some_and(|s| s.members.iter().any(|m| m.user_id == me))),
+                "a snapshot with us: {:?}",
                 seen.lock().unwrap()
             );
             assert!(seen.lock().unwrap().iter().all(|l| l.camp_id == opened.id));

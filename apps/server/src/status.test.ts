@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { crowd, headline, plural, STARTING, voice, type Member } from "./status.ts";
+import { crowd, headline, nameProblem, plural, STARTING, voice, type Member } from "./status.ts";
 
 const member = (name: string, campfire: string | null = null): Member => ({
   userId: name,
   name,
-  isAdmin: false,
+  role: "member",
   campfire,
   micMuted: false,
 });
@@ -43,4 +43,11 @@ test("plural covers the teens", () => {
     "человек",
     "человек",
   ]);
+});
+
+test("names are checked like the camp checks them", () => {
+  assert.equal(nameProblem("   ", 32), "Введите название");
+  assert.equal(nameProblem("  Кооп  ", 32), null, "trimmed first");
+  assert.equal(nameProblem("я".repeat(32), 32), null, "characters, not bytes");
+  assert.equal(nameProblem("я".repeat(33), 32), "Не длиннее 32 символов");
 });
