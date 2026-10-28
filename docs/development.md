@@ -190,7 +190,7 @@ LiveKit (`livekit-keys.json`) и две ссылки:
 | `pnpm livekit` / `pnpm livekit:down` | локальный LiveKit в Docker: запустить / остановить |
 | `pnpm server` | сервер лагеря без окна со своим LiveKit (данные в `target/camp-data`) |
 | `pnpm server:docker` | то же, но с LiveKit из `pnpm livekit` |
-$row
+| `pnpm server:window` | окно сервера лагеря (Tauri), лагерь в папке данных приложения |
 | `pnpm dev` | клиент в режиме разработки (горячая перезагрузка UI) |
 | `pnpm test` | тесты фронтенда (`node --test`) и Rust (`cargo test`) |
 | `pnpm typecheck` | проверка типов TypeScript |
