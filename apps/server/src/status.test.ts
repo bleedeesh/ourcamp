@@ -6,7 +6,7 @@ import { crowd, headline, plural, STARTING, voice, type Member } from "./status.
 const member = (name: string, campfire: string | null = null): Member => ({
   userId: name,
   name,
-  isAdmin: false,
+  role: "member",
   campfire,
   micMuted: false,
 });

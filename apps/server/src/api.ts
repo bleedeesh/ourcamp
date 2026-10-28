@@ -38,11 +38,15 @@ export class DemoServerApi implements ServerApi {
       address: "192.168.1.2:7780",
       fingerprint: "_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8",
       joinLink: "ourcamp://192.168.1.2/join/k3j4h5g6f7d8s9a0?fp=_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8",
-      claimLink: null,
+      channels: [
+        { id: "c0", name: "Voice", kind: "voice", afk: false },
+        { id: "c1", name: "Chat", kind: "text", afk: false },
+        { id: "afk", name: "AFK", kind: "voice", afk: true },
+      ],
       members: [
-        { userId: "u1", name: "bleedeesh", isAdmin: true, campfire: "Лобби", micMuted: false },
-        { userId: "u2", name: "angelina", isAdmin: false, campfire: "Лобби", micMuted: true },
-        { userId: "u3", name: "Артём", isAdmin: false, campfire: null, micMuted: false },
+        { userId: "u1", name: "bleedeesh", role: "admin", campfire: "Voice", micMuted: false },
+        { userId: "u2", name: "angelina", role: "moderator", campfire: "Voice", micMuted: true },
+        { userId: "u3", name: "Артём", role: "member", campfire: null, micMuted: false },
       ],
       livekitPid: 18244,
     });

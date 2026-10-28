@@ -10,7 +10,7 @@ const m = (id: string, name: string, color: string, extra: Partial<Member> = {})
   color,
   micMuted: false,
   deafened: false,
-  isAdmin: false,
+  role: "member",
   streaming: false,
   ...extra,
 });
@@ -24,8 +24,8 @@ export const DEMO_CAMP: Camp = {
   color: "#8E44AD",
   members: {
     dima: m("dima", "Дима", "#4FC3F7"),
-    artem: m("artem", "Артём", "#6C8CFF", { isAdmin: true }),
-    lena: m("lena", "Лена", "#F2A65A", { streaming: true }),
+    artem: m("artem", "Артём", "#6C8CFF", { role: "admin" }),
+    lena: m("lena", "Лена", "#F2A65A", { streaming: true, role: "moderator" }),
     max: m("max", "Макс", "#C792EA", { micMuted: true }),
     olya: m("olya", "Оля", "#8FD694"),
     kirill: m("kirill", "Кирилл", "#7FD1C7", { deafened: true }),

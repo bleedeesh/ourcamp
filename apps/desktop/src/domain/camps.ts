@@ -1,6 +1,6 @@
 import type { CampApi, CampLive, CampPreview, CampSummary, OpenCamp } from "../engine/camp-api.ts";
 import { createStore, type Store } from "../lib/store.ts";
-import { avatarColor } from "./roster.ts";
+import { avatarColor, campShort, campfiresOf } from "./roster.ts";
 import type { Camp } from "./types.ts";
 import type { VoiceController } from "./voice.ts";
 
@@ -42,21 +42,17 @@ export const NO_CAMP: Camp = { id: "", name: "", short: "", color: "#444444", ch
 /** `ourcamp://host[:port]/join|claim/<token>?…fp=<43>` — enough to ask the camp about it. */
 const LINK_SHAPE = /^ourcamp:\/\/[^/\s]+\/(join|claim)\/[0-9a-z]+\?\S*fp=[A-Za-z0-9_-]{43}/i;
 
-/** Two-letter badge: initials of the first two words, or the first two letters. */
-export function campShort(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  const letters = words.length >= 2 ? (words[0]?.[0] ?? "") + (words[1]?.[0] ?? "") : (words[0] ?? "").slice(0, 2);
-  return letters.toUpperCase() || "?";
-}
+// The badge is recomputed on live renames too (roster.ts), so it lives there.
+export { campShort };
 
-/** The camp as the channel tree needs it. Presence beyond your own campfire is M3 step 4b. */
+/** The camp as the channel tree needs it: campfires only — chats are not in the tree. */
 export function campFromOpen(open: OpenCamp): Camp {
   return {
     id: open.id,
     name: open.name,
     short: campShort(open.name),
     color: avatarColor(open.id),
-    channels: open.channels.map((c) => ({ id: c.id, name: c.name, afk: c.afk, memberIds: [] })),
+    channels: campfiresOf(open.channels, []),
     members: {
       [open.self.userId]: {
         id: open.self.userId,
@@ -64,7 +60,7 @@ export function campFromOpen(open: OpenCamp): Camp {
         color: avatarColor(open.self.userId),
         micMuted: false,
         deafened: false,
-        isAdmin: open.self.isAdmin,
+        role: open.self.role,
         streaming: false,
       },
     },
@@ -262,7 +258,14 @@ export class CampsController {
   #onLive(live: CampLive): void {
     if (live.campId !== this.store.get().currentId) return;
     this.store.patch({ offline: !live.online });
-    if (live.state) this.#voice.applyCampState(live.state);
+    if (!live.state) return;
+    this.#voice.applyCampState(live.state);
+    // A rename shows in the switcher too, not only in the header.
+    const { name } = live.state;
+    const camps = this.store.get().camps;
+    if (camps.some((c) => c.id === live.campId && c.name !== name)) {
+      this.store.patch({ camps: camps.map((c) => (c.id === live.campId ? { ...c, name } : c)) });
+    }
   }
 
   dismissNotice(): void {

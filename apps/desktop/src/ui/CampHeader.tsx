@@ -1,9 +1,17 @@
 import { useEffect, useRef } from "react";
 import { campShort } from "../domain/camps.ts";
 import { avatarColor } from "../domain/roster.ts";
+import type { Role } from "../domain/types.ts";
 import { Icon } from "./icons.tsx";
 import { useCamps, useCampsController } from "./camps-context.tsx";
 import { useVoice } from "./voice-context.tsx";
+
+/** Your role in a camp, under its name in the switcher. */
+const ROLE_LABEL: Record<Role, string> = {
+  admin: "Вы админ",
+  moderator: "Вы модератор",
+  member: "Участник",
+};
 
 export function CampHeader() {
   const campsCtl = useCampsController();
@@ -99,7 +107,7 @@ function CampMenu() {
           </span>
           <span className="camp-menu__text">
             <span className="camp-menu__name">{c.name}</span>
-            <span className="camp-menu__sub">{c.role === "admin" ? "Вы админ" : "Участник"}</span>
+            <span className="camp-menu__sub">{ROLE_LABEL[c.role]}</span>
           </span>
           {c.id === currentId && <Icon name="check" size={18} className="camp-menu__check" />}
         </button>

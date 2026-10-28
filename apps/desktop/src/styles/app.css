@@ -751,14 +751,6 @@
   color: var(--text-muted);
 }
 
-.camp-card__claim {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--admin);
-}
-
 /* ---------- Camp switcher menu (mockup screen 8) ---------- */
 
 .camp-menu {
@@ -865,4 +857,10 @@
 
 .channel__row[aria-current="true"] .channel__afk {
   color: var(--accent-text);
+}
+
+/* Moderator (ADR-0026): a shield, next to the admin's crown. */
+.member__moderator {
+  color: var(--accent-text);
+  flex-shrink: 0;
 }

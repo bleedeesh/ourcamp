@@ -17,6 +17,7 @@ function Glyph({ d }: { d: string }) {
 const MINIMIZE = "M5 12h14";
 const CLOSE = "M18 6 6 18M6 6l12 12";
 const CROWN = "M3 18h18M4 18 3 8l5 4 4-7 4 7 5-4-1 10";
+const SHIELD = "M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z";
 const MIC_OFF = "M2 2l20 20M9 9v3a3 3 0 0 0 5.1 2.1M15 9.3V5a3 3 0 0 0-5.9-.6M19 10v2a7 7 0 0 1-.6 2.9M5 10v2a7 7 0 0 0 11.5 5.4M12 19v3";
 
 function TitleBar() {
@@ -78,9 +79,14 @@ function MemberRow({ member }: { member: Member }) {
         {member.name.slice(0, 1).toUpperCase()}
       </span>
       <span className="member__name">{member.name}</span>
-      {member.isAdmin && (
+      {member.role === "admin" && (
         <span className="member__crown" title="Админ">
           <Glyph d={CROWN} />
+        </span>
+      )}
+      {member.role === "moderator" && (
+        <span className="member__shield" title="Модератор">
+          <Glyph d={SHIELD} />
         </span>
       )}
       {member.campfire !== null && member.micMuted && (
@@ -131,13 +137,6 @@ export function App({ api }: { api: ServerApi }) {
         {phase.kind === "running" && (
           <>
             <section className="links">
-              {status.claimLink !== null && (
-                <LinkRow
-                  label="Для вас — станете админом"
-                  hint="Одноразовая: откройте её в своём OurCamp первой."
-                  link={status.claimLink}
-                />
-              )}
               {status.joinLink !== null && (
                 <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте в лагерь." link={status.joinLink} />
               )}

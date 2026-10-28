@@ -93,7 +93,10 @@ function MemberRow({ userId }: { userId: UserId }) {
         <span className="member__name" data-speaking={speaking || undefined}>
           {member.name}
         </span>
-        {member.isAdmin && <Icon name="crown" size={14} label="Админ лагеря" className="member__admin" />}
+        {member.role === "admin" && <Icon name="crown" size={14} label="Админ лагеря" className="member__admin" />}
+        {member.role === "moderator" && (
+          <Icon name="shield" size={14} label="Модератор лагеря" className="member__moderator" />
+        )}
         {!isSelf && (localMuted || volume !== DEFAULT_VOLUME) && (
           <span className="member__volume">{localMuted ? <Icon name="speakerOff" size={14} label="Заглушен для вас" /> : `${volume}%`}</span>
         )}

@@ -325,3 +325,8 @@
   white-space: nowrap;
   user-select: text;
 }
+
+.member__shield {
+  display: grid;
+  color: var(--accent-text);
+}

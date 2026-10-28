@@ -1,3 +1,6 @@
+/** A member's role in a camp (ADR-0026); the owner runs the server and is no member. */
+export type Role = "member" | "moderator" | "admin";
+
 /** Stable account id issued by the accounts service. */
 export type UserId = string;
 
@@ -10,8 +13,8 @@ export interface Member {
   readonly micMuted: boolean;
   /** The member turned their sound off. */
   readonly deafened: boolean;
-  /** Camp admin (holder of the redeemed claim key). */
-  readonly isAdmin: boolean;
+  /** Role in the camp: a crown for admins, a shield for moderators. */
+  readonly role: Role;
   /** The member is streaming their screen. */
   readonly streaming: boolean;
 }

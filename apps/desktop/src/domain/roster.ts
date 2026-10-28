@@ -1,6 +1,25 @@
-import type { CampState } from "../engine/camp-api.ts";
+import type { CampState, ChannelInfo } from "../engine/camp-api.ts";
 import type { ParticipantsUpdate } from "../engine/engine.ts";
-import type { Camp, Member, UserId } from "./types.ts";
+import type { Camp, Channel, Member, UserId } from "./types.ts";
+
+/** Two-letter badge: initials of the first two words, or the first two letters. */
+export function campShort(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const letters = words.length >= 2 ? (words[0]?.[0] ?? "") + (words[1]?.[0] ?? "") : (words[0] ?? "").slice(0, 2);
+  return letters.toUpperCase() || "?";
+}
+
+/**
+ * The campfires of a camp's channel list, in its order (chats are not in the tree,
+ * ADR-0026). Who sits at a campfire carries over from `current` by id; a new campfire
+ * starts empty, a removed one disappears.
+ */
+export function campfiresOf(channels: readonly ChannelInfo[], current: readonly Channel[]): Channel[] {
+  const seated = new Map(current.map((c) => [c.id, c.memberIds]));
+  return channels
+    .filter((c) => c.kind === "voice")
+    .map((c) => ({ id: c.id, name: c.name, afk: c.afk, memberIds: seated.get(c.id) ?? [] }));
+}
 
 /** Avatar backgrounds for people the camp has no profile for (until accounts, M4). */
 const AVATAR_COLORS = ["#6C8CFF", "#F2A65A", "#C792EA", "#8FD694", "#7FD1C7", "#4FC3F7", "#F28FAD"];
@@ -21,7 +40,7 @@ function newcomer(id: UserId, name: string): Member {
     color: avatarColor(id),
     micMuted: false,
     deafened: false,
-    isAdmin: false,
+    role: "member",
     streaming: false,
   };
 }
@@ -51,20 +70,21 @@ export function applyRoster(camp: Camp, channelId: string, update: ParticipantsU
 }
 
 /**
- * Applies the camp server's snapshot (ADR-0021): profiles (names, crowns) for everyone,
- * and who sits at every campfire — except the one you are in, whose room reports it
- * sooner and more precisely (`applyRoster`). You are never listed by presence: the tree
- * adds you to your own campfire itself.
+ * Applies the camp server's snapshot (ADR-0021, 0026): the camp's name and campfires as
+ * they are now (renames, new and removed campfires), profiles (names, roles) for
+ * everyone, and who sits at every campfire — except the one you are in, whose room
+ * reports it sooner and more precisely (`applyRoster`). You are never listed by
+ * presence: the tree adds you to your own campfire itself.
  */
 export function applyCampState(camp: Camp, state: CampState, currentChannelId: string | null, selfId: UserId): Camp {
   const members: Record<UserId, Member> = { ...camp.members };
   for (const info of state.members) {
     const known = members[info.userId] ?? newcomer(info.userId, info.name);
-    members[info.userId] = { ...known, name: info.name, isAdmin: info.isAdmin };
+    members[info.userId] = { ...known, name: info.name, role: info.role };
   }
   const presence = new Map(state.presence.map((p) => [p.channelId, p.members]));
   const roomMembers = new Set(camp.channels.find((c) => c.id === currentChannelId)?.memberIds ?? []);
-  const channels = camp.channels.map((c) => {
+  const channels = campfiresOf(state.channels, camp.channels).map((c) => {
     if (c.id === currentChannelId) return c;
     const here = (presence.get(c.id) ?? []).filter((p) => p.userId !== selfId && !roomMembers.has(p.userId));
     for (const p of here) {
@@ -73,5 +93,5 @@ export function applyCampState(camp: Camp, state: CampState, currentChannelId: s
     }
     return { ...c, memberIds: here.map((p) => p.userId) };
   });
-  return { ...camp, members, channels };
+  return { ...camp, name: state.name, short: campShort(state.name), members, channels };
 }

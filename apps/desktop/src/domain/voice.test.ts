@@ -11,7 +11,7 @@ const member = (id: string) => ({
   color: "#888",
   micMuted: false,
   deafened: false,
-  isAdmin: false,
+  role: "member" as const,
   streaming: false,
 });
 

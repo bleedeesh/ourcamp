@@ -1,11 +1,22 @@
-// The window as data: mirrors `ServerStatus` of src-tauri/src/status.rs (ADR-0023).
+// The window as data: mirrors `ServerStatus` of src-tauri/src/status.rs (ADR-0023, 0026).
+
+/** A member's role (ADR-0026); the owner — whoever runs this window — is no member. */
+export type Role = "member" | "moderator" | "admin";
+
+/** A channel of the camp: a campfire or a chat. */
+export interface Channel {
+  id: string;
+  name: string;
+  kind: "voice" | "text";
+  afk: boolean;
+}
 
 export type Phase = { kind: "starting" } | { kind: "running" } | { kind: "failed"; message: string };
 
 export interface Member {
   userId: string;
   name: string;
-  isAdmin: boolean;
+  role: Role;
   /** Campfire they sit at; null when not in voice. */
   campfire: string | null;
   micMuted: boolean;
@@ -17,9 +28,9 @@ export interface ServerStatus {
   address: string | null;
   fingerprint: string | null;
   joinLink: string | null;
-  /** Only while nobody is admin yet. */
-  claimLink: string | null;
-  /** Admins first, then by name. */
+  /** Campfires and chats, in display order. */
+  channels: Channel[];
+  /** Admins first, then moderators, then by name. */
   members: Member[];
   livekitPid: number | null;
 }
@@ -30,7 +41,7 @@ export const STARTING: ServerStatus = {
   address: null,
   fingerprint: null,
   joinLink: null,
-  claimLink: null,
+  channels: [],
   members: [],
   livekitPid: null,
 };

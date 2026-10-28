@@ -75,14 +75,12 @@ export function JoinPanel() {
             <span className="camp-card__text">
               <span className="camp-card__name">{check.preview.name}</span>
               <span className="camp-card__sub">{campfires(check.preview.channels)}</span>
-              {check.preview.kind === "claim" &&
-                (check.preview.usable ? (
-                  <span className="camp-card__claim">
-                    <Icon name="crown" size={14} /> Ключ админа: вы станете админом лагеря
-                  </span>
-                ) : (
-                  <span className="join__error">Этот ключ админа уже использован</span>
-                ))}
+              {/* Admin keys are retired (ADR-0026): roles come from the server window. */}
+              {check.preview.kind === "claim" && (
+                <span className="join__error">
+                  Ключ админа больше не действует — попросите ссылку для друзей, роль выдаст хозяин лагеря
+                </span>
+              )}
             </span>
           </div>
         )}

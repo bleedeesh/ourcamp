@@ -1,11 +1,20 @@
-import type { UserId } from "../domain/types.ts";
+import type { Role, UserId } from "../domain/types.ts";
 
 /** A joined camp, as listed in the switcher. */
 export interface CampSummary {
   /** Stable id (the camp's certificate fingerprint). */
   readonly id: string;
   readonly name: string;
-  readonly role: "member" | "admin";
+  readonly role: Role;
+}
+
+/** A channel as the camp describes it, mirrors `oc_proto::Channel` (ADR-0026). */
+export interface ChannelInfo {
+  readonly id: string;
+  readonly name: string;
+  /** Campfires are voice; chats (M5) are text and not in the campfire tree. */
+  readonly kind: "voice" | "text";
+  readonly afk: boolean;
 }
 
 export interface CampList {
@@ -22,7 +31,7 @@ export interface CampPreview {
   /** Number of campfires. */
   readonly channels: number;
   readonly kind: "join" | "claim";
-  /** `false` for an admin key somebody already redeemed. */
+  /** `false` for an old admin key: retired with ADR-0026, it lets nobody in. */
   readonly usable: boolean;
 }
 
@@ -30,8 +39,8 @@ export interface CampPreview {
 export interface OpenCamp {
   readonly id: string;
   readonly name: string;
-  readonly channels: ReadonlyArray<{ readonly id: string; readonly name: string; readonly afk: boolean }>;
-  readonly self: { readonly userId: UserId; readonly name: string; readonly isAdmin: boolean };
+  readonly channels: readonly ChannelInfo[];
+  readonly self: { readonly userId: UserId; readonly name: string; readonly role: Role };
   /** The camp server was unreachable; name and channels are the last known ones. */
   readonly offline: boolean;
 }
@@ -57,9 +66,12 @@ export interface CampApi {
   onLive(listener: (live: CampLive) => void): () => void;
 }
 
-/** The camp's live state (ADR-0021), mirrors `oc_proto::CampState`. */
+/** The camp's live state (ADR-0021, 0026), mirrors `oc_proto::CampState`. */
 export interface CampState {
-  readonly members: ReadonlyArray<{ readonly userId: UserId; readonly name: string; readonly isAdmin: boolean }>;
+  /** Renames and channel changes arrive here too. */
+  readonly name: string;
+  readonly channels: readonly ChannelInfo[];
+  readonly members: ReadonlyArray<{ readonly userId: UserId; readonly name: string; readonly role: Role }>;
   readonly presence: ReadonlyArray<{
     readonly channelId: string;
     readonly members: ReadonlyArray<{ readonly userId: UserId; readonly micMuted: boolean }>;
