@@ -1,31 +1,29 @@
 import type { LinkStatus } from "../engine/engine.ts";
 
-/** The connection line of the bottom panel (ADR-0030). */
+/** The connection line of the bottom panel (ADR-0030): the ping, bars for the quality. */
 export interface LinkView {
-  /** "Отличная связь", "Подключение…". */
-  readonly label: string;
-  /** "24 мс", or null before the first measurement. */
-  readonly ping: string | null;
+  /** "10 ms"; "Подключение…" before the first measurement, "Нет связи" when lost. */
+  readonly text: string;
+  /** The quality in words, for the tooltip and screen readers. */
+  readonly quality: string;
   /** Lit bars of three. */
   readonly bars: 0 | 1 | 2 | 3;
   readonly tone: "good" | "weak" | "bad" | "pending";
 }
 
+const QUALITY = {
+  excellent: { quality: "Отличная связь", bars: 3, tone: "good" },
+  good: { quality: "Хорошая связь", bars: 2, tone: "good" },
+  poor: { quality: "Слабая связь", bars: 1, tone: "weak" },
+  lost: { quality: "Связь потеряна", bars: 0, tone: "bad" },
+} as const;
+
 /** What the panel shows for the engine's report; `null` — just joined, nothing measured. */
 export function linkView(link: LinkStatus | null): LinkView {
-  const rtt = link?.rttMs ?? null;
+  if (link === null) return { text: "Подключение…", quality: "Связь проверяется", bars: 0, tone: "pending" };
+  const { quality, bars, tone } = QUALITY[link.quality];
+  if (link.quality === "lost") return { text: "Нет связи", quality, bars, tone };
   // A server on the same machine or LAN answers in under a millisecond.
-  const ping = rtt === null ? null : rtt < 1 ? "<1 мс" : `${rtt} мс`;
-  switch (link?.quality) {
-    case "excellent":
-      return { label: "Отличная связь", ping, bars: 3, tone: "good" };
-    case "good":
-      return { label: "Хорошая связь", ping, bars: 2, tone: "good" };
-    case "poor":
-      return { label: "Слабая связь", ping, bars: 1, tone: "weak" };
-    case "lost":
-      return { label: "Связь потеряна", ping: null, bars: 0, tone: "bad" };
-    case undefined:
-      return { label: "Подключение…", ping: null, bars: 0, tone: "pending" };
-  }
+  const text = link.rttMs === null ? "Подключение…" : link.rttMs < 1 ? "<1 ms" : `${link.rttMs} ms`;
+  return { text, quality, bars, tone };
 }

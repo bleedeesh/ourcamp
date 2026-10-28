@@ -361,24 +361,19 @@
   fill: var(--admin);
 }
 
-.link-status[data-tone="bad"] .link-status__label {
-  color: #ff8a98; /* --danger lightened to 4.5:1 */
-}
-
-.link-status__label {
+.link-status__ping {
   font-weight: 600;
   color: var(--text);
-}
-
-.link-status__ping {
-  color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
 
-.link-status__ping::before {
-  content: "·";
-  margin-right: 8px;
-  color: var(--text-faint);
+.link-status[data-tone="pending"] .link-status__ping {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.link-status[data-tone="bad"] .link-status__ping {
+  color: #ff8a98; /* --danger lightened to 4.5:1 */
 }
 
 .panel__hint {

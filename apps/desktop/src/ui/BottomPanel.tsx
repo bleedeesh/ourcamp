@@ -3,17 +3,22 @@ import { Avatar } from "./ChannelTree.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
-/** Signal bars, quality and ping (ADR-0030); the channel itself is lit in the tree. */
-function Connection({ view }: { view: LinkView }) {
+/** Signal bars and the ping (ADR-0030); quality and channel are in the tooltip. */
+function Connection({ view, channel }: { view: LinkView; channel: string }) {
   return (
-    <span className="link-status" data-tone={view.tone} role="status">
+    <span
+      className="link-status"
+      data-tone={view.tone}
+      role="status"
+      title={`${view.quality} · канал «${channel}»`}
+      aria-label={`${view.quality}, ${view.text}`}
+    >
       <svg className="link-status__bars" width="16" height="14" viewBox="0 0 16 14" aria-hidden="true">
         {[0, 1, 2].map((i) => (
           <rect key={i} x={i * 6} y={9 - i * 4.5} width="4" height={5 + i * 4.5} rx="1.2" data-on={i < view.bars || undefined} />
         ))}
       </svg>
-      <span className="link-status__label">{view.label}</span>
-      {view.ping !== null && <span className="link-status__ping">{view.ping}</span>}
+      <span className="link-status__ping">{view.text}</span>
     </span>
   );
 }
@@ -33,8 +38,8 @@ export function BottomPanel() {
   return (
     <section className="panel" aria-label="Голос и управление">
       {channelName !== null ? (
-        <div className="panel__connection" title={`В канале «${channelName}»`}>
-          <Connection view={linkView(link)} />
+        <div className="panel__connection">
+          <Connection view={linkView(link)} channel={channelName} />
           <button type="button" className="square-button square-button--danger" aria-label="Выйти из голосового канала" onClick={() => void voice.leave()}>
             <Icon name="leave" size={16} />
           </button>

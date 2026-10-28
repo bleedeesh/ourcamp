@@ -30,7 +30,7 @@ export class DemoEngine implements VoiceEngine {
     });
     // A good home connection, measured a moment after joining.
     setTimeout(() => {
-      for (const l of this.#linkListeners) l({ quality: "excellent", rttMs: 24 });
+      for (const l of this.#linkListeners) l({ quality: "excellent", rttMs: 10 });
     }, 600);
     return Promise.resolve();
   }
