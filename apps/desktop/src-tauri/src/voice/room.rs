@@ -216,10 +216,12 @@ async fn watch_link(room: Arc<Room>, host: Arc<dyn RoomHost>) {
 
 /// Ping: the current round trip of the ICE candidate pair in use (STUN consent checks
 /// keep it fresh even in silence). Receiving is always on, so its transport goes first.
+/// libwebrtc counts it in whole milliseconds, so a server on this machine reads 0: what
+/// tells "measured" apart is that the pair has had answers.
 fn rtt_ms(subscriber: &[RtcStats], publisher: &[RtcStats]) -> Option<u32> {
     subscriber.iter().chain(publisher).find_map(|s| match s {
         RtcStats::CandidatePair(p)
-            if p.candidate_pair.nominated && p.candidate_pair.current_round_trip_time > 0.0 =>
+            if p.candidate_pair.nominated && p.candidate_pair.responses_received > 0 =>
         {
             // Seconds → ms; a round trip of 49 days does not fit, nor happen.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -434,10 +436,15 @@ mod tests {
     }
 
     fn pair(nominated: bool, rtt_s: f64) -> RtcStats {
+        answered(nominated, rtt_s, 3)
+    }
+
+    fn answered(nominated: bool, rtt_s: f64, responses_received: u64) -> RtcStats {
         RtcStats::CandidatePair(livekit::webrtc::stats::CandidatePairStats {
             candidate_pair: livekit::webrtc::stats::dictionaries::CandidatePairStats {
                 nominated,
                 current_round_trip_time: rtt_s,
+                responses_received,
                 ..Default::default()
             },
             ..Default::default()
@@ -460,7 +467,16 @@ mod tests {
             Some(12),
             "receiving goes first"
         );
-        assert_eq!(rtt_ms(&[pair(true, 0.0)], &[]), None, "not measured yet");
+        assert_eq!(
+            rtt_ms(&[answered(true, 0.0, 0)], &[]),
+            None,
+            "no answers yet: not measured"
+        );
+        assert_eq!(
+            rtt_ms(&[answered(true, 0.0, 7)], &[]),
+            Some(0),
+            "a server on this machine: under a millisecond, libwebrtc says 0"
+        );
         assert_eq!(rtt_ms(&[], &[]), None);
     }
 
