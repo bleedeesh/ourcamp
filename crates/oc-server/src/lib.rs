@@ -12,6 +12,7 @@
 //! ```
 
 mod api;
+mod livekit;
 mod presence;
 mod rtc;
 mod serve;
@@ -29,6 +30,10 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use livekit::Supervisor;
+pub use livekit::{
+    find_binary as find_livekit, ManagedLiveKit, DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
+};
 pub use oc_proto::API_VERSION;
 use store::Store;
 use tls::Identity;
@@ -47,11 +52,26 @@ pub struct Config {
     pub public_port: Option<u16>,
     /// Name of a brand-new camp (ignored once the camp exists).
     pub camp_name: String,
-    /// LiveKit the camp hands out room tokens for.
-    pub livekit: LiveKit,
+    /// Where voice rooms live.
+    pub livekit: LiveKitMode,
 }
 
-/// The LiveKit server rooms live on (ADR-0016: `external` mode in M3 step 2).
+/// The two LiveKit modes of ADR-0016.
+#[derive(Debug, Clone)]
+pub enum LiveKitMode {
+    /// One already running (development: `pnpm livekit` in Docker, ADR-0013).
+    External(LiveKit),
+    /// The camp starts and watches its own (ADR-0022).
+    Managed(ManagedLiveKit),
+}
+
+impl From<LiveKit> for LiveKitMode {
+    fn from(livekit: LiveKit) -> Self {
+        Self::External(livekit)
+    }
+}
+
+/// A LiveKit server rooms live on.
 #[derive(Clone)]
 pub struct LiveKit {
     /// Where the camp reaches LiveKit: `ws://host:port`, normally loopback. Clients
@@ -95,6 +115,8 @@ pub enum StartError {
     Bind(SocketAddr, io::Error),
     /// `LiveKit::url` is not `ws://host:port`.
     LiveKitUrl(String),
+    /// Managed LiveKit did not start; the text says why (with the end of its log).
+    LiveKit(String),
 }
 
 impl fmt::Display for StartError {
@@ -105,6 +127,7 @@ impl fmt::Display for StartError {
             Self::Tls(e) => write!(f, "TLS identity is invalid: {e}"),
             Self::Bind(addr, e) => write!(f, "cannot listen on {addr}: {e}"),
             Self::LiveKitUrl(url) => write!(f, "LiveKit address must be ws://host:port, got {url}"),
+            Self::LiveKit(why) => write!(f, "{why}"),
         }
     }
 }
@@ -121,13 +144,26 @@ pub struct Running {
     pub links: Links,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
+    /// `Some` in `managed` mode.
+    livekit: Option<Supervisor>,
 }
 
 impl Running {
-    /// Stops accepting connections and waits for the accept loop to end.
+    /// The process id of the camp's own LiveKit (`managed` mode), `None` while it is
+    /// being restarted or in `external` mode. For the server window and diagnostics.
+    #[must_use]
+    pub fn livekit_pid(&self) -> Option<u32> {
+        self.livekit.as_ref().and_then(Supervisor::pid)
+    }
+
+    /// Stops accepting connections, waits for the accept loop to end, then stops the
+    /// camp's own LiveKit.
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
         let _ = self.task.await;
+        if let Some(livekit) = self.livekit {
+            livekit.stop().await;
+        }
     }
 }
 
@@ -139,8 +175,10 @@ impl Running {
 /// # Panics
 /// Only if the startup task itself panicked (a bug), which is re-raised here.
 pub async fn start(config: Config) -> Result<Running, StartError> {
-    let livekit_authority = livekit_authority(&config.livekit.url)
-        .ok_or_else(|| StartError::LiveKitUrl(config.livekit.url.clone()))?;
+    if let LiveKitMode::External(livekit) = &config.livekit {
+        livekit_authority(&livekit.url)
+            .ok_or_else(|| StartError::LiveKitUrl(livekit.url.clone()))?;
+    }
     let data_dir = config.data_dir.clone();
     let camp_name = config.camp_name.clone();
     // Disk I/O and key generation: off the async workers.
@@ -182,19 +220,34 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
             .map(|t| link(InviteKind::ClaimAdmin, t)),
     };
 
+    // Last of all: nothing after it can fail for a managed LiveKit (whose address is
+    // ours), so a started one is never left behind.
+    let (livekit, supervisor) = match config.livekit {
+        LiveKitMode::External(livekit) => (livekit, None),
+        LiveKitMode::Managed(managed) => {
+            let (supervisor, livekit) =
+                Supervisor::start(&managed, &config.data_dir, &config.public_host)
+                    .await
+                    .map_err(StartError::LiveKit)?;
+            (livekit, Some(supervisor))
+        }
+    };
+    let livekit_authority = livekit_authority(&livekit.url)
+        .ok_or_else(|| StartError::LiveKitUrl(livekit.url.clone()))?;
+
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (events, events_rx) = watch::channel(Arc::new(initial));
     let state = api::AppState::new(
         store,
         identity.fingerprint,
-        config.livekit.clone(),
+        livekit.clone(),
         &livekit_authority,
         events_rx,
         shutdown_rx.clone(),
     );
     tokio::spawn(presence::run(
         state.store_handle(),
-        config.livekit.clone(),
+        livekit,
         livekit_authority.clone(),
         events,
         shutdown_rx.clone(),
@@ -206,6 +259,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         links,
         shutdown,
         task,
+        livekit: supervisor,
     })
 }
 

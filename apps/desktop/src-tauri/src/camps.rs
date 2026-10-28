@@ -617,7 +617,8 @@ mod tests {
                 url: livekit,
                 api_key: "devkey".into(),
                 api_secret: "secret".into(),
-            },
+            }
+            .into(),
         })
         .await
         .unwrap();

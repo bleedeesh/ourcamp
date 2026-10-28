@@ -8,3 +8,6 @@ target/
 
 # Machine-specific preview config of the Claude desktop app
 .claude/launch.json
+
+# livekit-server for `managed` mode (`pnpm livekit:fetch`, ADR-0022)
+dev/bin/
