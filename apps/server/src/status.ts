@@ -81,3 +81,25 @@ export function plural(n: number, one: string, few: string, many: string): strin
   if (units >= 2 && units <= 4) return few;
   return many;
 }
+
+/** Same limits as `oc_server::MAX_CAMP_NAME` / `MAX_CHANNEL_NAME`. */
+export const MAX_CAMP_NAME = 48;
+export const MAX_CHANNEL_NAME = 32;
+
+/**
+ * What is wrong with a name before it goes to the camp (which checks the same), or
+ * null when it is fine. Counted in characters after trimming, as the server does.
+ */
+export function nameProblem(name: string, max: number): string | null {
+  const length = [...name.trim()].length;
+  if (length === 0) return "Введите название";
+  if (length > max) return `Не длиннее ${max} символов`;
+  return null;
+}
+
+/** Roles as the window names them. */
+export const ROLE_LABEL: Record<Role, string> = {
+  admin: "Админ",
+  moderator: "Модератор",
+  member: "Участник",
+};

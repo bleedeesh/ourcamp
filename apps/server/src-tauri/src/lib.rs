@@ -8,6 +8,7 @@
 //!                        └── livekit_pid_changes() ─► snapshot ─► server://status ─► UI
 //! ```
 
+mod manage;
 mod status;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -115,6 +116,11 @@ impl Host {
             let status = snapshot(&base, &state.borrow_and_update(), livekit_pid);
             self.publish(&app, status);
         }
+    }
+
+    /// The running camp's owner handle; `None` while it is not running.
+    async fn manager(&self) -> Option<oc_server::Manager> {
+        self.running.lock().await.as_ref().map(Running::manager)
     }
 
     async fn stop(&self) {
@@ -261,7 +267,15 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .invoke_handler(tauri::generate_handler![server_status, server_retry])
+        .invoke_handler(tauri::generate_handler![
+            server_status,
+            server_retry,
+            manage::server_rename_camp,
+            manage::server_set_role,
+            manage::server_create_channel,
+            manage::server_rename_channel,
+            manage::server_delete_channel,
+        ])
         .build(tauri::generate_context!())
         .expect("Tauri could not start");
     app.run(|app, event| {
