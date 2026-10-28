@@ -167,6 +167,45 @@ impl RoomService {
         Ok(out)
     }
 
+    /// Takes `identity` out of `room` (they see "removed"). Not being there is no error.
+    pub async fn remove_participant(&self, room: &str, identity: &str) -> Result<(), RoomError> {
+        let body = serde_json::json!({ "room": room, "identity": identity }).to_string();
+        match self
+            .call::<serde_json::Value>("RemoveParticipant", room, body)
+            .await
+        {
+            Ok(_) | Err(RoomError::Status(StatusCode::NOT_FOUND)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Allows or forbids `identity` to publish in `room`. Forbidding makes LiveKit take
+    /// their published tracks down at once (ADR-0028).
+    pub async fn set_can_publish(
+        &self,
+        room: &str,
+        identity: &str,
+        can_publish: bool,
+    ) -> Result<(), RoomError> {
+        let body = serde_json::json!({
+            "room": room,
+            "identity": identity,
+            "permission": {
+                "can_subscribe": true,
+                "can_publish": can_publish,
+                "can_publish_data": true,
+            },
+        })
+        .to_string();
+        match self
+            .call::<serde_json::Value>("UpdateParticipant", room, body)
+            .await
+        {
+            Ok(_) | Err(RoomError::Status(StatusCode::NOT_FOUND)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Closes a room: everyone in it is disconnected (they see "room deleted"). A room
     /// that does not exist — nobody ever sat there — is no error.
     pub async fn delete_room(&self, room: &str) -> Result<(), RoomError> {

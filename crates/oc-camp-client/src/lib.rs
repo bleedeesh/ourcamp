@@ -30,8 +30,8 @@ use std::io;
 
 use oc_invite::{Fingerprint, Host, Invite, InviteKind, Token};
 use oc_proto::{
-    CampInfo, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest, LoginResponse, Role,
-    RoomToken, API_VERSION,
+    CampInfo, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest, LoginResponse,
+    MoveMember, Role, RoomToken, API_VERSION,
 };
 
 pub use device::DeviceKey;
@@ -231,6 +231,29 @@ impl CampClient {
     pub async fn leave(&self, session: &Session) -> Result<(), ClientError> {
         self.http
             .delete_authorized("/api/v1/members/me", &session.token)
+            .await
+    }
+
+    /// Moves someone sitting in voice to another campfire; their app joins it. Needs a
+    /// moderator's or admin's rights over them ([`Role::moves`], ADR-0029).
+    ///
+    /// # Errors
+    /// [`ErrorCode::Forbidden`], [`ErrorCode::NotInVoice`], [`ErrorCode::NotFound`],
+    /// [`ErrorCode::BadRequest`] for a chat, [`ErrorCode::Unauthorized`].
+    pub async fn move_member(
+        &self,
+        session: &Session,
+        user_id: &str,
+        channel_id: &str,
+    ) -> Result<(), ClientError> {
+        self.http
+            .post_no_content(
+                &format!("/api/v1/members/{user_id}/move"),
+                &session.token,
+                &MoveMember {
+                    channel_id: channel_id.to_owned(),
+                },
+            )
             .await
     }
 

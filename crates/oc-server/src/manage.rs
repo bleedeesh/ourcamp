@@ -8,8 +8,8 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use oc_proto::{Channel, ChannelKind, Role};
-use tokio::sync::Notify;
+use oc_proto::{CampEvent, Channel, ChannelKind, Role};
+use tokio::sync::{broadcast, Notify};
 
 use crate::rooms::{RoomError, RoomService};
 use crate::store::{Store, StoreError};
@@ -31,6 +31,12 @@ pub enum ManageError {
     /// The database refused.
     Store(StoreError),
     /// The channel is gone, but LiveKit did not close its room.
+    RoomNotClosed(RoomError),
+    /// Moving someone who is not in voice right now.
+    NotInVoice,
+    /// Moving someone into a chat: only campfires have voice.
+    NotACampfire,
+    /// LiveKit refused the voice part of the action.
     LiveKit(RoomError),
 }
 
@@ -41,7 +47,10 @@ impl fmt::Display for ManageError {
             Self::BadName(max) => write!(f, "a name is 1 to {max} characters"),
             Self::AfkIsPermanent => write!(f, "the AFK campfire cannot be removed"),
             Self::Store(e) => write!(f, "{e}"),
-            Self::LiveKit(e) => write!(f, "channel removed, its room was not: {e}"),
+            Self::RoomNotClosed(e) => write!(f, "channel removed, its room was not: {e}"),
+            Self::NotInVoice => write!(f, "the member is not in voice"),
+            Self::NotACampfire => write!(f, "only campfires have voice"),
+            Self::LiveKit(e) => write!(f, "{e}"),
         }
     }
 }
@@ -64,12 +73,20 @@ fn name(raw: &str, max: usize) -> Result<&str, ManageError> {
     Ok(name)
 }
 
+/// An event for one member's `/api/v1/events` stream (ADR-0028).
+#[derive(Debug, Clone)]
+pub(crate) struct Directive {
+    pub user_id: String,
+    pub event: CampEvent,
+}
+
 /// The owner's handle on a running camp. Cheap to clone.
 #[derive(Clone)]
 pub struct Manager {
     store: Arc<Mutex<Store>>,
     rooms: Arc<RoomService>,
     refresh: Arc<Notify>,
+    directives: broadcast::Sender<Directive>,
 }
 
 impl Manager {
@@ -77,11 +94,13 @@ impl Manager {
         store: Arc<Mutex<Store>>,
         rooms: Arc<RoomService>,
         refresh: Arc<Notify>,
+        directives: broadcast::Sender<Directive>,
     ) -> Self {
         Self {
             store,
             rooms,
             refresh,
+            directives,
         }
     }
 
@@ -177,8 +196,129 @@ impl Manager {
         if removed.kind == ChannelKind::Voice {
             match self.rooms.delete_room(&removed.id).await {
                 Ok(()) | Err(RoomError::Unreachable(_)) => {}
-                Err(e) => return Err(ManageError::LiveKit(e)),
+                Err(e) => return Err(ManageError::RoomNotClosed(e)),
             }
+        }
+        Ok(())
+    }
+
+    /// Runs a store read off the async workers (no snapshot: nothing changed).
+    async fn read<R: Send + 'static>(
+        &self,
+        call: impl FnOnce(&Store) -> Result<R, ManageError> + Send + 'static,
+    ) -> Result<R, ManageError> {
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+            call(&store)
+        })
+        .await
+        .expect("store task panicked")
+    }
+
+    /// The room `user_id` sits in now; `None` when not in voice — or when LiveKit is
+    /// down, which means the same: nobody can be in voice then.
+    async fn seat(&self, user_id: &str) -> Result<Option<String>, ManageError> {
+        match self.rooms.presence().await {
+            Ok(rooms) => Ok(rooms
+                .into_iter()
+                .find(|(_, people)| people.iter().any(|p| p.identity == user_id))
+                .map(|(room, _)| room)),
+            Err(RoomError::Unreachable(_)) => Ok(None),
+            Err(e) => Err(ManageError::LiveKit(e)),
+        }
+    }
+
+    /// Sends `event` to `user_id`'s event stream. Nobody listening is fine: they are
+    /// offline, and their next connect reflects the change anyway.
+    fn tell(&self, user_id: &str, event: CampEvent) {
+        let _ = self.directives.send(Directive {
+            user_id: user_id.to_owned(),
+            event,
+        });
+    }
+
+    /// Removes a member (a kick, not a ban — the friends link brings them back): their
+    /// app is told first and leaves voice and the camp itself; LiveKit then takes them
+    /// out of the room regardless (ADR-0028).
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`], [`ManageError::Store`], [`ManageError::LiveKit`] (they
+    /// are no member any more either way).
+    pub async fn kick(&self, user_id: &str) -> Result<(), ManageError> {
+        let id = user_id.to_owned();
+        self.change(move |s| {
+            if s.remove_member(&id)? {
+                Ok(())
+            } else {
+                Err(ManageError::NotFound)
+            }
+        })
+        .await?;
+        self.tell(user_id, CampEvent::Kicked);
+        if let Some(room) = self.seat(user_id).await? {
+            self.rooms
+                .remove_participant(&room, user_id)
+                .await
+                .map_err(ManageError::LiveKit)?;
+        }
+        Ok(())
+    }
+
+    /// Moves a member who is in voice to another campfire: their app joins it (ADR-0028).
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`] (member or channel), [`ManageError::NotACampfire`],
+    /// [`ManageError::NotInVoice`], [`ManageError::LiveKit`].
+    pub async fn move_member(&self, user_id: &str, channel_id: &str) -> Result<(), ManageError> {
+        let (id, channel) = (user_id.to_owned(), channel_id.to_owned());
+        self.read(move |s| {
+            let member = s.members()?.into_iter().any(|m| m.user_id == id);
+            match s.channel(&channel)? {
+                _ if !member => Err(ManageError::NotFound),
+                None => Err(ManageError::NotFound),
+                Some(c) if c.kind != ChannelKind::Voice => Err(ManageError::NotACampfire),
+                Some(_) => Ok(()),
+            }
+        })
+        .await?;
+        match self.seat(user_id).await? {
+            None => Err(ManageError::NotInVoice),
+            Some(room) if room == channel_id => Ok(()),
+            Some(_) => {
+                self.tell(
+                    user_id,
+                    CampEvent::Moved {
+                        channel_id: channel_id.to_owned(),
+                    },
+                );
+                Ok(())
+            }
+        }
+    }
+
+    /// Forbids a member to speak until lifted, or lifts it. It holds across reconnects:
+    /// room tokens come without publishing; if they sit in a room now, LiveKit takes
+    /// their microphone down (or allows it back) at once (ADR-0028).
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`], [`ManageError::Store`], [`ManageError::LiveKit`] (the
+    /// flag is saved either way and applies from their next join).
+    pub async fn set_silenced(&self, user_id: &str, silenced: bool) -> Result<(), ManageError> {
+        let id = user_id.to_owned();
+        self.change(move |s| {
+            if s.set_silenced(&id, silenced)? {
+                Ok(())
+            } else {
+                Err(ManageError::NotFound)
+            }
+        })
+        .await?;
+        if let Some(room) = self.seat(user_id).await? {
+            self.rooms
+                .set_can_publish(&room, user_id, !silenced)
+                .await
+                .map_err(ManageError::LiveKit)?;
         }
         Ok(())
     }

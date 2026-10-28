@@ -1,5 +1,5 @@
 import { createStore, type Store } from "../lib/store.ts";
-import type { MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
+import type { LinkStatus, MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
 import type { CampState } from "../engine/camp-api.ts";
 import { applyCampState, applyRoster } from "./roster.ts";
 import type { Camp, UserId } from "./types.ts";
@@ -24,6 +24,8 @@ export interface VoiceState {
   /** Local volume prefs of members the user has seen in this session. */
   readonly prefs: Readonly<Record<UserId, VolumePrefs>>;
   readonly volumeMenu: VolumeMenu | null;
+  /** Connection quality and ping in the channel (ADR-0030); null until measured. */
+  readonly link: LinkStatus | null;
   /** Last engine error, shown to the user. */
   readonly error: string | null;
 }
@@ -45,6 +47,7 @@ export class VoiceController {
   #unsubscribeLevels: (() => void) | null = null;
   #unsubscribeParticipants: (() => void) | null = null;
   #unsubscribeDisconnected: (() => void) | null = null;
+  #unsubscribeLink: (() => void) | null = null;
   /** Members whose saved volume the engine already has for the current channel. */
   #volumesSent = new Set<UserId>();
 
@@ -60,6 +63,7 @@ export class VoiceController {
       speaking: {},
       prefs: {},
       volumeMenu: null,
+      link: null,
       error: null,
     });
   }
@@ -69,6 +73,10 @@ export class VoiceController {
     this.#unsubscribeLevels ??= this.#engine.onLevels((levels) => this.#applyLevels(levels));
     this.#unsubscribeParticipants ??= this.#engine.onParticipants((update) => this.#applyParticipants(update));
     this.#unsubscribeDisconnected ??= this.#engine.onDisconnected((reason) => this.#onDisconnected(reason));
+    this.#unsubscribeLink ??= this.#engine.onLink((link) => {
+      // A report racing a leave must not bring the line back.
+      if (this.store.get().channelId !== null) this.store.patch({ link });
+    });
   }
 
   dispose(): void {
@@ -78,6 +86,8 @@ export class VoiceController {
     this.#unsubscribeParticipants = null;
     this.#unsubscribeDisconnected?.();
     this.#unsubscribeDisconnected = null;
+    this.#unsubscribeLink?.();
+    this.#unsubscribeLink = null;
   }
 
   /** Switches to another camp: leaves the current campfire first. */
@@ -104,7 +114,8 @@ export class VoiceController {
     const remote = channel.memberIds.filter((id) => id !== selfId);
     const prefs = Object.fromEntries(remote.map((id) => [id, this.#volumes.get(id)]));
     this.#volumesSent = new Set(remote);
-    this.store.patch({ channelId, speaking: {}, prefs: { ...this.store.get().prefs, ...prefs }, error: null });
+    // A new room measures its own connection.
+    this.store.patch({ channelId, speaking: {}, link: null, prefs: { ...this.store.get().prefs, ...prefs }, error: null });
     await this.#run(
       () =>
         this.#engine.joinChannel({
@@ -124,7 +135,7 @@ export class VoiceController {
   async leave(): Promise<void> {
     const { channelId } = this.store.get();
     if (channelId === null) return;
-    this.store.patch({ channelId: null, speaking: {}, volumeMenu: null });
+    this.store.patch({ channelId: null, speaking: {}, volumeMenu: null, link: null });
     await this.#run(
       () => this.#engine.leaveChannel(),
       () => this.store.patch({ channelId }),
@@ -151,7 +162,15 @@ export class VoiceController {
     }, () => this.store.patch(previous));
   }
 
+  /** A moderator forbade you to speak (ADR-0028): the mic button stays locked. */
+  silenced(): boolean {
+    const { camp, selfId } = this.store.get();
+    return camp.members[selfId]?.silenced === true;
+  }
+
   async toggleMic(): Promise<void> {
+    // The camp's LiveKit would refuse the microphone anyway; the button says why.
+    if (this.silenced()) return;
     const { micMuted, deafened } = this.store.get();
     if (deafened) {
       // Unmuting while deafened means "I want to talk": undeafen and unmute together.
@@ -240,7 +259,7 @@ export class VoiceController {
   /** The server ended our session: we are no longer at the campfire; say why. */
   #onDisconnected(reason: string): void {
     if (this.store.get().channelId === null) return;
-    this.store.patch({ channelId: null, speaking: {}, volumeMenu: null, error: reason });
+    this.store.patch({ channelId: null, speaking: {}, volumeMenu: null, link: null, error: reason });
     void this.#leaveAfk();
   }
 

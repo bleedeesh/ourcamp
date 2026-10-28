@@ -16,11 +16,16 @@ use std::sync::Arc;
 use audio::engine::Engine;
 use camps::Camps;
 use commands::{CampsState, EngineState};
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Manager, WindowEvent};
 
 /// Live camp state for the webview. Must match `CAMP_STATE_EVENT` in
 /// `src/engine/tauri-camp-api.ts`.
 const CAMP_STATE_EVENT: &str = "camp://state";
+/// What the camp asked of this member alone (ADR-0028). Must match
+/// `CAMP_DIRECTIVE_EVENT` in `src/engine/tauri-camp-api.ts`.
+const CAMP_DIRECTIVE_EVENT: &str = "camp://directive";
 
 /// Starts the application. Called from `main.rs` (desktop) and mobile entry points.
 ///
@@ -37,7 +42,16 @@ pub fn run() {
     let for_levels = engine.clone().ok();
     let for_exit = engine.clone().ok();
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // Registered first, as the plugin asks: launching OurCamp again while it sits in the
+    // tray brings its window back instead of quietly exiting (ADR-0031). Debug profiles
+    // (`OC_PROFILE`) are other people on the same PC and run side by side.
+    if profile().is_none() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }));
+    }
+    let app = builder
         .manage(engine)
         .setup(move |app| {
             let dir = data_dir(app.path().app_data_dir());
@@ -67,10 +81,16 @@ pub fn run() {
                 eprintln!("[ourcamp] {reason}");
             }
             if let Ok(camps) = &camps {
-                let app = app.handle().clone();
+                let handle = app.handle().clone();
                 camps.set_state_listener(Arc::new(move |live| {
-                    if let Err(e) = tauri::Emitter::emit(&app, CAMP_STATE_EVENT, live) {
+                    if let Err(e) = tauri::Emitter::emit(&handle, CAMP_STATE_EVENT, live) {
                         eprintln!("[ourcamp] camp state event: {e}");
+                    }
+                }));
+                let app = app.handle().clone();
+                camps.set_directive_listener(Arc::new(move |directive| {
+                    if let Err(e) = tauri::Emitter::emit(&app, CAMP_DIRECTIVE_EVENT, directive) {
+                        eprintln!("[ourcamp] camp directive event: {e}");
                     }
                 }));
             }
@@ -79,7 +99,16 @@ pub fn run() {
                 participants::forward(app.handle().clone(), &engine);
                 levels::spawn(app.handle().clone(), engine);
             }
+            tray(app)?;
             Ok(())
+        })
+        // The close button hides the window into the tray: voice and the camp stay on,
+        // like in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031).
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::voice_join_channel,
@@ -94,6 +123,7 @@ pub fn run() {
             commands::camp_open,
             commands::camp_leave,
             commands::camp_invite,
+            commands::camp_move_member,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start OurCamp");
@@ -104,6 +134,47 @@ pub fn run() {
             }
         }
     });
+}
+
+/// Shows the window again (from the tray or a second launch).
+fn show_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// The tray icon: a click opens the window, the menu also quits.
+fn tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Открыть", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Выйти из OurCamp", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("OurCamp")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => show_window(app),
+            // `RunEvent::Exit` leaves the channel politely before the process ends.
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 /// How long closing the app waits for a polite leave; a camp that does not answer must
@@ -128,13 +199,18 @@ fn leave_before_exit(engine: &Engine) {
 /// its own camps) — two people talking on one PC during development.
 fn data_dir(base: tauri::Result<PathBuf>) -> Result<PathBuf, String> {
     let base = base.map_err(|e| e.to_string())?;
-    let profile = std::env::var("OC_PROFILE")
-        .ok()
-        .filter(|p| cfg!(debug_assertions) && !p.trim().is_empty());
-    Ok(match profile {
-        Some(p) => base.join("profiles").join(p.trim()),
+    Ok(match profile() {
+        Some(p) => base.join("profiles").join(p),
         None => base,
     })
+}
+
+/// `OC_PROFILE` in debug builds: a second person on this PC.
+fn profile() -> Option<String> {
+    std::env::var("OC_PROFILE")
+        .ok()
+        .filter(|p| cfg!(debug_assertions) && !p.trim().is_empty())
+        .map(|p| p.trim().to_owned())
 }
 
 /// Held for the life of the process: one running OurCamp per profile (data directory).

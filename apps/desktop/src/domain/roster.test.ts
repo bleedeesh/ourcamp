@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { CampState } from "../engine/camp-api.ts";
 import type { Camp } from "./types.ts";
-import { applyCampState, applyRoster, avatarColor } from "./roster.ts";
+import { applyCampState, applyRoster, avatarColor, canMove, moves } from "./roster.ts";
 
 const member = (id: string, extra = {}) => ({
   id,
@@ -10,6 +10,7 @@ const member = (id: string, extra = {}) => ({
   color: "#888",
   micMuted: false,
   deafened: false,
+  silenced: false,
   role: "member" as const,
   streaming: false,
   ...extra,
@@ -26,6 +27,17 @@ const camp: Camp = {
   ],
   members: { me: member("me"), artem: member("artem", { role: "admin" as const }), lena: member("lena"), olya: member("olya") },
 };
+
+test("moderators and admins move their rank and below; anyone moves themselves", () => {
+  assert.equal(moves("member", "member"), false);
+  assert.equal(moves("moderator", "moderator"), true);
+  assert.equal(moves("moderator", "admin"), false);
+  assert.equal(moves("admin", "admin"), true);
+  assert.equal(canMove(camp, "me", "me"), true, "yourself: just a join");
+  assert.equal(canMove(camp, "me", "lena"), false, "a member moves nobody else");
+  assert.equal(canMove(camp, "artem", "lena"), true, "the admin does");
+  assert.equal(canMove(camp, "artem", "ghost"), false, "unknown people stay put");
+});
 
 test("the joined channel holds exactly the room's members", () => {
   const next = applyRoster(camp, "lobby", {
@@ -88,9 +100,9 @@ const state = (presence: Record<string, Array<[string, boolean]>>): CampState =>
     { id: "katka", name: "Катка", kind: "voice", afk: false },
   ],
   members: [
-    { userId: "me", name: "ME", role: "member" },
-    { userId: "artem", name: "Артём", role: "admin" },
-    { userId: "zhenya", name: "Женя", role: "moderator" },
+    { userId: "me", name: "ME", role: "member", silenced: false },
+    { userId: "artem", name: "Артём", role: "admin", silenced: false },
+    { userId: "zhenya", name: "Женя", role: "moderator", silenced: true },
   ],
   presence: Object.entries(presence).map(([channelId, people]) => ({
     channelId,
@@ -106,6 +118,8 @@ test("presence fills every campfire, with names and roles from the camp", () => 
   assert.equal(next.members["zhenya"]?.micMuted, true);
   assert.equal(next.members["artem"]?.role, "admin", "the crown comes from the server");
   assert.equal(next.members["zhenya"]?.role, "moderator");
+  assert.equal(next.members["zhenya"]?.silenced, true, "forbidden to speak, from the server");
+  assert.equal(next.members["artem"]?.silenced, false);
 });
 
 test("empty campfires empty out; you are never listed by presence", () => {

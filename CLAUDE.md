@@ -14,7 +14,7 @@
 - Макеты (13 экранов, кликабельный прототип): https://claude.ai/artifact/A9mZCWav7VeKur4eVfdwgA
   — страница «Компактный клиент». Тема: нейтральный чёрный/тёмно-серый **без синевы**,
   фиолетовый «Ночь» (#8B7CF6, ADR-0024) — только выбранное и главные действия. Логотип —
-  мультяшный костёр в той же палитре (`packages/ui/src/Campfire.tsx`, иконки — `apps/desktop/app-icon.svg`). Шрифты Onest / Nunito 800 / Fredoka.
+  мультяшный костёр в той же палитре (`packages/ui/src/Campfire.tsx`, иконки — `apps/desktop/app-icon.svg`, у окна сервера своя со значком «сервер» — `apps/server/app-icon.svg`). Шрифты Onest / Nunito 800 / Fredoka.
   Скроллбары кастомные (`styles/base.css`). Иконки — Lucide в сплошном стиле (`packages/ui/src/Icon.tsx`, ADR-0027).
 - **Слова в интерфейсе: сервер, канал, чат** (ADR-0027); «лагерь» и «костёр» — только имена в коде
   (`camp`, `campfire`, протокол, база), их не переименовываем.
@@ -37,7 +37,7 @@
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
   пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
   `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
-- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v3: участники, роли, костёр AFK — ADR-0025,
+- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v5: участники, роли, костёр AFK — ADR-0025, запрет говорить — ADR-0028,
   сессии), TLS 7780, ссылка для друзей, вход по подписи, роли и каналы v4 (ADR-0026), токены LiveKit (ADR-0017, 0018),
   выход из лагеря `DELETE /api/v1/members/me`.
   `livekit/` — свой LiveKit (`managed` по умолчанию, ADR-0022): ключ в `livekit-keys.json`, конфиг через
@@ -57,7 +57,7 @@
 - `apps/server` — окно сервера лагеря (Tauri, ADR-0023, `pnpm server:window`): `oc-server` в процессе,
   снимок `ServerStatus` (`src-tauri/src/status.rs`) → событие `server://status`; трей, крестик прячет окно.
   UI — `src/ui/App.tsx`, тексты в `src/status.ts` (тесты). Вёрстка в браузере — `server-ui` (порт 5175).
-- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`,
+- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`, `useDragMove.tsx` (перетаскивание людей по каналам, ADR-0029),
   `tauri-events.ts` (исходниками, компилирует Vite приложения).
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав
@@ -74,8 +74,10 @@
 ## Дальше
 M3: готовы шаги 1–6 (ADR-0014–0025). Порядок дальше — раздел «После проверки M3 Димой» в
 `docs/roadmap.md`: мелочи ✅, управление лагерем в окне ✅ (роли владелец/админ/модератор, название, каналы
-Voice/Chat/AFK, `manage.rs`, ADR-0026); дальше модерация (кик, перенос, mute; затем из клиента для
-админов и модераторов), CLI владельца для headless, шаг 7 (порты), короткие ссылки — M4.
+Voice/Chat/AFK, `manage.rs`, ADR-0026); модерация из окна ✅ (выгнать, перенести, запретить говорить —
+адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); перенос перетаскиванием в окне и клиенте ✅ (`useDragMove`, `POST /members/{id}/move`, ADR-0029); пинг и качество
+связи в панели (ADR-0030), клиент в трее (ADR-0031), своя иконка окна сервера (ADR-0032); дальше
+выгнать и запретить говорить из клиента для админов и модераторов, CLI владельца для headless, шаг 7 (порты), короткие ссылки — M4.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

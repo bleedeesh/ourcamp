@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
@@ -13,6 +14,7 @@ use livekit::prelude::*;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::RtcAudioSource;
 use livekit::webrtc::audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions};
+use livekit::webrtc::stats::RtcStats;
 use oc_audio::mixer::SourceInput;
 use oc_audio::pcm::i16_to_f32;
 use tauri::async_runtime::JoinHandle;
@@ -22,6 +24,8 @@ const VOICE_BITRATE: u64 = 64_000;
 /// Decoded frames (10 ms each) buffered between libwebrtc and our copy task. `NetEq` is
 /// the real jitter buffer; this only absorbs task scheduling hiccups.
 const REMOTE_QUEUE_FRAMES: usize = 20;
+/// How often the panel's connection quality and ping are refreshed (ADR-0030).
+const LINK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// A remote member as the UI needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +36,35 @@ pub struct RemoteMember {
     pub name: String,
     /// No microphone published, or it is muted.
     pub mic_muted: bool,
+}
+
+/// How well the connection carries voice, as LiveKit rates it (packet loss, jitter,
+/// round trip) — the same scale its own clients show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkQuality {
+    Excellent,
+    Good,
+    Poor,
+    Lost,
+}
+
+impl From<ConnectionQuality> for LinkQuality {
+    fn from(q: ConnectionQuality) -> Self {
+        match q {
+            ConnectionQuality::Excellent => Self::Excellent,
+            ConnectionQuality::Good => Self::Good,
+            ConnectionQuality::Poor => Self::Poor,
+            ConnectionQuality::Lost => Self::Lost,
+        }
+    }
+}
+
+/// Our connection to the room, for the panel (ADR-0030).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Link {
+    pub quality: LinkQuality,
+    /// Round trip to the voice server, ms; `None` until the first measurement.
+    pub rtt_ms: Option<u32>,
 }
 
 /// What the room needs from the engine.
@@ -46,6 +79,8 @@ pub trait RoomHost: Send + Sync + 'static {
     /// The server ended our session (not our own `close`): the room is gone, the host
     /// should tidy up and tell the user `message`.
     fn disconnected(&self, message: String);
+    /// Quality or ping changed (checked every [`LINK_INTERVAL`]).
+    fn link_changed(&self, link: Link);
 }
 
 /// Where and how to join one voice room, as the camp hands it out.
@@ -72,6 +107,7 @@ pub struct VoiceRoom {
     room: Arc<Room>,
     mic: LocalAudioTrack,
     events: JoinHandle<()>,
+    link: AbortOnDrop,
     /// The runtime the room was connected on. Some synchronous SDK calls (`mute`)
     /// `tokio::spawn` internally and panic outside a runtime — e.g. on the UI thread,
     /// where Tauri runs synchronous commands. They enter this handle first.
@@ -98,39 +134,34 @@ impl VoiceRoom {
         if mic_muted {
             track.mute();
         }
-        let options = TrackPublishOptions {
-            source: TrackSource::Microphone,
-            audio_encoding: Some(AudioEncoding {
-                max_bitrate: VOICE_BITRATE,
-            }),
-            // DTX clips the start of phrases; RED + Opus in-band FEC (on by default in
-            // libwebrtc) hide packet loss.
-            dtx: false,
-            red: true,
-            ..TrackPublishOptions::default()
-        };
-        if let Err(e) = room
-            .local_participant()
-            .publish_track(LocalTrack::Audio(track.clone()), options)
-            .await
-        {
-            let _ = room.close().await;
-            return Err(format!("Не удалось включить микрофон в комнате: {e}"));
+        // A silenced member's token comes without publishing (ADR-0028): they listen
+        // only, and the microphone goes up when the right comes back (`handle_events`).
+        if may_publish(&room) {
+            if let Err(e) = publish_mic(&room, &track).await {
+                let _ = room.close().await;
+                return Err(format!("Не удалось включить микрофон в комнате: {e}"));
+            }
         }
 
         // Participants already in the room were announced before we subscribed to
         // events; report them once up front.
         host.members_changed(members(&room));
+        let link = AbortOnDrop(tauri::async_runtime::spawn(watch_link(
+            Arc::clone(&room),
+            Arc::clone(&host),
+        )));
         let events = tauri::async_runtime::spawn(handle_events(
             Arc::clone(&room),
             events,
             host,
             params.playback_rate,
+            track.clone(),
         ));
         Ok(Self {
             room,
             mic: track,
             events,
+            link,
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -149,6 +180,7 @@ impl VoiceRoom {
     /// Leaves the room and stops every remote voice task. The engine removes the
     /// mixer sources itself, so no [`RoomHost`] callbacks are made.
     pub async fn close(self) {
+        drop(self.link);
         if let Err(e) = self.room.close().await {
             eprintln!("[oc-voice] leaving room: {e}");
         }
@@ -157,6 +189,74 @@ impl VoiceRoom {
         self.events.abort();
         let _ = self.events.await;
     }
+}
+
+/// Reports our connection while the room lives: LiveKit's quality rating and the round
+/// trip of the media path. Only changes go to the host.
+async fn watch_link(room: Arc<Room>, host: Arc<dyn RoomHost>) {
+    let mut last = None;
+    let mut tick = tokio::time::interval(LINK_INTERVAL);
+    loop {
+        tick.tick().await;
+        let rtt_ms = room
+            .get_stats()
+            .await
+            .ok()
+            .and_then(|s| rtt_ms(&s.subscriber_stats, &s.publisher_stats));
+        let link = Link {
+            quality: room.local_participant().connection_quality().into(),
+            rtt_ms,
+        };
+        if last != Some(link) {
+            last = Some(link);
+            host.link_changed(link);
+        }
+    }
+}
+
+/// Ping: the current round trip of the ICE candidate pair in use (STUN consent checks
+/// keep it fresh even in silence). Receiving is always on, so its transport goes first.
+/// libwebrtc counts it in whole milliseconds, so a server on this machine reads 0: what
+/// tells "measured" apart is that the pair has had answers.
+fn rtt_ms(subscriber: &[RtcStats], publisher: &[RtcStats]) -> Option<u32> {
+    subscriber.iter().chain(publisher).find_map(|s| match s {
+        RtcStats::CandidatePair(p)
+            if p.candidate_pair.nominated && p.candidate_pair.responses_received > 0 =>
+        {
+            // Seconds → ms; a round trip of 49 days does not fit, nor happen.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            Some((p.candidate_pair.current_round_trip_time * 1000.0).round() as u32)
+        }
+        _ => None,
+    })
+}
+
+/// Whether this participant may publish now: the room token's grant, changed by the
+/// camp when it silences or lifts (ADR-0028). No permission info means the default: yes.
+fn may_publish(room: &Room) -> bool {
+    room.local_participant()
+        .permission()
+        .is_none_or(|p| p.can_publish)
+}
+
+/// Publishes the microphone with the voice settings of ADR-0008.
+async fn publish_mic(room: &Room, track: &LocalAudioTrack) -> Result<(), String> {
+    let options = TrackPublishOptions {
+        source: TrackSource::Microphone,
+        audio_encoding: Some(AudioEncoding {
+            max_bitrate: VOICE_BITRATE,
+        }),
+        // DTX clips the start of phrases; RED + Opus in-band FEC (on by default in
+        // libwebrtc) hide packet loss.
+        dtx: false,
+        red: true,
+        ..TrackPublishOptions::default()
+    };
+    room.local_participant()
+        .publish_track(LocalTrack::Audio(track.clone()), options)
+        .await
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// Aborts a task when dropped. Tokio's `JoinHandle` only detaches on drop, which
@@ -194,6 +294,7 @@ async fn handle_events(
     mut events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
     host: Arc<dyn RoomHost>,
     playback_rate: u32,
+    mic: LocalAudioTrack,
 ) {
     let mut voices: HashMap<String, AbortOnDrop> = HashMap::new();
     let mut last_members = members(&room);
@@ -234,6 +335,34 @@ async fn handle_events(
             }
             RoomEvent::ParticipantDisconnected(participant) => {
                 stop_voice(&mut voices, &participant.identity().to_string());
+            }
+            // Silenced or lifted (ADR-0028). Taking the right away, LiveKit drops the
+            // microphone on its side but the SDK keeps the publication: we take it down
+            // here too, so that giving the right back can publish it anew.
+            RoomEvent::ParticipantPermissionChanged {
+                participant: Participant::Local(local),
+                permission,
+            } => {
+                let published: Vec<TrackSid> = local
+                    .track_publications()
+                    .values()
+                    .filter(|p| p.source() == TrackSource::Microphone)
+                    .map(LocalTrackPublication::sid)
+                    .collect();
+                if permission.is_none_or(|p| p.can_publish) {
+                    if published.is_empty() {
+                        if let Err(e) = publish_mic(&room, &mic).await {
+                            eprintln!("[oc-voice] microphone back after a lift: {e}");
+                        }
+                    }
+                } else {
+                    for sid in published {
+                        // The track itself keeps running: only the sender goes.
+                        if let Err(e) = local.unpublish_track(&sid).await {
+                            eprintln!("[oc-voice] microphone down on silence: {e}");
+                        }
+                    }
+                }
             }
             RoomEvent::Disconnected { reason } => {
                 eprintln!("[oc-voice] disconnected: {reason:?}");
@@ -303,6 +432,52 @@ mod tests {
         fn voice_stopped(&self, _: &str) {}
         fn members_changed(&self, _: Vec<RemoteMember>) {}
         fn disconnected(&self, _: String) {}
+        fn link_changed(&self, _: Link) {}
+    }
+
+    fn pair(nominated: bool, rtt_s: f64) -> RtcStats {
+        answered(nominated, rtt_s, 3)
+    }
+
+    fn answered(nominated: bool, rtt_s: f64, responses_received: u64) -> RtcStats {
+        RtcStats::CandidatePair(livekit::webrtc::stats::CandidatePairStats {
+            candidate_pair: livekit::webrtc::stats::dictionaries::CandidatePairStats {
+                nominated,
+                current_round_trip_time: rtt_s,
+                responses_received,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn ping_is_the_round_trip_of_the_pair_in_use() {
+        assert_eq!(
+            rtt_ms(&[pair(false, 0.3), pair(true, 0.0234)], &[]),
+            Some(23)
+        );
+        assert_eq!(
+            rtt_ms(&[], &[pair(true, 0.0415)]),
+            Some(42),
+            "publisher only"
+        );
+        assert_eq!(
+            rtt_ms(&[pair(true, 0.012)], &[pair(true, 0.09)]),
+            Some(12),
+            "receiving goes first"
+        );
+        assert_eq!(
+            rtt_ms(&[answered(true, 0.0, 0)], &[]),
+            None,
+            "no answers yet: not measured"
+        );
+        assert_eq!(
+            rtt_ms(&[answered(true, 0.0, 7)], &[]),
+            Some(0),
+            "a server on this machine: under a millisecond, libwebrtc says 0"
+        );
+        assert_eq!(rtt_ms(&[], &[]), None);
     }
 
     /// A camp server in this process (LiveKit from `pnpm livekit`), a fresh device logged
@@ -399,7 +574,9 @@ mod tests {
                     .expect("presence within 10 s")
                     .expect("stream open")
                     .expect("valid event");
-                let oc_proto::CampEvent::State(state) = event;
+                let oc_proto::CampEvent::State(state) = event else {
+                    continue;
+                };
                 if !state.presence.is_empty() {
                     break state;
                 }
@@ -423,11 +600,61 @@ mod tests {
                     .expect("the seat is freed within 3 s")
                     .expect("stream open")
                     .expect("valid event");
-                let oc_proto::CampEvent::State(state) = event;
+                let oc_proto::CampEvent::State(state) = event else {
+                    continue;
+                };
                 if state.presence.is_empty() {
                     break;
                 }
             }
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
+    /// ADR-0028 against the real LiveKit: silencing takes the microphone down at once
+    /// (`UpdateParticipant`), lifting brings it back without rejoining — the room
+    /// publishes it again on `ParticipantPermissionChanged`.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn silencing_takes_the_mic_down_and_lifting_brings_it_back() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("silence").await;
+            let room = connect(params).await;
+            let mut states = camp.camp_state();
+            // Whether the one person in `c0` publishes an unmuted microphone, once seen.
+            let speaking = |want: bool| {
+                move |s: &Arc<oc_proto::CampState>| {
+                    s.presence
+                        .first()
+                        .and_then(|p| p.members.first())
+                        .is_some_and(|m| m.mic_muted != want)
+                }
+            };
+            let deadline = std::time::Duration::from_secs(10);
+            let me = tokio::time::timeout(deadline, states.wait_for(speaking(true)))
+                .await
+                .expect("speaking within 10 s")
+                .unwrap()
+                .presence[0]
+                .members[0]
+                .user_id
+                .clone();
+
+            let manager = camp.manager();
+            manager.set_silenced(&me, true).await.unwrap();
+            tokio::time::timeout(deadline, states.wait_for(speaking(false)))
+                .await
+                .expect("the microphone is taken down")
+                .unwrap();
+
+            manager.set_silenced(&me, false).await.unwrap();
+            tokio::time::timeout(deadline, states.wait_for(speaking(true)))
+                .await
+                .expect("the microphone is back")
+                .unwrap();
+
+            room.close().await;
             camp.stop().await;
             let _ = std::fs::remove_dir_all(dir);
         });
@@ -445,6 +672,54 @@ mod tests {
         fn disconnected(&self, message: String) {
             self.0.lock().unwrap().push(message);
         }
+        fn link_changed(&self, _: Link) {}
+    }
+
+    /// Records connection reports.
+    struct LinkWatcher(std::sync::Mutex<Vec<Link>>);
+
+    impl RoomHost for LinkWatcher {
+        fn voice_started(&self, _: &str) -> Option<SourceInput> {
+            None
+        }
+        fn voice_stopped(&self, _: &str) {}
+        fn members_changed(&self, _: Vec<RemoteMember>) {}
+        fn disconnected(&self, _: String) {}
+        fn link_changed(&self, link: Link) {
+            self.0.lock().unwrap().push(link);
+        }
+    }
+
+    /// ADR-0030 against the real LiveKit: the panel gets a quality and, once ICE has
+    /// measured it, a ping.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn the_link_reports_quality_and_ping() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("link").await;
+            let watcher = Arc::new(LinkWatcher(std::sync::Mutex::default()));
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let room = VoiceRoom::connect(params, source, false, watcher.clone())
+                .await
+                .expect("voice through the camp");
+            let mut ping = None;
+            for _ in 0..80 {
+                ping = watcher.0.lock().unwrap().iter().find_map(|l| l.rtt_ms);
+                if ping.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let seen = watcher.0.lock().unwrap().clone();
+            assert!(
+                ping.is_some_and(|ms| ms < 200),
+                "a loopback ping within 8 s: {seen:?}"
+            );
+            assert_ne!(seen.last().map(|l| l.quality), Some(LinkQuality::Lost));
+            room.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
     }
 
     /// The same person joining twice (a second window on the same profile): LiveKit drops

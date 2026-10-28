@@ -11,6 +11,7 @@ const member = (id: string) => ({
   color: "#888",
   micMuted: false,
   deafened: false,
+  silenced: false,
   role: "member" as const,
   streaming: false,
 });
@@ -45,6 +46,20 @@ test("joining passes saved volumes of present members to the engine", async () =
     { userId: "artem", volume: 100, muted: false, micMuted: false },
     { userId: "lena", volume: 150, muted: false, micMuted: false },
   ]);
+});
+
+test("a silenced member's mic button does nothing: the camp forbade speaking", async () => {
+  const { engine, voice } = setup();
+  voice.applyCampState({
+    name: camp.name,
+    channels: [{ id: "lobby", name: "Лобби", kind: "voice", afk: false }],
+    members: [{ userId: "me", name: "me", role: "member", silenced: true }],
+    presence: [],
+  });
+  assert.equal(voice.silenced(), true);
+  await voice.toggleMic();
+  assert.equal(voice.store.get().micMuted, false);
+  assert.deepEqual(engine.calls, []);
 });
 
 test("failed join rolls back and reports the error", async () => {
@@ -223,4 +238,19 @@ test("leaving AFK any way gives the sound back", async () => {
   await voice.leave();
   assert.equal(voice.store.get().deafened, false);
   assert.equal(voice.store.get().micMuted, false);
+});
+
+test("the connection report shows while in a channel and goes with it", async () => {
+  const { engine, voice } = setup();
+  engine.report({ quality: "excellent", rttMs: 20 });
+  assert.equal(voice.store.get().link, null, "not in a channel: nothing to show");
+  await voice.join("lobby");
+  assert.equal(voice.store.get().link, null, "measuring");
+  engine.report({ quality: "good", rttMs: 41 });
+  assert.deepEqual(voice.store.get().link, { quality: "good", rttMs: 41 });
+  await voice.join("afk");
+  assert.equal(voice.store.get().link, null, "a new room is measured anew");
+  engine.report({ quality: "excellent", rttMs: 18 });
+  await voice.leave();
+  assert.equal(voice.store.get().link, null);
 });

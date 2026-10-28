@@ -1,4 +1,5 @@
-//! Window commands for the owner's changes (ADR-0026): the camp's name, roles, channels.
+//! Window commands for the owner's changes (ADR-0026): the camp's name, roles, channels,
+//! and moderation (ADR-0028): kick, move, silence.
 //! Each one calls `oc_server::Manager`; the result shows up through `server://status`
 //! like any other change, so the commands return nothing but errors.
 
@@ -22,8 +23,13 @@ fn describe(e: &ManageError) -> String {
             "Канал AFK удалить нельзя — его можно только переименовать".into()
         }
         ManageError::Store(e) => format!("Не удалось сохранить: {e}"),
-        ManageError::LiveKit(e) => {
+        ManageError::RoomNotClosed(e) => {
             format!("Канал удалён, но голосовой сервер не закрыл его комнату: {e}")
+        }
+        ManageError::NotInVoice => "Участник уже не в голосовом канале".into(),
+        ManageError::NotACampfire => "Перенести можно только в голосовой канал".into(),
+        ManageError::LiveKit(e) => {
+            format!("Сохранено, но голосовой сервер не применил это сейчас: {e}")
         }
     }
 }
@@ -92,6 +98,41 @@ pub async fn server_delete_channel(host: State<'_, Arc<Host>>, id: String) -> Re
         .map_err(|e| describe(&e))
 }
 
+#[tauri::command]
+pub async fn server_kick(host: State<'_, Arc<Host>>, user_id: String) -> Result<(), String> {
+    manager(&host)
+        .await?
+        .kick(&user_id)
+        .await
+        .map_err(|e| describe(&e))
+}
+
+#[tauri::command]
+pub async fn server_move_member(
+    host: State<'_, Arc<Host>>,
+    user_id: String,
+    channel_id: String,
+) -> Result<(), String> {
+    manager(&host)
+        .await?
+        .move_member(&user_id, &channel_id)
+        .await
+        .map_err(|e| describe(&e))
+}
+
+#[tauri::command]
+pub async fn server_set_silenced(
+    host: State<'_, Arc<Host>>,
+    user_id: String,
+    silenced: bool,
+) -> Result<(), String> {
+    manager(&host)
+        .await?
+        .set_silenced(&user_id, silenced)
+        .await
+        .map_err(|e| describe(&e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +144,6 @@ mod tests {
             "Название — от 1 до 32 символов"
         );
         assert!(describe(&ManageError::AfkIsPermanent).contains("AFK"));
+        assert!(describe(&ManageError::NotInVoice).contains("не в голосовом"));
     }
 }

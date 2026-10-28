@@ -155,6 +155,23 @@ pub enum Role {
     Admin,
 }
 
+impl Role {
+    /// Whether this role may move someone of `target`'s role (ADR-0029): moderators and
+    /// admins, over their own rank and below. The owner (the server window) moves anyone.
+    #[must_use]
+    pub fn moves(self, target: Role) -> bool {
+        self >= Role::Moderator && target <= self
+    }
+}
+
+/// `POST /api/v1/members/{userId}/move` (ADR-0029).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveMember {
+    /// The voice channel to move them to.
+    pub channel_id: String,
+}
+
 /// Successful login.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,12 +205,21 @@ pub struct RoomToken {
 // ---- live camp state ----
 
 /// A message on `GET /api/v1/events` (WebSocket, `Authorization: Bearer`): JSON text
-/// frames tagged by `type`. The server sends `state` on connect and on every change.
+/// frames tagged by `type`. The server sends `state` on connect and on every change;
+/// `moved` and `kicked` go only to the member they are about (ADR-0028).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CampEvent {
     /// Full snapshot: a missed message can never leave a client out of sync.
     State(CampState),
+    /// A moderator moved you: join this campfire.
+    #[serde(rename_all = "camelCase")]
+    Moved {
+        /// The campfire to join.
+        channel_id: String,
+    },
+    /// You were removed from the camp; the stream ends after this.
+    Kicked,
 }
 
 /// The camp as it is now: its name and channels, who is in it and who sits at which
@@ -221,6 +247,10 @@ pub struct MemberInfo {
     pub name: String,
     /// Role in the camp.
     pub role: Role,
+    /// Not allowed to speak until a moderator lifts it (ADR-0028). Absent in older
+    /// answers = `false`.
+    #[serde(default)]
+    pub silenced: bool,
 }
 
 /// People at one campfire.
@@ -265,6 +295,8 @@ pub enum ErrorCode {
     Unauthorized,
     /// No such resource.
     NotFound,
+    /// Moving someone who is not in voice right now (ADR-0029).
+    NotInVoice,
     /// Server-side failure.
     Internal,
 }
@@ -289,6 +321,18 @@ mod tests {
 
     fn public(key: &Ed25519KeyPair) -> [u8; PUBLIC_KEY_LEN] {
         key.public_key().as_ref().try_into().unwrap()
+    }
+
+    #[test]
+    fn moderators_and_admins_move_their_rank_and_below() {
+        use Role::{Admin, Member, Moderator};
+        assert!(
+            !Member.moves(Member),
+            "members only move themselves, by joining"
+        );
+        assert!(Moderator.moves(Member) && Moderator.moves(Moderator));
+        assert!(!Moderator.moves(Admin));
+        assert!(Admin.moves(Admin) && Admin.moves(Member));
     }
 
     #[test]
@@ -340,6 +384,7 @@ mod tests {
                 user_id: "u".into(),
                 name: "Лена".into(),
                 role: Role::Moderator,
+                silenced: true,
             }],
             presence: vec![ChannelPresence {
                 channel_id: "c0".into(),
@@ -352,6 +397,19 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "state");
         assert_eq!(json["members"][0]["role"], "moderator");
+        assert_eq!(json["members"][0]["silenced"], true);
+        let moved = serde_json::to_value(CampEvent::Moved {
+            channel_id: "c0".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            moved,
+            serde_json::json!({ "type": "moved", "channelId": "c0" })
+        );
+        assert_eq!(
+            serde_json::to_value(CampEvent::Kicked).unwrap(),
+            serde_json::json!({ "type": "kicked" })
+        );
         assert_eq!(json["channels"][0]["kind"], "text");
         assert!(Role::Admin > Role::Moderator && Role::Moderator > Role::Member);
         let old: Channel = serde_json::from_str(r#"{"id":"c0","name":"Лобби"}"#).unwrap();

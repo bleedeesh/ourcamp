@@ -47,8 +47,18 @@ export class DemoCampApi implements CampApi {
     return Promise.resolve(DEMO_LINK);
   }
 
+  moveMember(): Promise<void> {
+    // The demo's people are pictures: nobody's app is there to follow the move.
+    return Promise.resolve();
+  }
+
   onLive(): () => void {
     // The demo camp brings its people with it (see `main.tsx`); nothing goes live.
+    return () => {};
+  }
+
+  onDirective(): () => void {
+    // Nobody moderates the demo camp.
     return () => {};
   }
 

@@ -275,6 +275,9 @@ pub fn run() {
             manage::server_create_channel,
             manage::server_rename_channel,
             manage::server_delete_channel,
+            manage::server_kick,
+            manage::server_move_member,
+            manage::server_set_silenced,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri could not start");

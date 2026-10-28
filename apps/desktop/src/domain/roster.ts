@@ -1,6 +1,24 @@
 import type { CampState, ChannelInfo } from "../engine/camp-api.ts";
 import type { ParticipantsUpdate } from "../engine/engine.ts";
-import type { Camp, Channel, Member, UserId } from "./types.ts";
+import type { Camp, Channel, Member, Role, UserId } from "./types.ts";
+
+const RANK: Record<Role, number> = { member: 0, moderator: 1, admin: 2 };
+
+/**
+ * Whether `actor` may move someone of `target`'s role (ADR-0029), as `Role::moves` in
+ * oc-proto: moderators and admins, over their own rank and below. The camp checks it too.
+ */
+export function moves(actor: Role, target: Role): boolean {
+  return RANK[actor] >= RANK.moderator && RANK[target] <= RANK[actor];
+}
+
+/** Whether you can drag `userId` to another channel: yourself always, others by rank. */
+export function canMove(camp: Camp, selfId: UserId, userId: UserId): boolean {
+  if (userId === selfId) return true;
+  const self = camp.members[selfId];
+  const target = camp.members[userId];
+  return self !== undefined && target !== undefined && moves(self.role, target.role);
+}
 
 /** Two-letter badge: initials of the first two words, or the first two letters. */
 export function campShort(name: string): string {
@@ -40,6 +58,7 @@ function newcomer(id: UserId, name: string): Member {
     color: avatarColor(id),
     micMuted: false,
     deafened: false,
+    silenced: false,
     role: "member",
     streaming: false,
   };
@@ -80,7 +99,7 @@ export function applyCampState(camp: Camp, state: CampState, currentChannelId: s
   const members: Record<UserId, Member> = { ...camp.members };
   for (const info of state.members) {
     const known = members[info.userId] ?? newcomer(info.userId, info.name);
-    members[info.userId] = { ...known, name: info.name, role: info.role };
+    members[info.userId] = { ...known, name: info.name, role: info.role, silenced: info.silenced };
   }
   const presence = new Map(state.presence.map((p) => [p.channelId, p.members]));
   const roomMembers = new Set(camp.channels.find((c) => c.id === currentChannelId)?.memberIds ?? []);

@@ -200,6 +200,29 @@
   padding: 0 0 4px 30px;
 }
 
+/* Dragging people between channels (ADR-0029). */
+.channel {
+  border-radius: var(--radius-m);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  transition:
+    background-color 0.12s,
+    outline-color 0.12s;
+}
+
+.channel[data-drop-target] {
+  background: var(--accent-soft);
+  outline-color: var(--accent);
+}
+
+.member[data-draggable] {
+  touch-action: none;
+}
+
+.member[data-dragging] {
+  opacity: 0.4;
+}
+
 /* ---------- Member row ---------- */
 
 .member {
@@ -257,6 +280,14 @@
   flex-shrink: 0;
 }
 
+/* Forbidden by a moderator (ADR-0028), not muted by choice: the icon sits on a badge. */
+.member__state--silenced {
+  box-sizing: content-box;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--danger-soft);
+}
+
 .live-badge {
   height: 20px;
   padding: 0 6px;
@@ -306,16 +337,49 @@
   padding: 2px 4px 0 8px;
 }
 
-.panel__connection-text {
+/* Connection quality and ping (ADR-0030). */
+.link-status {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
   color: var(--text-2);
 }
 
-.panel__connection-text b {
-  color: var(--text);
+.link-status__bars rect {
+  fill: var(--surface-2);
+  transition: fill 0.2s;
+}
+
+.link-status[data-tone="good"] rect[data-on] {
+  fill: var(--online);
+}
+
+.link-status[data-tone="weak"] rect[data-on] {
+  fill: var(--admin);
+}
+
+/* Connecting, or the server out of reach: every bar grey, none lit (ADR-0030). */
+.link-status[data-tone="pending"] rect {
+  fill: var(--text-faint);
+  opacity: 0.45;
+}
+
+.link-status__ping {
   font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.link-status[data-tone="pending"] .link-status__ping {
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.link-status[data-tone="bad"] .link-status__ping {
+  color: #ff8a98; /* --danger lightened to 4.5:1 */
 }
 
 .panel__hint {
@@ -323,17 +387,6 @@
   padding: 4px 8px;
   font-size: 13px;
   color: var(--text-muted);
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.dot--online {
-  background: var(--online);
 }
 
 .panel__self {
@@ -361,6 +414,10 @@
   color: var(--text-muted);
 }
 
+.panel__status[data-warning] {
+  color: #ff8a98; /* --danger lightened to 4.5:1, as in .camp-switcher__offline */
+}
+
 .square-button {
   width: 44px;
   height: 44px;
@@ -376,6 +433,10 @@
 .square-button[data-off] {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.square-button[aria-disabled="true"] {
+  cursor: not-allowed;
 }
 
 .square-button--danger {

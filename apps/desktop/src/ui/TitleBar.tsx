@@ -11,6 +11,7 @@ export function TitleBar() {
   const minimize = () => {
     if (isTauri()) void getCurrentWindow().minimize();
   };
+  // Rust turns closing into hiding: OurCamp stays in the tray (ADR-0031).
   const close = () => {
     if (isTauri()) void getCurrentWindow().close();
   };
@@ -25,7 +26,7 @@ export function TitleBar() {
       <button type="button" className="titlebar__button" aria-label="Свернуть" onClick={minimize}>
         <Icon name="minimize" size={14} />
       </button>
-      <button type="button" className="titlebar__button titlebar__button--close" aria-label="Закрыть" onClick={close}>
+      <button type="button" className="titlebar__button titlebar__button--close" aria-label="Свернуть в трей" title="Свернуть в трей" onClick={close}>
         <Icon name="close" size={14} />
       </button>
     </header>

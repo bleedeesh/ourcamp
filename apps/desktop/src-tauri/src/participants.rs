@@ -1,4 +1,5 @@
-//! Forwards "who is in the channel" to the UI (ADR-0011).
+//! Forwards "who is in the channel" (ADR-0011) and how the connection is (ADR-0030) to
+//! the UI.
 
 use std::sync::Arc;
 
@@ -6,11 +7,36 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::audio::engine::{Engine, Participants};
+use crate::voice::room::{Link, LinkQuality};
 
 /// Must match `PARTICIPANTS_EVENT` in `src/engine/tauri-engine.ts`.
 pub const PARTICIPANTS_EVENT: &str = "voice://participants";
 /// Must match `DISCONNECTED_EVENT` in `src/engine/tauri-engine.ts`. Payload: the reason.
 pub const DISCONNECTED_EVENT: &str = "voice://disconnected";
+/// Must match `LINK_EVENT` in `src/engine/tauri-engine.ts` (ADR-0030).
+pub const LINK_EVENT: &str = "voice://link";
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct LinkDto {
+    /// `excellent` / `good` / `poor` / `lost`.
+    quality: &'static str,
+    rtt_ms: Option<u32>,
+}
+
+impl From<Link> for LinkDto {
+    fn from(link: Link) -> Self {
+        Self {
+            quality: match link.quality {
+                LinkQuality::Excellent => "excellent",
+                LinkQuality::Good => "good",
+                LinkQuality::Poor => "poor",
+                LinkQuality::Lost => "lost",
+            },
+            rtt_ms: link.rtt_ms,
+        }
+    }
+}
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +73,12 @@ impl From<Participants> for ParticipantsDto {
 /// Sends participant updates and server-side disconnects from `engine` to the webview.
 pub fn forward(app: AppHandle, engine: &Engine) {
     let for_disconnects = app.clone();
+    let for_link = app.clone();
+    engine.set_link_listener(Arc::new(move |link| {
+        if let Err(e) = for_link.emit(LINK_EVENT, LinkDto::from(link)) {
+            eprintln!("[ourcamp] link event: {e}");
+        }
+    }));
     engine.set_participants_listener(Arc::new(move |participants| {
         if let Err(e) = app.emit(PARTICIPANTS_EVENT, ParticipantsDto::from(participants)) {
             eprintln!("[ourcamp] participants event: {e}");

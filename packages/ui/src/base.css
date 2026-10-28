@@ -99,3 +99,29 @@ button[aria-disabled="true"] {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* ---------- Dragging people between channels (ADR-0029) ---------- */
+
+.drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  max-width: 200px;
+  padding: 6px 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: var(--radius-s);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+
+.drag-ghost[data-ok] {
+  background: var(--accent);
+  color: var(--on-accent);
+}

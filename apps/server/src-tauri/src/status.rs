@@ -25,7 +25,11 @@ pub struct Member {
     pub role: Role,
     /// Name of the campfire they sit at; `None` when not in voice.
     pub campfire: Option<String>,
+    /// Its id, to move them elsewhere (ADR-0028).
+    pub campfire_id: Option<String>,
     pub mic_muted: bool,
+    /// Forbidden to speak until lifted (ADR-0028).
+    pub silenced: bool,
 }
 
 /// The whole window, as data.
@@ -98,7 +102,7 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
                 .iter()
                 .find(|c| c.id == channel.channel_id)
                 .map_or_else(|| channel.channel_id.clone(), |c| c.name.clone());
-            Some((name, present.mic_muted))
+            Some((channel.channel_id.clone(), name, present.mic_muted))
         })
     };
     let mut members: Vec<Member> = state
@@ -110,8 +114,10 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
                 user_id: m.user_id.clone(),
                 name: m.name.clone(),
                 role: m.role,
-                mic_muted: seat.as_ref().is_some_and(|(_, muted)| *muted),
-                campfire: seat.map(|(name, _)| name),
+                mic_muted: seat.as_ref().is_some_and(|(_, _, muted)| *muted),
+                silenced: m.silenced,
+                campfire_id: seat.as_ref().map(|(id, _, _)| id.clone()),
+                campfire: seat.map(|(_, name, _)| name),
             }
         })
         .collect();
@@ -159,6 +165,7 @@ mod tests {
             user_id: id.into(),
             name: name.into(),
             role,
+            silenced: false,
         }
     }
 
@@ -212,6 +219,7 @@ mod tests {
         );
         let lena = &status.members[3];
         assert_eq!(lena.campfire.as_deref(), Some("Катка"));
+        assert_eq!(lena.campfire_id.as_deref(), Some("c1"));
         assert!(lena.mic_muted);
         assert_eq!(status.members[2].campfire, None, "not in voice");
     }

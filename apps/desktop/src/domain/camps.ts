@@ -1,4 +1,4 @@
-import type { CampApi, CampLive, CampPreview, CampSummary, OpenCamp } from "../engine/camp-api.ts";
+import type { CampApi, CampDirective, CampLive, CampPreview, CampSummary, OpenCamp } from "../engine/camp-api.ts";
 import { createStore, type Store } from "../lib/store.ts";
 import { avatarColor, campShort, campfiresOf } from "./roster.ts";
 import type { Camp } from "./types.ts";
@@ -60,6 +60,7 @@ export function campFromOpen(open: OpenCamp): Camp {
         color: avatarColor(open.self.userId),
         micMuted: false,
         deafened: false,
+        silenced: false,
         role: open.self.role,
         streaming: false,
       },
@@ -88,6 +89,7 @@ export class CampsController {
   /** Bumped per link check; answers to older checks are dropped. */
   #checkSeq = 0;
   #unsubscribeLive: (() => void) | null = null;
+  #unsubscribeDirective: (() => void) | null = null;
 
   constructor(api: CampApi, voice: VoiceController, options: CampsOptions) {
     this.#api = api;
@@ -115,6 +117,7 @@ export class CampsController {
   /** Loads the camp list and opens the last camp (or shows the first-run screen). */
   async start(): Promise<void> {
     this.#unsubscribeLive ??= this.#api.onLive((live) => this.#onLive(live));
+    this.#unsubscribeDirective ??= this.#api.onDirective((d) => void this.#onDirective(d));
     try {
       const list = await this.#api.list();
       this.store.patch({ displayName: list.displayName, camps: list.camps, name: list.displayName });
@@ -254,6 +257,21 @@ export class CampsController {
     }
   }
 
+  /**
+   * Someone dragged onto another campfire (ADR-0029): yourself — you join it; anyone
+   * else — the camp tells their app to (rights are checked there too).
+   */
+  async moveMember(userId: string, channelId: string): Promise<void> {
+    if (userId === this.#voice.store.get().selfId) return this.#voice.join(channelId);
+    const { currentId } = this.store.get();
+    if (currentId === null) return;
+    try {
+      await this.#api.moveMember(currentId, userId, channelId);
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
+  }
+
   /** Live state of the open camp (ADR-0021); updates for a camp we already left are dropped. */
   #onLive(live: CampLive): void {
     if (live.campId !== this.store.get().currentId) return;
@@ -265,6 +283,38 @@ export class CampsController {
     const camps = this.store.get().camps;
     if (camps.some((c) => c.id === live.campId && c.name !== name)) {
       this.store.patch({ camps: camps.map((c) => (c.id === live.campId ? { ...c, name } : c)) });
+    }
+  }
+
+  /** A moderator moved or kicked us (ADR-0028). */
+  async #onDirective(directive: CampDirective): Promise<void> {
+    if (directive.type === "moved") {
+      if (directive.campId !== this.store.get().currentId) return;
+      // Only someone in voice is moved; if we left meanwhile, stay out.
+      if (this.#voice.store.get().channelId === null) return;
+      await this.#voice.join(directive.channelId).catch(() => {});
+      const channel = this.#voice.store.get().camp.channels.find((c) => c.id === directive.channelId);
+      if (channel) this.store.patch({ notice: `Вас перенесли в канал «${channel.name}»` });
+      return;
+    }
+    const wasOpen = directive.campId === this.store.get().currentId;
+    if (wasOpen) {
+      await this.#voice.leave();
+      // LiveKit put us out of the room too; the kick notice says why, not "removed".
+      this.#voice.dismissError();
+    }
+    try {
+      const list = await this.#api.list();
+      this.store.patch({ camps: list.camps, switcherOpen: false, leaveAsk: false });
+      if (wasOpen) {
+        this.store.patch({ currentId: null, offline: false });
+        const next = list.camps[0]?.id;
+        if (next === undefined) this.store.patch({ view: "empty" });
+        else await this.#open(next);
+      }
+      this.store.patch({ notice: `Вас выгнали с сервера «${directive.campName}». Вернуться можно по приглашению` });
+    } catch (err) {
+      this.store.patch({ error: message(err) });
     }
   }
 

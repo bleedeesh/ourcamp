@@ -1,9 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CampApi, CampList, CampLive, CampPreview, OpenCamp } from "./camp-api.ts";
+import type { CampApi, CampDirective, CampList, CampLive, CampPreview, OpenCamp } from "./camp-api.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 
 /** Event emitted by `src-tauri/src/lib.rs` (`CAMP_STATE_EVENT`). */
 const CAMP_STATE_EVENT = "camp://state";
+/** Event emitted by `src-tauri/src/lib.rs` (`CAMP_DIRECTIVE_EVENT`). */
+const CAMP_DIRECTIVE_EVENT = "camp://directive";
 
 /** Camp commands of `src-tauri/src/commands.rs`. */
 export class TauriCampApi implements CampApi {
@@ -31,7 +33,15 @@ export class TauriCampApi implements CampApi {
     return invoke("camp_invite", { id });
   }
 
+  moveMember(id: string, userId: string, channelId: string): Promise<void> {
+    return invoke("camp_move_member", { id, userId, channelId });
+  }
+
   onLive(listener: (live: CampLive) => void): () => void {
     return subscribe<CampLive>(CAMP_STATE_EVENT, listener);
+  }
+
+  onDirective(listener: (directive: CampDirective) => void): () => void {
+    return subscribe<CampDirective>(CAMP_DIRECTIVE_EVENT, listener);
   }
 }

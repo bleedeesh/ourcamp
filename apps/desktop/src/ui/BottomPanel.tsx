@@ -1,6 +1,28 @@
+import { linkView, type LinkView } from "../domain/link.ts";
 import { Avatar } from "./ChannelTree.tsx";
+import { useCamps } from "./camps-context.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
+
+/** Signal bars and the ping (ADR-0030); quality and channel are in the tooltip. */
+function Connection({ view, channel }: { view: LinkView; channel: string }) {
+  return (
+    <span
+      className="link-status"
+      data-tone={view.tone}
+      role="status"
+      title={`${view.quality} · канал «${channel}»`}
+      aria-label={`${view.quality}, ${view.text}`}
+    >
+      <svg className="link-status__bars" width="16" height="14" viewBox="0 0 16 14" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <rect key={i} x={i * 6} y={9 - i * 4.5} width="4" height={5 + i * 4.5} rx="1.2" data-on={i < view.bars || undefined} />
+        ))}
+      </svg>
+      <span className="link-status__ping">{view.text}</span>
+    </span>
+  );
+}
 
 export function BottomPanel() {
   const voice = useVoiceController();
@@ -9,15 +31,17 @@ export function BottomPanel() {
   const speaking = useVoice((s) => s.speaking[s.selfId] === true);
   const micMuted = useVoice((s) => s.micMuted);
   const deafened = useVoice((s) => s.deafened);
+  const link = useVoice((s) => s.link);
+  const campOffline = useCamps((s) => s.offline);
+  // A moderator forbade speaking (ADR-0028): the button is locked until lifted.
+  const silenced = self?.silenced === true;
+  const micOff = micMuted || silenced;
 
   return (
     <section className="panel" aria-label="Голос и управление">
       {channelName !== null ? (
         <div className="panel__connection">
-          <span className="dot dot--online" aria-hidden />
-          <span className="panel__connection-text">
-            В канале <b>{channelName}</b>
-          </span>
+          <Connection view={linkView(link, !campOffline)} channel={channelName} />
           <button type="button" className="square-button square-button--danger" aria-label="Выйти из голосового канала" onClick={() => void voice.leave()}>
             <Icon name="leave" size={16} />
           </button>
@@ -27,20 +51,24 @@ export function BottomPanel() {
       )}
 
       <div className="panel__self">
-        {self && <Avatar member={self} size={32} speaking={speaking && !micMuted} />}
+        {self && <Avatar member={self} size={32} speaking={speaking && !micOff} />}
         <span className="panel__who">
           <span className="panel__name">{self?.name}</span>
-          <span className="panel__status">{channelName !== null ? "В канале" : "В сети"}</span>
+          <span className="panel__status" data-warning={silenced || undefined}>
+            {silenced ? "Говорить запрещено" : channelName !== null ? "В канале" : "В сети"}
+          </span>
         </span>
         <button
           type="button"
           className="square-button"
-          data-off={micMuted || undefined}
-          aria-pressed={micMuted}
-          aria-label={micMuted ? "Включить микрофон" : "Выключить микрофон"}
+          data-off={micOff || undefined}
+          aria-pressed={micOff}
+          aria-disabled={silenced || undefined}
+          aria-label={silenced ? "Микрофон: модератор запретил вам говорить" : micMuted ? "Включить микрофон" : "Выключить микрофон"}
+          title={silenced ? "Модератор запретил вам говорить" : undefined}
           onClick={() => void voice.toggleMic()}
         >
-          <Icon name="mic" off={micMuted} />
+          <Icon name="mic" off={micOff} />
         </button>
         <button
           type="button"

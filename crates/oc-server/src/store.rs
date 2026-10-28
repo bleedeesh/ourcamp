@@ -108,6 +108,8 @@ pub struct Member {
     pub name: String,
     /// Role in the camp.
     pub role: Role,
+    /// Not allowed to speak (ADR-0028): room tokens come without `canPublish`.
+    pub silenced: bool,
 }
 
 /// Who is logging in.
@@ -228,6 +230,15 @@ impl Store {
         }
         if version < 4 {
             self.migrate_v4()?;
+        }
+        if version < 5 {
+            // Silenced members (ADR-0028): not allowed to speak until lifted.
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE members ADD COLUMN silenced INTEGER NOT NULL DEFAULT 0;",
+            )?;
+            tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
         }
         if version == 0 {
             seed_new_camp(&self.conn)?;
@@ -431,20 +442,21 @@ impl Store {
     /// # Errors
     /// On database failure.
     pub fn session_member(&self, token_hash: &[u8]) -> StoreResult<Option<Member>> {
-        let row: Option<(String, String, String)> = self
+        let row: Option<(String, String, String, bool)> = self
             .conn
             .query_row(
-                "SELECT m.user_id, m.name, m.role
+                "SELECT m.user_id, m.name, m.role, m.silenced
                  FROM sessions s JOIN members m ON m.user_id = s.user_id
                  WHERE s.token_hash = ?1 AND s.expires_at > ?2",
                 params![token_hash, now()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        Ok(row.map(|(user_id, name, role)| Member {
+        Ok(row.map(|(user_id, name, role, silenced)| Member {
             user_id,
             name,
             role: role_from(&role),
+            silenced,
         }))
     }
 
@@ -455,15 +467,28 @@ impl Store {
     pub fn members(&self) -> StoreResult<Vec<oc_proto::MemberInfo>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT user_id, name, role FROM members ORDER BY user_id")?;
+            .prepare("SELECT user_id, name, role, silenced FROM members ORDER BY user_id")?;
         let rows = stmt.query_map([], |r| {
             Ok(oc_proto::MemberInfo {
                 user_id: r.get(0)?,
                 name: r.get(1)?,
                 role: role_from(&r.get::<_, String>(2)?),
+                silenced: r.get(3)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Forbids or allows a member to speak (ADR-0028). `false`: no such member.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn set_silenced(&self, user_id: &str, silenced: bool) -> StoreResult<bool> {
+        let changed = self.conn.execute(
+            "UPDATE members SET silenced = ?2 WHERE user_id = ?1",
+            params![user_id, silenced],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Renames the camp.

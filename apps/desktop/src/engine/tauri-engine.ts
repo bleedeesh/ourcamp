@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UserId } from "../domain/types.ts";
-import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
+import type { JoinRequest, LinkStatus, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 
 /** Event emitted by `src-tauri/src/levels.rs`. */
@@ -9,6 +9,8 @@ const LEVELS_EVENT = "voice://levels";
 const PARTICIPANTS_EVENT = "voice://participants";
 /** Event emitted by `src-tauri/src/participants.rs` when the server ends a session. */
 const DISCONNECTED_EVENT = "voice://disconnected";
+/** Event emitted by `src-tauri/src/participants.rs`: quality and ping (ADR-0030). */
+const LINK_EVENT = "voice://link";
 
 /**
  * Talks to the Rust media engine. Command names and argument shapes must match
@@ -53,6 +55,10 @@ export class TauriEngine implements VoiceEngine {
 
   onDisconnected(listener: (reason: string) => void): () => void {
     return subscribe<string>(DISCONNECTED_EVENT, listener);
+  }
+
+  onLink(listener: (link: LinkStatus) => void): () => void {
+    return subscribe<LinkStatus>(LINK_EVENT, listener);
   }
 }
 

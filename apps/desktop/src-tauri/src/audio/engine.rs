@@ -16,7 +16,7 @@ use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
 use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
-use crate::voice::room::{RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
+use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
 /// A remote member to play when joining a channel.
 #[derive(Debug, Clone)]
@@ -56,6 +56,9 @@ pub type ParticipantsListener = Arc<dyn Fn(Participants) + Send + Sync>;
 
 /// Receives the reason, in Russian, when the server ends a voice session (ADR-0020).
 pub type DisconnectListener = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Receives the connection's quality and ping while in a channel (ADR-0030).
+pub type LinkListener = Arc<dyn Fn(Link) + Send + Sync>;
 
 /// User-facing error text (shown in the UI toast).
 pub type EngineError = String;
@@ -99,6 +102,8 @@ struct Live {
     listener: Option<ParticipantsListener>,
     self_id: String,
     disconnect_listener: Option<DisconnectListener>,
+    link_listener: Option<LinkListener>,
+    link: LinkRelay,
     next_session_id: u64,
     output_latency: DeviceLatency,
     output_rate: u32,
@@ -199,6 +204,8 @@ impl Engine {
                 local_level: None,
                 listener: None,
                 disconnect_listener: None,
+                link_listener: None,
+                link: LinkRelay::default(),
                 next_session_id: 0,
                 // Set when a camp is opened (`set_self_id`).
                 self_id: String::new(),
@@ -222,6 +229,10 @@ impl Engine {
     /// Where "the server ended your session" goes.
     pub fn set_disconnect_listener(&self, listener: DisconnectListener) {
         self.lock().disconnect_listener = Some(listener);
+    }
+
+    pub fn set_link_listener(&self, listener: LinkListener) {
+        self.lock().link_listener = Some(listener);
     }
 
     /// Whether joining needs a room ([`RoomAccess`]) — false for synthetic voices.
@@ -330,6 +341,12 @@ impl Engine {
                     room,
                     mic,
                 });
+                // The room measured itself while connecting, before it was ours to report.
+                if let (Some(link), Some(listener)) =
+                    (live.link.installed(session_id), &live.link_listener)
+                {
+                    listener(link);
+                }
                 Ok(())
             }
             Err(e) => {
@@ -445,6 +462,41 @@ impl Engine {
 
 /// The engine as seen by a room. Weak: the room's event task must not keep the
 /// engine (and with it the room) alive.
+/// Connection reports on their way to the UI (ADR-0030). A room starts measuring while it
+/// connects — before the engine has made it the current session — and then reports only
+/// changes, so a report that came early is kept and sent the moment the room is installed.
+/// Reports of a replaced room are dropped.
+#[derive(Debug, Default)]
+struct LinkRelay {
+    /// The latest report of the newest room.
+    latest: Option<(u64, Link)>,
+}
+
+impl LinkRelay {
+    /// A report from `session`; `newest` is the last session started, `current` the
+    /// installed one. Returns what to send now.
+    fn report(
+        &mut self,
+        session: u64,
+        link: Link,
+        newest: u64,
+        current: Option<u64>,
+    ) -> Option<Link> {
+        if session != newest {
+            return None;
+        }
+        self.latest = Some((session, link));
+        (current == Some(session)).then_some(link)
+    }
+
+    /// `session` became current: its report so far, if it came early.
+    fn installed(&self, session: u64) -> Option<Link> {
+        self.latest
+            .filter(|(id, _)| *id == session)
+            .map(|(_, link)| link)
+    }
+}
+
 struct Host {
     live: Weak<Mutex<Live>>,
     transitions: Arc<tokio::sync::Mutex<()>>,
@@ -480,6 +532,20 @@ impl RoomHost for Host {
         }
     }
 
+    fn link_changed(&self, link: Link) {
+        let Some(live) = self.live.upgrade() else {
+            return;
+        };
+        let mut live = lock(&live);
+        let (newest, current) = (live.next_session_id, live.session.as_ref().map(|s| s.id));
+        if let (Some(link), Some(listener)) = (
+            live.link.report(self.session_id, link, newest, current),
+            &live.link_listener,
+        ) {
+            listener(link);
+        }
+    }
+
     fn disconnected(&self, message: String) {
         let (live, transitions, id) = (
             self.live.clone(),
@@ -511,5 +577,38 @@ impl RoomHost for Host {
                 listener(message);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LinkRelay;
+    use crate::voice::room::{Link, LinkQuality};
+
+    const LINK: Link = Link {
+        quality: LinkQuality::Excellent,
+        rtt_ms: Some(1),
+    };
+
+    #[test]
+    fn a_report_before_the_room_is_installed_is_sent_when_it_is() {
+        let mut relay = LinkRelay::default();
+        // Connecting session 1: measured already, not ours to show yet.
+        assert_eq!(relay.report(1, LINK, 1, None), None);
+        assert_eq!(
+            relay.installed(1),
+            Some(LINK),
+            "the room never repeats an unchanged report"
+        );
+        assert_eq!(relay.report(1, LINK, 1, Some(1)), Some(LINK));
+    }
+
+    #[test]
+    fn a_replaced_room_reports_nothing() {
+        let mut relay = LinkRelay::default();
+        relay.report(1, LINK, 1, Some(1));
+        // Session 2 is connecting; session 1 says one last thing.
+        assert_eq!(relay.report(1, LINK, 2, Some(1)), None);
+        assert_eq!(relay.installed(2), None, "nothing measured for 2 yet");
     }
 }

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { CampApi, CampList, CampLive, CampPreview, OpenCamp } from "../engine/camp-api.ts";
+import type { CampApi, CampDirective, CampList, CampLive, CampPreview, OpenCamp } from "../engine/camp-api.ts";
 import { campfires, CampsController, campShort, NO_CAMP } from "./camps.ts";
 import { FakeEngine, MemoryStorage } from "./test-support.ts";
 import { VoiceController } from "./voice.ts";
@@ -56,6 +56,11 @@ class FakeCampApi implements CampApi {
     this.list_ = { ...this.list_, camps, current: this.list_.current === id ? null : this.list_.current };
     return Promise.resolve(this.leaveTold);
   }
+  failMove: string | null = null;
+  moveMember(id: string, userId: string, channelId: string): Promise<void> {
+    this.calls.push(`move:${id}:${userId}:${channelId}`);
+    return this.failMove ? Promise.reject(new Error(this.failMove)) : Promise.resolve();
+  }
   invite(id: string): Promise<string> {
     this.calls.push(`invite:${id}`);
     return Promise.resolve(LINK);
@@ -67,6 +72,19 @@ class FakeCampApi implements CampApi {
   }
   emitLive(live: CampLive) {
     this.#live?.(live);
+  }
+  #directive: ((d: CampDirective) => void) | null = null;
+  onDirective(listener: (d: CampDirective) => void) {
+    this.#directive = listener;
+    return () => (this.#directive = null);
+  }
+  /** Like Rust: on a kick the device has already forgotten the camp. */
+  emitDirective(d: CampDirective) {
+    if (d.type === "kicked") {
+      const camps = this.list_.camps.filter((c) => c.id !== d.campId);
+      this.list_ = { ...this.list_, camps, current: this.list_.current === d.campId ? null : this.list_.current };
+    }
+    this.#directive?.(d);
   }
 }
 
@@ -249,7 +267,7 @@ test("live state of the open camp reaches the tree; other camps and outages are 
       ? {
           name,
           channels: opened("vk", name).channels,
-          members: [{ userId: "bob", name: "Боб", role: "admin" }],
+          members: [{ userId: "bob", name: "Боб", role: "admin", silenced: false }],
           presence: withBob ? [{ channelId: "c1", members: [{ userId: "bob", micMuted: true }] }] : [],
         }
       : null,
@@ -316,4 +334,76 @@ test("leaving the last camp shows the first-run screen; an unreachable camp is s
   assert.equal(state.view, "empty");
   assert.equal(state.currentId, null);
   assert.match(state.notice ?? "", /убран из списка.*числитесь участником/);
+});
+
+/** Lets a chain of awaits inside the controller run out. */
+const settle = async () => {
+  for (let i = 0; i < 10; i++) await tick();
+};
+
+test("a moderator's move takes you to the channel; out of voice it does nothing", async () => {
+  const { api, camps, engine, voice } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  api.emitDirective({ type: "moved", campId: "vk", channelId: "c1" });
+  await settle();
+  assert.equal(voice.store.get().channelId, null, "only someone in voice is moved");
+
+  await voice.join("c0");
+  api.emitDirective({ type: "moved", campId: "other", channelId: "c1" });
+  await settle();
+  assert.equal(voice.store.get().channelId, "c0", "another camp's word is not ours");
+
+  api.emitDirective({ type: "moved", campId: "vk", channelId: "c1" });
+  await settle();
+  assert.equal(voice.store.get().channelId, "c1");
+  assert.deepEqual(engine.calls.slice(-1), ["join:c1"]);
+  assert.equal(camps.store.get().notice, "Вас перенесли в канал «Катка»");
+});
+
+test("a kick takes you out of voice and the camp, and says so", async () => {
+  const { api, camps, engine, voice } = setup();
+  api.list_ = {
+    displayName: "Дима",
+    camps: [
+      { id: "vk", name: "Вечерний кооп", role: "member" },
+      { id: "own", name: "Свой", role: "admin" },
+    ],
+    current: "vk",
+  };
+  await camps.start();
+  await voice.join("c0");
+  engine.disconnect("Вас убрали из канала");
+  api.emitDirective({ type: "kicked", campId: "vk", campName: "Вечерний кооп" });
+  await settle();
+  const state = camps.store.get();
+  assert.deepEqual(
+    state.camps.map((c) => c.id),
+    ["own"],
+  );
+  assert.equal(state.currentId, "own", "the next camp opens");
+  assert.equal(voice.store.get().channelId, null);
+  assert.equal(voice.store.get().error, null, "the kick notice explains it, not a bare disconnect");
+  assert.match(state.notice ?? "", /^Вас выгнали с сервера «Вечерний кооп»/);
+  assert.ok(!api.calls.includes("leave:vk"), "nothing to tell a camp that threw us out");
+
+  api.emitDirective({ type: "kicked", campId: "own", campName: "Свой" });
+  await settle();
+  assert.equal(camps.store.get().view, "empty", "no camps left");
+});
+
+test("dragging yourself joins the channel; dragging someone else asks the camp", async () => {
+  const { api, camps, engine, voice } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  await voice.join("c0");
+  await camps.moveMember("me", "c1");
+  assert.equal(voice.store.get().channelId, "c1");
+  assert.deepEqual(engine.calls.slice(-1), ["join:c1"]);
+
+  await camps.moveMember("bob", "c0");
+  assert.deepEqual(api.calls.slice(-1), ["move:vk:bob:c0"]);
+  api.failMove = "Для этого нужны права админа или модератора";
+  await camps.moveMember("bob", "c1");
+  assert.equal(camps.store.get().error, "Для этого нужны права админа или модератора");
 });

@@ -1,5 +1,5 @@
 import type { UserId } from "../domain/types.ts";
-import type { JoinRequest, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
+import type { JoinRequest, LinkStatus, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
 
 /**
  * Browser-only stand-in for the native engine, used when the UI runs outside Tauri
@@ -11,6 +11,7 @@ export class DemoEngine implements VoiceEngine {
   #timer: ReturnType<typeof setInterval> | null = null;
   readonly #listeners = new Set<(levels: readonly MemberLevel[]) => void>();
   readonly #participantListeners = new Set<(update: ParticipantsUpdate) => void>();
+  readonly #linkListeners = new Set<(link: LinkStatus) => void>();
   readonly #selfId: UserId;
   #talking = new Map<UserId, number>();
 
@@ -27,6 +28,10 @@ export class DemoEngine implements VoiceEngine {
       selfId: this.#selfId,
       members: request.members.map((m) => ({ userId: m.userId, name: m.userId, micMuted: m.micMuted })),
     });
+    // A good home connection, measured a moment after joining.
+    setTimeout(() => {
+      for (const l of this.#linkListeners) l({ quality: "excellent", rttMs: 10 });
+    }, 600);
     return Promise.resolve();
   }
 
@@ -63,6 +68,11 @@ export class DemoEngine implements VoiceEngine {
   onParticipants(listener: (update: ParticipantsUpdate) => void): () => void {
     this.#participantListeners.add(listener);
     return () => this.#participantListeners.delete(listener);
+  }
+
+  onLink(listener: (link: LinkStatus) => void): () => void {
+    this.#linkListeners.add(listener);
+    return () => this.#linkListeners.delete(listener);
   }
 
   onDisconnected(): () => void {

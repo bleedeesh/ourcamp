@@ -8,7 +8,9 @@ const member = (name: string, campfire: string | null = null): Member => ({
   name,
   role: "member",
   campfire,
+  campfireId: campfire,
   micMuted: false,
+  silenced: false,
 });
 
 test("headline follows the phase", () => {

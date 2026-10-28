@@ -13,6 +13,8 @@ export interface Member {
   readonly micMuted: boolean;
   /** The member turned their sound off. */
   readonly deafened: boolean;
+  /** A moderator forbade them to speak (ADR-0028); the camp's LiveKit enforces it. */
+  readonly silenced: boolean;
   /** Role in the camp: a crown for admins, a shield for moderators. */
   readonly role: Role;
   /** The member is streaming their screen. */
