@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 import type { Channel, Member, UserId } from "../domain/types.ts";
 import { DEFAULT_VOLUME } from "../domain/volume.ts";
-import { Campfire } from "./Campfire.tsx";
+import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { Icon } from "./icons.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 

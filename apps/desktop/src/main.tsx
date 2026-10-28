@@ -7,8 +7,8 @@ import "@fontsource/onest/600.css";
 import "@fontsource/onest/700.css";
 import "@fontsource/nunito/800.css";
 import "@fontsource/fredoka/600.css";
-import "./styles/tokens.css";
-import "./styles/base.css";
+import "@ourcamp/ui/tokens.css";
+import "@ourcamp/ui/base.css";
 import "./styles/app.css";
 
 import { CampsController, NO_CAMP } from "./domain/camps.ts";

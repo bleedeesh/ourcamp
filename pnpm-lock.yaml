@@ -19,6 +19,9 @@ importers:
       '@fontsource/onest':
         specifier: ^5.2.0
         version: 5.3.1
+      '@ourcamp/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@tauri-apps/api':
         specifier: ^2.8.0
         version: 2.12.4
@@ -50,6 +53,16 @@ importers:
       vite:
         specifier: ^7.1.0
         version: 7.3.7(@types/node@22.20.5)
+
+  packages/ui:
+    dependencies:
+      react:
+        specifier: ^19.2.0
+        version: 19.3.1
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.3.0
 
 packages:
 

@@ -15,6 +15,7 @@
     "@fontsource/fredoka": "^5.2.0",
     "@fontsource/nunito": "^5.2.0",
     "@fontsource/onest": "^5.2.0",
+    "@ourcamp/ui": "workspace:*",
     "@tauri-apps/api": "^2.8.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
