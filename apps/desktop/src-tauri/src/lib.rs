@@ -91,7 +91,7 @@ pub fn run() {
             commands::camp_preview,
             commands::camp_join,
             commands::camp_open,
-            commands::camp_forget,
+            commands::camp_leave,
             commands::camp_invite,
         ])
         .run(tauri::generate_context!())

@@ -354,6 +354,18 @@ impl Store {
         Ok(())
     }
 
+    /// Forgets a member; their sessions go with them (`ON DELETE CASCADE`). Returns
+    /// whether there was such a member.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn remove_member(&self, user_id: &str) -> StoreResult<bool> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM members WHERE user_id = ?1", [user_id])?;
+        Ok(removed > 0)
+    }
+
     /// The member behind an unexpired session.
     ///
     /// # Errors
