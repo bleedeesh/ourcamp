@@ -13,8 +13,8 @@ use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
-    login_message, user_id, verify, CampInfo, Challenge, ErrorBody, ErrorCode, InviteInfo,
-    InviteKindDto, LoginRequest, LoginResponse, RoomToken, API_VERSION, PUBLIC_KEY_LEN,
+    login_message, user_id, verify, CampInfo, Challenge, CurrentInvite, ErrorBody, ErrorCode,
+    InviteInfo, InviteKindDto, LoginRequest, LoginResponse, RoomToken, API_VERSION, PUBLIC_KEY_LEN,
 };
 
 use crate::store::{canonical_token, Device, LoginError, Store, StoreResult};
@@ -151,6 +151,7 @@ impl From<JsonRejection> for ApiError {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/camp", get(camp))
+        .route("/api/v1/invites/current", get(current_invite))
         .route("/api/v1/invites/{token}", get(invite))
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
@@ -263,19 +264,38 @@ async fn login(
     }))
 }
 
+/// SHA-256 of the bearer session token, or `unauthorized`.
+fn session_hash(headers: &HeaderMap) -> Result<Vec<u8>, ApiError> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(oc_proto::decode_bytes)
+        .map(|session| sha256(&session))
+        .ok_or(ApiError(ErrorCode::Unauthorized))
+}
+
+async fn current_invite(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<CurrentInvite>, ApiError> {
+    let hash = session_hash(&headers)?;
+    let (member, token) = state
+        .with_store(move |s| Ok((s.session_member(&hash)?, s.join_token()?)))
+        .await?;
+    member.ok_or(ApiError(ErrorCode::Unauthorized))?;
+    Ok(Json(CurrentInvite {
+        token: token.as_str().to_owned(),
+    }))
+}
+
 async fn room_token(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<RoomToken>, ApiError> {
     let unauthorized = || ApiError(ErrorCode::Unauthorized);
-    let session = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .and_then(oc_proto::decode_bytes)
-        .ok_or_else(unauthorized)?;
-    let hash = sha256(&session);
+    let hash = session_hash(&headers)?;
     let (member, exists) = {
         let channel = channel.clone();
         state

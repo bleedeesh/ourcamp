@@ -87,6 +87,15 @@ impl Client {
         self.request(Method::GET, path, None, Bytes::new()).await
     }
 
+    pub(crate) async fn get_authorized<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        bearer: &str,
+    ) -> Result<T, ClientError> {
+        self.request(Method::GET, path, Some(bearer), Bytes::new())
+            .await
+    }
+
     pub(crate) async fn post<T: DeserializeOwned>(
         &self,
         path: &str,

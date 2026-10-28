@@ -16,8 +16,7 @@ use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
 use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
-use crate::voice::room::{RemoteMember, RoomHost, RoomParams, VoiceRoom};
-use crate::voice::token;
+use crate::voice::room::{RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
 /// A remote member to play when joining a channel.
 #[derive(Debug, Clone)]
@@ -192,7 +191,8 @@ impl Engine {
                 session: None,
                 local_level: None,
                 listener: None,
-                self_id: token::local_identity(),
+                // Set when a camp is opened (`set_self_id`).
+                self_id: String::new(),
                 output_latency: output.latency(),
                 output_rate: output.sample_rate(),
                 _output: output,
@@ -210,15 +210,25 @@ impl Engine {
         self.lock().listener = Some(listener);
     }
 
-    /// Leaves the current channel (if any) and joins `channel_id` of `camp_id`.
-    /// `members` carries the saved volumes of people the UI expects there.
+    /// Whether joining needs a room ([`RoomAccess`]) — false for synthetic voices.
+    #[must_use]
+    pub fn needs_room(&self) -> bool {
+        self.lock().synthetic.is_none()
+    }
+
+    /// Who the local user is in the open camp (levels and participant updates use it).
+    pub fn set_self_id(&self, user_id: &str) {
+        user_id.clone_into(&mut self.lock().self_id);
+    }
+
+    /// Leaves the current channel (if any) and joins the room `access` points to (`None`
+    /// in synthetic mode). `members` carries the saved volumes of people the UI expects.
     ///
     /// # Errors
-    /// No microphone, no server, or the mixer refused a source.
+    /// No microphone, no room access, or the mixer refused a source.
     pub async fn join_channel(
         &self,
-        camp_id: &str,
-        channel_id: &str,
+        access: Option<RoomAccess>,
         members: &[MemberSpec],
     ) -> Result<(), EngineError> {
         let _transition = self.transitions.lock().await;
@@ -237,10 +247,10 @@ impl Engine {
             }
             live.synthetic.is_some()
         };
-        if synthetic {
-            self.join_synthetic(members)
-        } else {
-            self.join_room(camp_id, channel_id).await
+        match (synthetic, access) {
+            (true, _) => self.join_synthetic(members),
+            (false, Some(access)) => self.join_room(access).await,
+            (false, None) => Err("Нет доступа к комнате".into()),
         }
     }
 
@@ -268,18 +278,16 @@ impl Engine {
         Ok(())
     }
 
-    async fn join_room(&self, camp_id: &str, channel_id: &str) -> Result<(), EngineError> {
-        let (taps, output_latency, mic_muted, self_id, playback_rate) = {
+    async fn join_room(&self, access: RoomAccess) -> Result<(), EngineError> {
+        let (taps, output_latency, mic_muted, playback_rate) = {
             let live = self.lock();
             (
                 Arc::clone(&live.taps),
                 live.output_latency.clone(),
                 live.mic_muted,
-                live.self_id.clone(),
                 live.output_rate,
             )
         };
-        let access = token::access(&token::room_name(camp_id, channel_id), &self_id)?;
         // If anything below fails or this future is dropped, dropping `mic` returns the
         // tap to `taps` (see `TapSlot`).
         let mic = MicPipeline::start(&taps, output_latency, mic_muted)

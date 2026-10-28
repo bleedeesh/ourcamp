@@ -525,3 +525,51 @@ async fn a_livekit_url_with_tls_or_without_port_is_rejected_at_startup() {
     let err = start(cfg).await.err().expect("must refuse");
     assert!(err.to_string().contains("ws://host:port"), "{err}");
 }
+
+// ---- step 4a: inviting from the app ----
+
+#[tokio::test]
+async fn members_can_copy_the_friends_link_and_it_works() {
+    let camp = Camp::start().await;
+    let client = camp.client();
+    let session = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let link = client.current_invite(&session).await.unwrap();
+    assert_eq!(link.kind, InviteKind::Join);
+    assert_eq!(link.token.as_str(), camp.join());
+    assert_eq!(link.fingerprint, camp.running.fingerprint);
+
+    // A new friend joins with exactly that link.
+    let friend = CampClient::new(&link);
+    let joined = friend
+        .login(&DeviceKey::generate(), "Женя", Some(link.token.as_str()))
+        .await
+        .unwrap();
+    assert_eq!(joined.role, Role::Member);
+
+    let stranger = oc_camp_client::Session::restore("AAAA".into(), "x".into(), Role::Member);
+    assert_eq!(
+        api_error(client.current_invite(&stranger).await),
+        ErrorCode::Unauthorized
+    );
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn a_saved_session_keeps_working() {
+    let camp = Camp::start().await;
+    let client = camp.client();
+    let session = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let restored = oc_camp_client::Session::restore(
+        session.token().to_owned(),
+        session.user_id.clone(),
+        session.role,
+    );
+    assert!(client.room_token(&restored, "c0").await.is_ok());
+    camp.stop().await;
+}
