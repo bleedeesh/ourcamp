@@ -27,10 +27,10 @@ pub mod transport;
 use std::fmt;
 use std::io;
 
-use oc_invite::{Fingerprint, Host, Invite};
+use oc_invite::{Fingerprint, Host, Invite, InviteKind, Token};
 use oc_proto::{
-    CampInfo, Challenge, ErrorCode, InviteInfo, LoginRequest, LoginResponse, Role, RoomToken,
-    API_VERSION,
+    CampInfo, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest, LoginResponse, Role,
+    RoomToken, API_VERSION,
 };
 
 pub use device::DeviceKey;
@@ -74,6 +74,24 @@ pub struct Session {
     pub role: Role,
 }
 
+impl Session {
+    /// A session saved earlier (the app keeps it between runs).
+    #[must_use]
+    pub fn restore(token: String, user_id: String, role: Role) -> Self {
+        Self {
+            token,
+            user_id,
+            role,
+        }
+    }
+
+    /// The bearer token, for saving. A secret: store it like a password.
+    #[must_use]
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
+
 impl fmt::Debug for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Session")
@@ -86,6 +104,8 @@ impl fmt::Debug for Session {
 /// One camp, reached over pinned TLS.
 pub struct CampClient {
     http: http::Client,
+    host: Host,
+    port: u16,
     fingerprint: Fingerprint,
 }
 
@@ -101,6 +121,8 @@ impl CampClient {
     pub fn at(host: &Host, port: u16, fingerprint: Fingerprint) -> Self {
         Self {
             http: http::Client::new(format!("{host}:{port}"), fingerprint),
+            host: host.clone(),
+            port,
             fingerprint,
         }
     }
@@ -169,6 +191,26 @@ impl CampClient {
     pub fn voice_url(&self) -> String {
         transport::pin(&self.http.authority, self.fingerprint);
         format!("wss://{}", self.http.authority)
+    }
+
+    /// The camp's current friends link, for "copy invite".
+    ///
+    /// # Errors
+    /// [`ErrorCode::Unauthorized`] for an expired session.
+    pub async fn current_invite(&self, session: &Session) -> Result<Invite, ClientError> {
+        let CurrentInvite { token } = self
+            .http
+            .get_authorized("/api/v1/invites/current", &session.token)
+            .await?;
+        let token = Token::parse(&token, InviteKind::Join)
+            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        Ok(Invite {
+            host: self.host.clone(),
+            port: self.port,
+            kind: InviteKind::Join,
+            token,
+            fingerprint: self.fingerprint,
+        })
     }
 
     /// LiveKit token for a channel (connect it to [`voice_url`](Self::voice_url)).

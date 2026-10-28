@@ -73,6 +73,13 @@ export class VoiceController {
     this.#unsubscribeParticipants = null;
   }
 
+  /** Switches to another camp: leaves the current campfire first. */
+  async openCamp(camp: Camp, selfId: UserId): Promise<void> {
+    if (this.store.get().channelId !== null) await this.leave();
+    this.#volumesSent = new Set();
+    this.store.patch({ camp, selfId, channelId: null, speaking: {}, volumeMenu: null });
+  }
+
   async join(channelId: string): Promise<void> {
     const { camp, channelId: current, selfId } = this.store.get();
     if (current === channelId) return;

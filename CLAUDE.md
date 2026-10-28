@@ -39,24 +39,27 @@
   сессии), TLS 7780, ссылки, вход по подписи, ключ админа, токены LiveKit (ADR-0017, 0018), 26 тестов.
 - `apps/desktop/src-tauri`: `audio/` — устройства (`output.rs`, `input.rs`), `Engine`
   (режимы livekit / `OC_VOICE=synthetic`, громкости в `prefs`); `voice/` — `mic.rs`
-  (поток микрофона: APM AEC3+NS+AGC → `NativeAudioSource`), `room.rs` (LiveKit, ADR-0008),
-  `token.rs` (dev-токены, ADR-0010). Событие `voice://participants` (ADR-0011).
+  (поток микрофона: APM AEC3+NS+AGC → `NativeAudioSource`), `room.rs` (LiveKit, ADR-0008).
+  `camps.rs` — лагеря устройства (`device.key`, `camps.json`, ADR-0020): вход по ссылке,
+  токен комнаты от лагеря, повторный вход при истёкшей сессии. Dev-токенов нет; второй
+  клиент на ПК — `OC_PROFILE=<имя>` (debug). Событие `voice://participants` (ADR-0011).
   Синхронные вызовы LiveKit SDK — только внутри `runtime.enter()` (команды Tauri без
   `async` идут на UI-потоке без tokio). Тесты с сервером — `#[ignore]`, нужен `pnpm livekit`.
-- `apps/desktop/src` — состав костра из движка (`domain/roster.ts`), 28 тестов.
+- `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
+  переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав
+  костра из движка (`domain/roster.ts`), 39 тестов. Вёрстку смотреть в браузере: `.claude/launch.json`
+  (`desktop-ui`, Vite + демо-режим, окно 380×752).
 - Сборка на Windows: статический CRT (`.cargo/config.toml`), короткий путь (ADR-0012).
 - Node в среде агента — через nvs: `%LOCALAPPDATA%\nvs\node\24.21.0\x64` (не в PATH).
 - CI зелёный (6 задач, вкл. Miri и тесты с LiveKit в Docker). Linux-сборке нужен clang ≥ 21.
   Remote: github.com/bleedeesh/ourcamp (публичный). Известные пробелы M2: нет статуса «подключаемся /
   переподключаемся» в UI; смена устройства — только перезапуском (M7).
-- Для M3: `livekit` с фичами по умолчанию собирается **без TLS** (только `ws://`);
-  для `wss://` с пиннингом сертификата нужна фича TLS + свой верификатор — отдельная ADR.
 - CI: `.github/workflows/ci.yml`, задача `voice` поднимает `dev/compose.yaml` и гоняет
   `#[ignore]`-тесты с настоящим LiveKit. Логи задач Actions без авторизации не читаются — просить Диму.
 
 ## Дальше
-M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-0014–0017). Шаги 1–3 готовы; дальше шаг 4 —
-ссылка `ourcamp://` в приложении, каналы и присутствие с сервера, вход вместо dev-токенов.
+M3 — по шагам из `docs/roadmap.md` (ADR-0014–0020). Готовы шаги 1–3 и 4a (лагерь в приложении);
+дальше 4b — присутствие во всех кострах (сервер опрашивает LiveKit, WebSocket клиентам).
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 
@@ -68,5 +71,5 @@ M3 — сервер лагеря, по шагам из `docs/roadmap.md` (ADR-00
   заменять новой записью). Заглушки помечать этапом roadmap («arrives in M2»).
 
 ## Команды
-`pnpm livekit` (LiveKit в Docker) · `pnpm dev` · `pnpm test` · `pnpm typecheck` · `pnpm lint:rust` (clippy pedantic, -D warnings + fmt).
+`pnpm livekit` (LiveKit в Docker) · `pnpm server` (лагерь) · `pnpm dev` · `pnpm test` · `pnpm typecheck` · `pnpm lint:rust` (clippy pedantic, -D warnings + fmt).
 Тесты TS — `node --test` (Node ≥ 22.18, только «стираемый» TS, импорты с `.ts`).

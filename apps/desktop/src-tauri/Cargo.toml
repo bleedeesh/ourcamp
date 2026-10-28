@@ -24,16 +24,16 @@ oc-audio = { path = "../../../crates/oc-audio" }
 # Voice (M2). The SDK downloads a prebuilt libwebrtc on first build; on Windows it
 # needs the static CRT (.cargo/config.toml, ADR-0012). Pinned: upgrade deliberately.
 livekit = "=0.9.7"
-# Dev-only room tokens until the camp server exists (ADR-0010).
-livekit-token = "0.3.1"
 oc-camp-client = { path = "../../../crates/oc-camp-client" }
+oc-invite = { path = "../../../crates/oc-invite" }
+oc-proto = { path = "../../../crates/oc-proto" }
+serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt"] }
 futures-util = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 # End-to-end voice through a real camp server (ignored tests, need `pnpm livekit`).
 oc-server = { path = "../../../crates/oc-server" }
-oc-invite = { path = "../../../crates/oc-invite" }
 
 [lints]
 workspace = true

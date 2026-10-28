@@ -5,3 +5,6 @@ target/
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+
+# Machine-specific preview config of the Claude desktop app
+.claude/launch.json

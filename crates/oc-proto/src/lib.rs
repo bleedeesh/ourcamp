@@ -147,6 +147,14 @@ pub struct LoginResponse {
     pub role: Role,
 }
 
+/// `GET /api/v1/invites/current` (members only): the friends invite token, so the app
+/// can offer "copy invite" — the link is built from the camp address it already knows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentInvite {
+    /// Friends invite token.
+    pub token: String,
+}
+
 // ---- voice ----
 
 /// `POST /api/v1/channels/{id}/token`. The voice server is the camp itself:

@@ -6,16 +6,26 @@
 // Tauri injects `State` and deserialized arguments by value.
 #![allow(clippy::needless_pass_by_value)]
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use tauri::State;
 
 use crate::audio::engine::{Engine, MemberSpec};
+use crate::camps::{CampList, CampPreview, Camps, OpenCamp};
 
 /// Engine slot managed by Tauri: `Err` holds why audio is unavailable so every command
 /// can report it instead of the app refusing to start.
 pub type EngineState = Result<Engine, String>;
 
 fn engine(state: &State<'_, EngineState>) -> Result<Engine, String> {
+    state.inner().clone()
+}
+
+/// Camp list slot: `Err` holds why the app data directory is unusable.
+pub type CampsState = Result<Arc<Camps>, String>;
+
+fn camps(state: &State<'_, CampsState>) -> Result<Arc<Camps>, String> {
     state.inner().clone()
 }
 
@@ -35,6 +45,7 @@ pub struct JoinMember {
 #[tauri::command]
 pub async fn voice_join_channel(
     state: State<'_, EngineState>,
+    camps_state: State<'_, CampsState>,
     camp_id: String,
     channel_id: String,
     members: Vec<JoinMember>,
@@ -48,10 +59,21 @@ pub async fn voice_join_channel(
             remote_mic_muted: m.mic_muted,
         })
         .collect();
-    engine(&state)?
-        .join_channel(&camp_id, &channel_id, &specs)
-        .await
-        .inspect_err(|e| eprintln!("[ourcamp] join {camp_id}/{channel_id}: {e}"))
+    let engine = engine(&state)?;
+    let result = async {
+        let access = if engine.needs_room() {
+            Some(
+                camps(&camps_state)?
+                    .room_access(&camp_id, &channel_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        engine.join_channel(access, &specs).await
+    }
+    .await;
+    result.inspect_err(|e| eprintln!("[ourcamp] join {camp_id}/{channel_id}: {e}"))
 }
 
 /// Leaves the current channel.
@@ -94,4 +116,62 @@ pub fn voice_set_mic_muted(state: State<'_, EngineState>, muted: bool) -> Result
 #[tauri::command]
 pub fn voice_set_deafened(state: State<'_, EngineState>, deafened: bool) -> Result<(), String> {
     engine(&state)?.set_deafened(deafened)
+}
+
+// ---- camps (ADR-0020) ----
+
+/// Joined camps and the name you go by.
+#[tauri::command]
+pub fn camp_list(state: State<'_, CampsState>) -> Result<CampList, String> {
+    Ok(camps(&state)?.list())
+}
+
+/// What an `ourcamp://` link leads to, before joining.
+#[tauri::command]
+pub async fn camp_preview(
+    state: State<'_, CampsState>,
+    link: String,
+) -> Result<CampPreview, String> {
+    camps(&state)?.preview(&link).await
+}
+
+/// Joins the camp a link points to and opens it.
+#[tauri::command]
+pub async fn camp_join(
+    state: State<'_, CampsState>,
+    engine_state: State<'_, EngineState>,
+    link: String,
+    name: String,
+) -> Result<OpenCamp, String> {
+    let camp = camps(&state)?.join(&link, &name).await?;
+    if let Ok(engine) = engine(&engine_state) {
+        engine.set_self_id(&camp.me.user_id);
+    }
+    Ok(camp)
+}
+
+/// Opens a joined camp (fresh channels, or the cached ones if it is offline).
+#[tauri::command]
+pub async fn camp_open(
+    state: State<'_, CampsState>,
+    engine_state: State<'_, EngineState>,
+    id: String,
+) -> Result<OpenCamp, String> {
+    let camp = camps(&state)?.open(&id).await?;
+    if let Ok(engine) = engine(&engine_state) {
+        engine.set_self_id(&camp.me.user_id);
+    }
+    Ok(camp)
+}
+
+/// Removes a camp from this device.
+#[tauri::command]
+pub fn camp_forget(state: State<'_, CampsState>, id: String) -> Result<(), String> {
+    camps(&state)?.forget(&id)
+}
+
+/// The camp's friends link, to copy.
+#[tauri::command]
+pub async fn camp_invite(state: State<'_, CampsState>, id: String) -> Result<String, String> {
+    camps(&state)?.invite_link(&id).await
 }
