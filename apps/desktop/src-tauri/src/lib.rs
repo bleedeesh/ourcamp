@@ -35,8 +35,9 @@ pub fn run() {
         eprintln!("[ourcamp] {reason}");
     }
     let for_levels = engine.clone().ok();
+    let for_exit = engine.clone().ok();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(engine)
         .setup(move |app| {
             let dir = data_dir(app.path().app_data_dir());
@@ -94,8 +95,32 @@ pub fn run() {
             commands::camp_forget,
             commands::camp_invite,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("failed to start OurCamp");
+    app.run(move |_, event| {
+        if let tauri::RunEvent::Exit = event {
+            if let Some(engine) = &for_exit {
+                leave_before_exit(engine);
+            }
+        }
+    });
+}
+
+/// How long closing the app waits for a polite leave; a camp that does not answer must
+/// not hold the window open.
+const LEAVE_ON_EXIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Leaves the campfire before the process ends. Without it LiveKit only notices the
+/// person is gone when it times the connection out, and until then everyone — the
+/// server window included — still sees them sitting there.
+fn leave_before_exit(engine: &Engine) {
+    tauri::async_runtime::block_on(async {
+        match tokio::time::timeout(LEAVE_ON_EXIT, engine.leave_channel()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("[ourcamp] leave on exit: {e}"),
+            Err(_) => eprintln!("[ourcamp] leave on exit: no answer in {LEAVE_ON_EXIT:?}"),
+        }
+    });
 }
 
 /// The app's data directory. Debug builds honour `OC_PROFILE=<name>`: a separate

@@ -413,7 +413,21 @@ mod tests {
                 "published and unmuted"
             );
 
+            // A polite leave (what the app does on exit too) frees the seat at once;
+            // without it LiveKit keeps the seat until it times the connection out.
             room.close().await;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                let event = tokio::time::timeout_at(deadline, events.next())
+                    .await
+                    .expect("the seat is freed within 3 s")
+                    .expect("stream open")
+                    .expect("valid event");
+                let oc_proto::CampEvent::State(state) = event;
+                if state.presence.is_empty() {
+                    break;
+                }
+            }
             camp.stop().await;
             let _ = std::fs::remove_dir_all(dir);
         });
