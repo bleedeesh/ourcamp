@@ -40,6 +40,16 @@ async fn manager(host: &Arc<Host>) -> Result<Manager, String> {
         .ok_or_else(|| "Сервер не запущен".to_owned())
 }
 
+/// Opens the camp to anyone with its address, or back to invites only (ADR-0040).
+#[tauri::command]
+pub async fn server_set_open(host: State<'_, Arc<Host>>, open: bool) -> Result<(), String> {
+    manager(&host)
+        .await?
+        .set_open(open)
+        .await
+        .map_err(|e| describe(&e))
+}
+
 #[tauri::command]
 pub async fn server_rename_camp(host: State<'_, Arc<Host>>, name: String) -> Result<(), String> {
     manager(&host)

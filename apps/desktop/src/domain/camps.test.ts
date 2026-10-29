@@ -9,6 +9,7 @@ import { VolumeBook } from "./volume.ts";
 const FP = "A".repeat(43);
 const LINK = `ourcamp://192.0.2.15/join/7k2q9m4x8v1c3b5n?fp=${FP}`;
 const CLAIM = `ourcamp://192.0.2.15/claim/bcmqj75a9v64svgfthvb6fq4mw?fp=${FP}`;
+const OPEN = `ourcamp://ourcamp.kz?fp=${FP}`;
 
 const opened = (id: string, name: string, offline = false): OpenCamp => ({
   id,
@@ -473,4 +474,21 @@ test("each avatar is fetched once per hash; a failure is tried again", async () 
   await tick();
   await assert.rejects(camps.avatarOf("bob", "bad"));
   assert.equal(api.avatarFetches, 3, "the failed one asked again");
+});
+
+test("an open camp's address is checked and joined like an invite", async () => {
+  const { api, camps } = setup();
+  await camps.start();
+  camps.openJoin();
+  const pending = camps.setLink(OPEN);
+  assert.equal(camps.store.get().check.state, "checking", "the address alone is a link");
+  api.pending.get(OPEN)?.resolve({ name: "OurCamp KZ", channels: 2, kind: "open", usable: true });
+  await pending;
+  camps.setName("Лена");
+  assert.equal(camps.canJoin(), true);
+
+  const closed = camps.setLink(`ourcamp://ourcamp.kz/?fp=${FP}`);
+  api.pending.get(`ourcamp://ourcamp.kz/?fp=${FP}`)?.resolve({ name: "OurCamp KZ", channels: 2, kind: "open", usable: false });
+  await closed;
+  assert.equal(camps.canJoin(), false, "a camp that takes invites only");
 });

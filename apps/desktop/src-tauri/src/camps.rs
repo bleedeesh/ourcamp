@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use oc_camp_client::{CampClient, ClientError, DeviceKey, Session};
-use oc_invite::{Fingerprint, Host, Invite, InviteError};
+use oc_invite::{Fingerprint, Host, InviteError, Link, Token};
 use oc_proto::{
     avatar_hash, AvatarFormat, CampEvent, CampState, Channel, ErrorCode, InviteKindDto, Role,
     MAX_AVATAR_BYTES,
@@ -281,16 +281,22 @@ impl Camps {
     /// # Errors
     /// Invalid link, unreachable camp, wrong certificate.
     pub async fn preview(&self, link: &str) -> Result<CampPreview, CampError> {
-        let invite = parse_link(link)?;
-        let client = CampClient::new(&invite);
+        let link = parse_link(link)?;
+        let client = client_for(&link);
         let info = client.camp().await.map_err(describe)?;
-        let status = client
-            .invite(invite.token.as_str())
-            .await
-            .map_err(|e| match e {
-                ClientError::Api(ErrorCode::NotFound) => "Приглашение недействительно".to_owned(),
-                other => describe(other),
-            })?;
+        // An open camp's address (ADR-0040): usable while the camp stays open.
+        let Some(token) = link.token() else {
+            return Ok(CampPreview {
+                name: info.name,
+                channels: info.channels.len(),
+                kind: InviteKindDto::Open,
+                usable: info.open,
+            });
+        };
+        let status = client.invite(token.as_str()).await.map_err(|e| match e {
+            ClientError::Api(ErrorCode::NotFound) => "Приглашение недействительно".to_owned(),
+            other => describe(other),
+        })?;
         Ok(CampPreview {
             name: info.name,
             channels: info.channels.len(),
@@ -308,18 +314,24 @@ impl Camps {
         if name.is_empty() {
             return Err("Введите, как вас называть".into());
         }
-        let invite = parse_link(link)?;
-        let client = CampClient::new(&invite);
+        let link = parse_link(link)?;
+        let client = client_for(&link);
         let session = client
-            .login(&self.key, name, Some(invite.token.as_str()))
+            .login(&self.key, name, link.token().map(Token::as_str))
             .await
-            .map_err(describe)?;
+            .map_err(|e| match e {
+                // An open camp's address, but the camp closed meanwhile.
+                ClientError::Api(ErrorCode::InviteRequired) if link.token().is_none() => {
+                    "Сервер больше не открытый — попросите ссылку-приглашение".to_owned()
+                }
+                other => describe(other),
+            })?;
         let info = client.camp().await.map_err(describe)?;
-        let id = invite.fingerprint.to_string();
+        let id = link.fingerprint().to_string();
         let camp = SavedCamp {
             id: id.clone(),
-            host: invite.host.to_string(),
-            port: invite.port,
+            host: link.host().to_string(),
+            port: link.port(),
             name: info.name,
             channels: info.channels,
             user_id: session.user_id.clone(),
@@ -853,7 +865,12 @@ fn write_atomically(path: &Path, saved: &Saved) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-fn parse_link(link: &str) -> Result<Invite, CampError> {
+/// A client for what a link points at.
+fn client_for(link: &Link) -> CampClient {
+    CampClient::at(link.host(), link.port(), link.fingerprint())
+}
+
+fn parse_link(link: &str) -> Result<Link, CampError> {
     link.parse().map_err(|e: InviteError| {
         match e {
             InviteError::NotAnInvite => "Это не ссылка OurCamp — она начинается с ourcamp://",
@@ -1229,6 +1246,39 @@ mod tests {
             for d in [lena_dir, bob_dir, server_dir] {
                 let _ = fs::remove_dir_all(d);
             }
+        });
+    }
+
+    /// ADR-0040: an open camp's address lets anyone in; closed again, it says so.
+    #[test]
+    fn an_open_camp_is_entered_by_its_address_alone() {
+        tauri::async_runtime::block_on(async {
+            let (server, server_dir) = camp("open").await;
+            let address = server.links.open.to_string();
+            let dir = temp_dir("open");
+            let camps = Camps::load(&dir).unwrap();
+
+            let closed = camps.preview(&address).await.unwrap();
+            assert_eq!((closed.kind, closed.usable), (InviteKindDto::Open, false));
+            assert!(camps
+                .join(&address, "Лена")
+                .await
+                .unwrap_err()
+                .contains("ссылку-приглашение"));
+
+            server.manager().set_open(true).await.unwrap();
+            assert!(camps.preview(&address).await.unwrap().usable);
+            let opened = camps.join(&address, "Лена").await.unwrap();
+            assert_eq!(
+                opened.id,
+                server.fingerprint.to_string(),
+                "the same camp as by invite"
+            );
+            assert_eq!(opened.me.role, Role::Member);
+
+            server.stop().await;
+            let _ = fs::remove_dir_all(dir);
+            let _ = fs::remove_dir_all(server_dir);
         });
     }
 

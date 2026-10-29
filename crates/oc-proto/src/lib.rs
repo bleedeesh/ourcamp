@@ -139,6 +139,10 @@ pub struct CampInfo {
     pub name: String,
     /// Channels in display order.
     pub channels: Vec<Channel>,
+    /// Anyone with the address may come in, no invite (ADR-0040). Absent in older
+    /// answers = `false`.
+    #[serde(default)]
+    pub open: bool,
 }
 
 /// `GET /api/v1/invites/{token}`.
@@ -159,6 +163,9 @@ pub enum InviteKindDto {
     Join,
     /// One-time admin key.
     Claim,
+    /// No invite: an open camp's address (ADR-0040). Never on the wire from a server;
+    /// the app uses it for what a link leads to.
+    Open,
 }
 
 // ---- login ----
@@ -295,6 +302,9 @@ pub struct CampState {
     pub members: Vec<MemberInfo>,
     /// Campfires with people in them, in channel order.
     pub presence: Vec<ChannelPresence>,
+    /// Anyone with the address may come in (ADR-0040).
+    #[serde(default)]
+    pub open: bool,
 }
 
 /// A camp member's profile.
@@ -491,12 +501,14 @@ mod tests {
                     mic_muted: true,
                 }],
             }],
+            open: true,
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "state");
         assert_eq!(json["members"][0]["role"], "moderator");
         assert_eq!(json["members"][0]["silenced"], true);
         assert_eq!(json["members"][0]["avatar"], "AAAAAAAAAAAAAAAA");
+        assert_eq!(json["open"], true);
         let moved = serde_json::to_value(CampEvent::Moved {
             channel_id: "c0".into(),
         })

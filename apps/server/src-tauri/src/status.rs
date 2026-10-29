@@ -48,6 +48,10 @@ pub struct ServerStatus {
     pub address: Option<String>,
     pub fingerprint: Option<String>,
     pub join_link: Option<String>,
+    /// The camp's address alone (ADR-0040): the link to give while the camp is open.
+    pub open_link: Option<String>,
+    /// Anyone with the address may come in (ADR-0040).
+    pub open: bool,
     /// Admins first, then moderators, then by name.
     pub members: Vec<Member>,
     /// The camp's own LiveKit; `None` while it restarts.
@@ -66,6 +70,8 @@ impl ServerStatus {
             address: None,
             fingerprint: None,
             join_link: None,
+            open_link: None,
+            open: false,
             members: Vec::new(),
             livekit_pid: None,
             reach: Reach::default(),
@@ -87,6 +93,7 @@ pub struct Base {
     pub address: String,
     pub fingerprint: String,
     pub join_link: String,
+    pub open_link: String,
 }
 
 impl Base {
@@ -96,6 +103,7 @@ impl Base {
             address: format!("{}:{}", join.host, join.port),
             fingerprint: running.fingerprint.to_string(),
             join_link: join.to_string(),
+            open_link: running.links.open.to_string(),
         }
     }
 }
@@ -142,6 +150,8 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
         address: Some(base.address.clone()),
         fingerprint: Some(base.fingerprint.clone()),
         join_link: Some(base.join_link.clone()),
+        open_link: Some(base.open_link.clone()),
+        open: state.open,
         members,
         livekit_pid,
         reach: Reach::default(),
@@ -158,6 +168,7 @@ mod tests {
             address: "192.168.1.2:7780".into(),
             fingerprint: "fp".into(),
             join_link: "ourcamp://join".into(),
+            open_link: "ourcamp://open".into(),
         }
     }
 
@@ -220,6 +231,7 @@ mod tests {
                     mic_muted: true,
                 }],
             }],
+            open: false,
         };
         let status = snapshot(&base(), &state, None);
         let names: Vec<_> = status.members.iter().map(|m| m.name.as_str()).collect();

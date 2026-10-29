@@ -36,6 +36,10 @@ export interface ServerStatus {
   address: string | null;
   fingerprint: string | null;
   joinLink: string | null;
+  /** The camp's address alone (ADR-0040): the link while the camp is open. */
+  openLink: string | null;
+  /** Anyone with the address may come in. */
+  open: boolean;
   /** Campfires and chats, in display order. */
   channels: Channel[];
   /** Admins first, then moderators, then by name. */
@@ -51,6 +55,8 @@ export const STARTING: ServerStatus = {
   address: null,
   fingerprint: null,
   joinLink: null,
+  openLink: null,
+  open: false,
   channels: [],
   members: [],
   livekitPid: null,

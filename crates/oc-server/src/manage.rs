@@ -121,6 +121,14 @@ impl Manager {
         Ok(result)
     }
 
+    /// Opens the camp to anyone with its address, or back to invites only (ADR-0040).
+    ///
+    /// # Errors
+    /// [`ManageError::Store`].
+    pub async fn set_open(&self, open: bool) -> Result<(), ManageError> {
+        self.change(move |s| Ok(s.set_open(open)?)).await
+    }
+
     /// Renames the camp.
     ///
     /// # Errors

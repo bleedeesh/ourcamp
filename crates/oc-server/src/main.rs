@@ -31,6 +31,8 @@ OurCamp Server (headless)
                           on it over UPnP and closed on exit (ADR-0039)
   --port PORT             port put into links                   [the bound port]
   --name NAME             name of a new camp                    [Мой сервер]
+  --open                  anyone with the address may come in (ADR-0040)
+  --invite-only           newcomers need the friends link       [as last set]
 
 Voice — the camp's own LiveKit (managed, the default):
   --livekit-bin PATH      livekit-server to run   [next to oc-server, dev/bin, PATH]
@@ -117,6 +119,8 @@ struct Args {
     host: Option<HostArg>,
     port: Option<u16>,
     name: String,
+    /// `--open` / `--invite-only`; `None`: as the camp last was.
+    open: Option<bool>,
     voice: Voice,
 }
 
@@ -126,6 +130,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
     let mut host: Option<HostArg> = None;
     let mut port: Option<u16> = None;
     let mut name = String::from("Мой сервер");
+    let mut open: Option<bool> = None;
     let mut binary: Option<PathBuf> = None;
     let mut rtc_tcp_port: Option<u16> = None;
     let mut rtc_udp_port: Option<u16> = None;
@@ -146,6 +151,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
             "--host" => host = Some(HostArg::parse(&value()?)?),
             "--port" => port = Some(value()?.parse().map_err(|e| format!("--port: {e}"))?),
             "--name" => name = value()?,
+            "--open" | "--invite-only" if open.is_some() => {
+                return Err("--open and --invite-only: one of them".into());
+            }
+            "--open" => open = Some(true),
+            "--invite-only" => open = Some(false),
             "--livekit-bin" => binary = Some(PathBuf::from(value()?)),
             "--rtc-tcp-port" => rtc_tcp_port = Some(port_value(value()?)?),
             "--rtc-udp-port" => rtc_udp_port = Some(port_value(value()?)?),
@@ -190,6 +200,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
         host,
         port,
         name,
+        open,
         voice,
     }))
 }
@@ -276,6 +287,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let args_open = args.open;
     let data_dir = std::path::absolute(&args.data_dir).unwrap_or_else(|_| args.data_dir.clone());
     let config = Config {
         data_dir: args.data_dir,
@@ -301,8 +313,22 @@ async fn main() -> ExitCode {
     eprintln!("[oc-server] data: {}", data_dir.display());
     eprintln!("[oc-server] listening on {} (TLS)", running.local_addr);
     eprintln!("[oc-server] fingerprint: {}", running.fingerprint);
+    let open = match args_open {
+        Some(open) => match running.manager().set_open(open).await {
+            Ok(()) => open,
+            Err(e) => {
+                eprintln!("oc-server: {e}");
+                running.camp.open
+            }
+        },
+        None => running.camp.open,
+    };
     // The link goes to stdout so it can be piped; everything else is a log line.
-    println!("Для друзей: {}", running.links.join);
+    if open {
+        println!("Открытый, для всех: {}", running.links.open);
+    } else {
+        println!("Для друзей: {}", running.links.join);
+    }
 
     if let Err(e) = tokio::signal::ctrl_c().await {
         eprintln!("oc-server: cannot wait for Ctrl+C: {e}");
@@ -419,6 +445,19 @@ mod tests {
             .build()
             .unwrap()
             .block_on(future)
+    }
+
+    #[test]
+    fn open_or_invite_only_or_as_it_was() {
+        assert_eq!(parse(&["--open"]).unwrap().unwrap().open, Some(true));
+        assert_eq!(
+            parse(&["--invite-only"]).unwrap().unwrap().open,
+            Some(false)
+        );
+        assert_eq!(parse(&[]).unwrap().unwrap().open, None);
+        assert!(parse(&["--open", "--invite-only"])
+            .unwrap_err()
+            .contains("one of them"));
     }
 
     #[test]

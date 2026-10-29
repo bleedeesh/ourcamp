@@ -80,7 +80,7 @@ Voice/Chat/AFK, `manage.rs`, ADR-0026); модерация из окна ✅ (в
 адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); перенос перетаскиванием в окне и клиенте ✅ (`useDragMove`, `POST /members/{id}/move`, ADR-0029); пинг и качество
 связи в панели (ADR-0030), клиент в трее (ADR-0031), своя иконка окна сервера (ADR-0032); модерация из клиента ✅ (меню участника,
 выгнать/запретить — только младших по рангу, `Role::governs`, ADR-0033); правый клик — свои меню, меню браузера выключено (ADR-0034); дальше M4 по ADR-0035/0036 (раздел «Без центрального
-сервиса» в roadmap): ник и аватарка ✅ (`avatar` на устройстве, `avatars/` — кэш по хешу, `makeAvatar` — canvas), «адрес для друзей» и VPN ✅ (`network.rs` — сети по маршруту, `window.json`, `--host radmin`, ADR-0037), шаг 7 ✅ (свой UPnP `upnp.rs`, `ports.rs`, «Интернет через роутер», «серый» CGNAT, ADR-0039), шаг 7 (порты), домен и открытые серверы; CLI владельца для headless.
+сервиса» в roadmap): ник и аватарка ✅ (`avatar` на устройстве, `avatars/` — кэш по хешу, `makeAvatar` — canvas), «адрес для друзей» и VPN ✅ (`network.rs` — сети по маршруту, `window.json`, `--host radmin`, ADR-0037), шаг 7 ✅ (свой UPnP `upnp.rs`, `ports.rs`, «Интернет через роутер», «серый» CGNAT, ADR-0039), открытые серверы ✅ (`Link::Open`, `--open`, ADR-0040); дальше домен с настоящим сертификатом (ссылка без отпечатка), сборка headless под Linux, CLI владельца для headless.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

@@ -79,6 +79,8 @@ pub struct Camp {
     pub name: String,
     /// Channels in display order.
     pub channels: Vec<Channel>,
+    /// Anyone may come in without an invite (ADR-0040).
+    pub open: bool,
 }
 
 /// What a token is, as far as the server knows.
@@ -321,7 +323,25 @@ impl Store {
                 })
             })?
             .collect::<Result<_, _>>()?;
-        Ok(Camp { name, channels })
+        Ok(Camp {
+            name,
+            channels,
+            open: is_open(&self.conn)?,
+        })
+    }
+
+    /// Opens the camp to anyone with its address, or back to invites only (ADR-0040).
+    /// Kept in `meta`: no schema change, absent means closed.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn set_open(&self, open: bool) -> StoreResult<()> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('open', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [if open { "1" } else { "0" }],
+        )?;
+        Ok(())
     }
 
     /// The current friends invite.
@@ -388,6 +408,16 @@ impl Store {
         let role = if let Some(role) = known {
             role_from(&role)
         } else {
+            // An open camp lets anyone in (ADR-0040); an invite it may still carry is moot.
+            if is_open(&tx)? {
+                tx.execute(
+                    "INSERT INTO members (user_id, public_key, name, role, joined_at)
+                     VALUES (?1, ?2, ?3, 'member', ?4)",
+                    params![device.user_id, device.public_key, device.name, now()],
+                )?;
+                tx.commit()?;
+                return Ok(Ok(Role::Member));
+            }
             let Some(token) = invite else {
                 return Ok(Err(LoginError::InviteRequired));
             };
@@ -749,6 +779,16 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// Whether the camp is open (ADR-0040).
+fn is_open(conn: &Connection) -> StoreResult<bool> {
+    Ok(conn
+        .query_row("SELECT value FROM meta WHERE key = 'open'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .is_some_and(|v| v == "1"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -943,6 +983,35 @@ mod tests {
             store.login(device("a"), None).unwrap(),
             Ok(Role::Member),
             "known devices need no invite"
+        );
+    }
+
+    #[test]
+    fn an_open_camp_lets_anyone_in_until_closed() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        assert!(!store.camp().unwrap().open, "closed by default");
+        store.set_open(true).unwrap();
+        assert!(store.camp().unwrap().open);
+        assert_eq!(
+            store.login(device("a"), None).unwrap(),
+            Ok(Role::Member),
+            "no invite needed"
+        );
+        assert_eq!(
+            store.login(device("a"), None).unwrap(),
+            Ok(Role::Member),
+            "and back again"
+        );
+        store.set_open(false).unwrap();
+        assert_eq!(
+            store.login(device("b"), None).unwrap(),
+            Err(LoginError::InviteRequired),
+            "closed again: newcomers need an invite"
+        );
+        assert_eq!(
+            store.login(device("a"), None).unwrap(),
+            Ok(Role::Member),
+            "members stay"
         );
     }
 

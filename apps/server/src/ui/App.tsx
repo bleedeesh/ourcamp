@@ -228,7 +228,13 @@ export function App({ api }: { api: ServerApi }) {
         {phase.kind === "running" && (
           <>
             {status.joinLink !== null && (
-              <FriendsLink link={status.joinLink} reach={status.reach} api={api} />
+              <FriendsLink
+                joinLink={status.joinLink}
+                openLink={status.openLink}
+                open={status.open}
+                reach={status.reach}
+                api={api}
+              />
             )}
 
             <Channels

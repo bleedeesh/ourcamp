@@ -30,8 +30,12 @@ export interface CampPreview {
   readonly name: string;
   /** Number of campfires. */
   readonly channels: number;
-  readonly kind: "join" | "claim";
-  /** `false` for an old admin key: retired with ADR-0026, it lets nobody in. */
+  /** `open`: an open camp's address, no invite (ADR-0040). */
+  readonly kind: "join" | "claim" | "open";
+  /**
+   * `false` for an old admin key (retired with ADR-0026), or an open camp's address
+   * while the camp takes invites only.
+   */
   readonly usable: boolean;
 }
 

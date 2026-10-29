@@ -6,7 +6,11 @@
 //! ourcamp://192.0.2.15/join/7k2q9m4x8v1c3b5n?fp=<43 chars>    friends
 //! ourcamp://192.0.2.15/claim/<26 chars>?fp=<43 chars>           owner, one-time admin
 //! ourcamp://[2001:db8::7]:7781/join/…                            IPv6, custom port
+//! ourcamp://192.0.2.15?fp=<43 chars>                              an open camp: no invite
 //! ```
+//!
+//! [`Link`] is either: an [`Invite`], or the [`Address`] of an open camp (ADR-0040),
+//! where anyone with the address may come in.
 //!
 //! * **host[:port]** — where the camp server listens; the port is omitted when it is the
 //!   default [`DEFAULT_PORT`].
@@ -260,17 +264,7 @@ impl FromStr for Invite {
         }
         let token = Token::parse(token_str, kind)?;
 
-        let mut fingerprint = None;
-        for pair in query.split('&').filter(|p| !p.is_empty()) {
-            if let Some(value) = pair.strip_prefix("fp=") {
-                if fingerprint.is_some() {
-                    return Err(InviteError::InvalidFingerprint);
-                }
-                fingerprint = Some(value.parse::<Fingerprint>()?);
-            }
-            // Unknown parameters are ignored so newer servers can add fields.
-        }
-        let fingerprint = fingerprint.ok_or(InviteError::MissingFingerprint)?;
+        let fingerprint = fingerprint_in(query)?;
 
         Ok(Self {
             host,
@@ -279,6 +273,121 @@ impl FromStr for Invite {
             token,
             fingerprint,
         })
+    }
+}
+
+/// The `fp` parameter of a link's query.
+fn fingerprint_in(query: &str) -> Result<Fingerprint, InviteError> {
+    let mut fingerprint = None;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        if let Some(value) = pair.strip_prefix("fp=") {
+            if fingerprint.is_some() {
+                return Err(InviteError::InvalidFingerprint);
+            }
+            fingerprint = Some(value.parse::<Fingerprint>()?);
+        }
+        // Unknown parameters are ignored so newer servers can add fields.
+    }
+    fingerprint.ok_or(InviteError::MissingFingerprint)
+}
+
+/// Where an open camp is (ADR-0040): its address and certificate pin, no invite.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Address {
+    /// Server address.
+    pub host: Host,
+    /// Server port.
+    pub port: u16,
+    /// Certificate pin.
+    pub fingerprint: Fingerprint,
+}
+
+impl fmt::Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{SCHEME}://{}", self.host)?;
+        if self.port != DEFAULT_PORT {
+            write!(f, ":{}", self.port)?;
+        }
+        write!(f, "?fp={}", self.fingerprint)
+    }
+}
+
+/// Any `ourcamp://` link: an invite, or an open camp's address.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Link {
+    /// `/join/…` (or a retired `/claim/…`).
+    Invite(Invite),
+    /// No path: an open camp, anyone may come in.
+    Open(Address),
+}
+
+impl Link {
+    /// Server address.
+    #[must_use]
+    pub fn host(&self) -> &Host {
+        match self {
+            Self::Invite(i) => &i.host,
+            Self::Open(a) => &a.host,
+        }
+    }
+
+    /// Server port.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        match self {
+            Self::Invite(i) => i.port,
+            Self::Open(a) => a.port,
+        }
+    }
+
+    /// Certificate pin.
+    #[must_use]
+    pub fn fingerprint(&self) -> Fingerprint {
+        match self {
+            Self::Invite(i) => i.fingerprint,
+            Self::Open(a) => a.fingerprint,
+        }
+    }
+
+    /// The invite's secret; `None` for an open camp.
+    #[must_use]
+    pub fn token(&self) -> Option<&Token> {
+        match self {
+            Self::Invite(i) => Some(&i.token),
+            Self::Open(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for Link {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invite(i) => i.fmt(f),
+            Self::Open(a) => a.fmt(f),
+        }
+    }
+}
+
+impl FromStr for Link {
+    type Err = InviteError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let s = input.trim();
+        let (scheme, rest) = s.split_once("://").ok_or(InviteError::NotAnInvite)?;
+        if !scheme.eq_ignore_ascii_case(SCHEME) {
+            return Err(InviteError::NotAnInvite);
+        }
+        let (path_part, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let (authority, path) = path_part.split_once('/').unwrap_or((path_part, ""));
+        if !path.trim_end_matches('/').is_empty() {
+            return s.parse().map(Self::Invite);
+        }
+        let (host, port) = split_host_port(authority)?;
+        Ok(Self::Open(Address {
+            host,
+            port,
+            fingerprint: fingerprint_in(query)?,
+        }))
     }
 }
 
@@ -501,6 +610,48 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(input.parse::<Invite>().err(), Some(expected), "{input}");
         }
+    }
+
+    #[test]
+    fn an_open_camp_is_its_address_alone() {
+        let open = Address {
+            host: Host::Domain("ourcamp.kz".into()),
+            port: DEFAULT_PORT,
+            fingerprint: fp(),
+        };
+        let s = open.to_string();
+        assert_eq!(s, format!("ourcamp://ourcamp.kz?fp={}", fp()));
+        assert_eq!(s.parse::<Link>().unwrap(), Link::Open(open.clone()));
+        let trailing = format!("  OurCamp://OurCamp.KZ/?fp={} ", fp());
+        assert_eq!(
+            trailing.parse::<Link>().unwrap(),
+            Link::Open(open),
+            "a trailing slash, any case"
+        );
+
+        let custom = format!("ourcamp://192.0.2.15:9000?fp={}", fp());
+        let link = custom.parse::<Link>().unwrap();
+        assert_eq!((link.port(), link.token()), (9000, None));
+        assert_eq!(link.to_string(), custom, "round trip");
+    }
+
+    #[test]
+    fn a_link_with_a_path_is_an_invite() {
+        let invite = join(Host::Ipv4(Ipv4Addr::LOCALHOST), DEFAULT_PORT);
+        let link = invite.to_string().parse::<Link>().unwrap();
+        assert_eq!(link.token(), Some(&invite.token));
+        assert_eq!(link, Link::Invite(invite));
+        assert_eq!(
+            "ourcamp://h.org".parse::<Link>().err(),
+            Some(InviteError::MissingFingerprint),
+            "the pin is never optional"
+        );
+        assert_eq!(
+            format!("ourcamp://h.org/kick?fp={}", fp())
+                .parse::<Link>()
+                .err(),
+            Some(InviteError::InvalidPath)
+        );
     }
 
     #[test]

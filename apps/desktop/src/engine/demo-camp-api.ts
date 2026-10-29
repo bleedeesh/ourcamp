@@ -24,7 +24,7 @@ export class DemoCampApi implements CampApi {
   async preview(link: string): Promise<CampPreview> {
     await delay(300);
     if (!link.trim().toLowerCase().startsWith("ourcamp://")) throw new Error("Это не ссылка OurCamp");
-    return { name: DEMO_CAMP.name, channels: DEMO_CAMP.channels.length, kind: link.includes("/claim/") ? "claim" : "join", usable: !link.includes("/claim/") };
+    return { name: DEMO_CAMP.name, channels: DEMO_CAMP.channels.length, kind: link.includes("/claim/") ? "claim" : link.includes("/join/") ? "join" : "open", usable: !link.includes("/claim/") };
   }
 
   async join(_link: string, name: string): Promise<OpenCamp> {
