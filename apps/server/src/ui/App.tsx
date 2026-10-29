@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState, type KeyboardEvent, type MouseEvent, 
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
-import { copyText } from "@ourcamp/ui/clipboard.ts";
 import { DragGhost, useDragMove } from "@ourcamp/ui/useDragMove.tsx";
 
 import { isTauri, type ServerApi } from "../api.ts";
@@ -17,6 +16,8 @@ import {
   type ServerStatus,
 } from "../status.ts";
 import { CampName, Channels, useAction, type Dragging } from "./CampSettings.tsx";
+import { Select } from "@ourcamp/ui/Select.tsx";
+import { FriendsLink } from "./FriendsLink.tsx";
 import { MemberAvatar } from "./MemberAvatar.tsx";
 import { MemberMenu, type MenuAt } from "./MemberMenu.tsx";
 
@@ -45,32 +46,7 @@ function TitleBar() {
   );
 }
 
-function LinkRow({ label, hint, link }: { label: string; hint: string; link: string }) {
-  const [state, setState] = useState<"idle" | "copied" | string>("idle");
-  const copy = () => {
-    copyText(link).then(
-      () => setState("copied"),
-      (e: unknown) => setState(e instanceof Error ? e.message : String(e)),
-    );
-  };
-  useEffect(() => {
-    if (state !== "copied") return;
-    const timer = setTimeout(() => setState("idle"), 1500);
-    return () => clearTimeout(timer);
-  }, [state]);
-  return (
-    <div className="link">
-      <div className="link__head">
-        <span className="link__label">{label}</span>
-        <button type="button" className="link__copy" onClick={copy}>
-          {state === "copied" ? "Скопировано" : "Скопировать"}
-        </button>
-      </div>
-      <code className="link__value">{link}</code>
-      <span className="link__hint">{state !== "idle" && state !== "copied" ? state : hint}</span>
-    </div>
-  );
-}
+const ROLES = (["member", "moderator", "admin"] as const).map((role) => ({ value: role, label: ROLE_LABEL[role] }));
 
 /**
  * A member and the owner's hand on them: role (ADR-0026), silence and kick (ADR-0028).
@@ -158,18 +134,15 @@ function MemberRow({ member, api, drag, grab, openMenu }: { member: Member; api:
           {member.campfire === null ? "не в голосе" : `в канале «${member.campfire}»`}
         </span>
       </span>
-      <select
-        className="member__role"
-        aria-label={`Роль: ${member.name}`}
-        value={member.role}
-        onChange={(e) => void run(() => api.setRole(member.userId, e.target.value as Role))}
-      >
-        {(["member", "moderator", "admin"] as const).map((role) => (
-          <option key={role} value={role}>
-            {ROLE_LABEL[role]}
-          </option>
-        ))}
-      </select>
+      <span className="member__role">
+        <Select<Role>
+          size="compact"
+          label={`Роль: ${member.name}`}
+          value={member.role}
+          options={ROLES}
+          onChange={(role) => void run(() => api.setRole(member.userId, role))}
+        />
+      </span>
       <span className="member__tools">
         <button
           type="button"
@@ -255,7 +228,7 @@ export function App({ api }: { api: ServerApi }) {
         {phase.kind === "running" && (
           <>
             {status.joinLink !== null && (
-              <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте на сервер." link={status.joinLink} />
+              <FriendsLink link={status.joinLink} reach={status.reach} api={api} />
             )}
 
             <Channels

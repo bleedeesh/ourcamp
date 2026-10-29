@@ -483,18 +483,8 @@
 }
 
 .member__role {
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-s);
-  background: var(--bg-0);
-  color: var(--text-2);
-  font-size: 13px;
-}
-
-.member__role:focus {
-  outline: none;
-  border-color: var(--accent);
+  width: 132px;
+  flex-shrink: 0;
 }
 
 .member__tools {
@@ -766,4 +756,37 @@
   height: 100%;
   display: block;
   object-fit: cover;
+}
+
+/* ---------- Friends address (ADR-0037) ---------- */
+
+.address {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.address__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+
+.address__custom {
+  display: flex;
+  gap: 8px;
+}
+
+.address__hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.address__note {
+  font-size: 12px;
+  color: var(--admin);
 }

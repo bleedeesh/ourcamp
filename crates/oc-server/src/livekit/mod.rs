@@ -158,10 +158,19 @@ fn config_body(signal_port: u16, managed: &ManagedLiveKit, node_ip: Option<Ipv4A
     yaml
 }
 
-/// The address to advertise for media, from the address in the camp's links.
-fn node_ip(public_host: &Host) -> Option<Ipv4Addr> {
+/// The address to advertise for media, from the address in the camp's links. A domain
+/// is resolved once, when LiveKit starts: a home server behind a router (a DDNS name)
+/// must announce its public address, not its network card's (ADR-0037).
+async fn node_ip(public_host: &Host) -> Option<Ipv4Addr> {
     match public_host {
         Host::Ipv4(ip) if !ip.is_unspecified() => Some(*ip),
+        Host::Domain(name) => tokio::net::lookup_host((name.as_str(), 0))
+            .await
+            .ok()?
+            .find_map(|a| match a.ip() {
+                std::net::IpAddr::V4(v4) => Some(v4),
+                std::net::IpAddr::V6(_) => None,
+            }),
         _ => None,
     }
 }
@@ -197,7 +206,7 @@ impl Supervisor {
             free_loopback_port().map_err(|e| format!("no free loopback port: {e}"))?;
         let launch = Arc::new(Launch {
             binary: managed.binary.clone(),
-            config: config_body(signal_port, managed, node_ip(public_host)),
+            config: config_body(signal_port, managed, node_ip(public_host).await),
             keys: format!("{}: {}", keys.api_key, keys.api_secret),
             signal_port,
             media_ports: (managed.rtc_tcp_port, managed.rtc_udp_port),
@@ -348,18 +357,29 @@ mod tests {
     #[test]
     fn config_keeps_signalling_on_loopback_and_media_on_fixed_ports() {
         let managed = ManagedLiveKit::new(PathBuf::from("livekit-server"));
-        let yaml = config_body(
-            50123,
-            &managed,
-            node_ip(&Host::Ipv4(Ipv4Addr::new(192, 168, 1, 2))),
-        );
+        let yaml = config_body(50123, &managed, Some(Ipv4Addr::new(192, 168, 1, 2)));
         assert_eq!(
             yaml,
             "port: 50123\nbind_addresses: [127.0.0.1]\n\
              rtc:\n  tcp_port: 7881\n  udp_port: 7882\n  use_external_ip: false\n  node_ip: 192.168.1.2\n\
              logging:\n  level: info\n"
         );
-        let by_name = config_body(1, &managed, node_ip(&Host::Domain("camp.example".into())));
-        assert!(!by_name.contains("node_ip"), "a domain is left to LiveKit");
+        let unknown = config_body(1, &managed, None);
+        assert!(
+            !unknown.contains("node_ip"),
+            "nothing known is left to LiveKit"
+        );
+    }
+
+    #[tokio::test]
+    async fn media_is_announced_at_the_links_address_a_domain_resolved() {
+        let lan = Ipv4Addr::new(192, 168, 1, 2);
+        assert_eq!(node_ip(&Host::Ipv4(lan)).await, Some(lan));
+        assert_eq!(
+            node_ip(&Host::Domain("localhost".into())).await,
+            Some(Ipv4Addr::LOCALHOST),
+            "a DDNS name: its address now"
+        );
+        assert_eq!(node_ip(&Host::Domain("nothing.invalid".into())).await, None);
     }
 }

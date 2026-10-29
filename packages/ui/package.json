@@ -16,7 +16,9 @@
     "./Icon.tsx": "./src/Icon.tsx",
     "./drag.ts": "./src/drag.ts",
     "./useDragMove.tsx": "./src/useDragMove.tsx",
-    "./context-menu.ts": "./src/context-menu.ts"
+    "./context-menu.ts": "./src/context-menu.ts",
+    "./Select.tsx": "./src/Select.tsx",
+    "./select.ts": "./src/select.ts"
   },
   "peerDependencies": {
     "react": "^19.2.0",

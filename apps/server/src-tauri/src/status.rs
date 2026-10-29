@@ -4,6 +4,8 @@
 use oc_proto::{CampState, Channel, Role};
 use serde::Serialize;
 
+use crate::address::Reach;
+
 /// Where the camp is in its life.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -50,6 +52,9 @@ pub struct ServerStatus {
     pub members: Vec<Member>,
     /// The camp's own LiveKit; `None` while it restarts.
     pub livekit_pid: Option<u32>,
+    /// «Адрес для друзей» (ADR-0037): the choice, what is detected, a note. Filled by the
+    /// window's host on every publish, whatever the phase.
+    pub reach: Reach,
 }
 
 impl ServerStatus {
@@ -63,6 +68,7 @@ impl ServerStatus {
             join_link: None,
             members: Vec::new(),
             livekit_pid: None,
+            reach: Reach::default(),
         }
     }
 
@@ -138,6 +144,7 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
         join_link: Some(base.join_link.clone()),
         members,
         livekit_pid,
+        reach: Reach::default(),
     }
 }
 

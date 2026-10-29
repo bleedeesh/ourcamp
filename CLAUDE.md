@@ -59,7 +59,7 @@
 - `apps/server` — окно сервера лагеря (Tauri, ADR-0023, `pnpm server:window`): `oc-server` в процессе,
   снимок `ServerStatus` (`src-tauri/src/status.rs`) → событие `server://status`; трей, крестик прячет окно.
   UI — `src/ui/App.tsx`, тексты в `src/status.ts` (тесты). Вёрстка в браузере — `server-ui` (порт 5175).
-- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`, `useDragMove.tsx` (перетаскивание людей по каналам, ADR-0029),
+- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`, `useDragMove.tsx` (перетаскивание людей по каналам, ADR-0029), `Select.tsx` (свой список вместо `<select>`, ADR-0038),
   `tauri-events.ts` (исходниками, компилирует Vite приложения).
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав
@@ -80,7 +80,7 @@ Voice/Chat/AFK, `manage.rs`, ADR-0026); модерация из окна ✅ (в
 адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); перенос перетаскиванием в окне и клиенте ✅ (`useDragMove`, `POST /members/{id}/move`, ADR-0029); пинг и качество
 связи в панели (ADR-0030), клиент в трее (ADR-0031), своя иконка окна сервера (ADR-0032); модерация из клиента ✅ (меню участника,
 выгнать/запретить — только младших по рангу, `Role::governs`, ADR-0033); правый клик — свои меню, меню браузера выключено (ADR-0034); дальше M4 по ADR-0035/0036 (раздел «Без центрального
-сервиса» в roadmap): ник и аватарка ✅ (`avatar` на устройстве, `avatars/` — кэш по хешу, `makeAvatar` — canvas), «адрес для друзей» и VPN, шаг 7 (порты), домен и открытые серверы; CLI владельца для headless.
+сервиса» в roadmap): ник и аватарка ✅ (`avatar` на устройстве, `avatars/` — кэш по хешу, `makeAvatar` — canvas), «адрес для друзей» и VPN ✅ (`network.rs` — сети по маршруту, `window.json`, `--host radmin`, ADR-0037), шаг 7 (порты), домен и открытые серверы; CLI владельца для headless.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

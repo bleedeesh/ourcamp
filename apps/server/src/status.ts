@@ -1,5 +1,7 @@
 // The window as data: mirrors `ServerStatus` of src-tauri/src/status.rs (ADR-0023, 0026).
 
+import { NO_REACH, type Reach } from "./address.ts";
+
 /** A member's role (ADR-0026); the owner — whoever runs this window — is no member. */
 export type Role = "member" | "moderator" | "admin";
 
@@ -39,6 +41,8 @@ export interface ServerStatus {
   /** Admins first, then moderators, then by name. */
   members: Member[];
   livekitPid: number | null;
+  /** «Адрес для друзей» (ADR-0037). */
+  reach: Reach;
 }
 
 export const STARTING: ServerStatus = {
@@ -50,6 +54,7 @@ export const STARTING: ServerStatus = {
   channels: [],
   members: [],
   livekitPid: null,
+  reach: NO_REACH,
 };
 
 /** The line under the logo. */

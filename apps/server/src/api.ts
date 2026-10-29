@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 
+import type { AddressChoice, Reach } from "./address.ts";
 import { STARTING, type Channel, type Role, type ServerStatus } from "./status.ts";
 
 /**
@@ -12,6 +13,10 @@ export interface ServerApi {
   status(): Promise<ServerStatus>;
   onStatus(listener: (status: ServerStatus) => void): () => void;
   retry(): Promise<void>;
+  /** Keeps a friends address and restarts the camp with it (ADR-0037). */
+  setAddress(choice: AddressChoice): Promise<void>;
+  /** Looks for networks again (a VPN switched on after the start). */
+  refreshAddresses(): Promise<void>;
   renameCamp(name: string): Promise<void>;
   setRole(userId: string, role: Role): Promise<void>;
   createChannel(name: string, kind: Channel["kind"]): Promise<void>;
@@ -47,6 +52,14 @@ export class TauriServerApi implements ServerApi {
 
   retry(): Promise<void> {
     return invoke("server_retry");
+  }
+
+  setAddress(choice: AddressChoice): Promise<void> {
+    return invoke("server_set_address", { choice });
+  }
+
+  refreshAddresses(): Promise<void> {
+    return invoke("server_refresh_addresses");
   }
 
   renameCamp(name: string): Promise<void> {
@@ -87,8 +100,65 @@ export class TauriServerApi implements ServerApi {
   }
 }
 
+const LAN = { kind: "lan", ip: "192.168.1.2" } as const;
+const RADMIN = { kind: "radmin", ip: "26.12.34.56" } as const;
+const FP = "_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8";
+
+/**
+ * Address situations for laying out «Адрес для друзей» (ADR-0037) in the browser:
+ * `?demo=<name>`. Each is the reach the real window would have, and the host its link
+ * would carry.
+ */
+export const DEMO_ADDRESSES: Record<string, { reach: Reach; host: string }> = {
+  // Radmin installed and on; the owner has not picked anything.
+  radmin: { reach: { choice: { kind: "auto" }, options: [LAN, RADMIN], note: null }, host: LAN.ip },
+  // Radmin picked: the link goes through the tunnel.
+  "radmin-chosen": {
+    reach: { choice: { kind: "detected", which: "radmin" }, options: [LAN, RADMIN], note: null },
+    host: RADMIN.ip,
+  },
+  // Radmin picked, then switched off: the main network meanwhile, and it is said.
+  "radmin-off": {
+    reach: {
+      choice: { kind: "detected", which: "radmin" },
+      options: [LAN],
+      note: "Radmin VPN сейчас не найден — ссылка ведёт по основной сети. Включите его и выберите снова",
+    },
+    host: LAN.ip,
+  },
+  // No VPN at all: a home network only.
+  lan: { reach: { choice: { kind: "auto" }, options: [LAN], note: null }, host: LAN.ip },
+  // Every VPN this window knows about.
+  "all-vpns": {
+    reach: {
+      choice: { kind: "auto" },
+      options: [LAN, RADMIN, { kind: "hamachi", ip: "25.40.11.7" }, { kind: "tailscale", ip: "100.101.2.3" }],
+      note: null,
+    },
+    host: LAN.ip,
+  },
+  // A DDNS name or a static IP typed by the owner.
+  custom: {
+    reach: { choice: { kind: "custom", host: "mycamp.duckdns.org" }, options: [LAN, RADMIN], note: null },
+    host: "mycamp.duckdns.org",
+  },
+  // A hosting server: the public address is on the network card.
+  hosting: { reach: { choice: { kind: "auto" }, options: [{ kind: "public", ip: "85.143.20.11" }], note: null }, host: "85.143.20.11" },
+};
+
 /** Browser-only stand-in (`pnpm --filter @ourcamp/server dev`): a camp held in memory. */
 export class DemoServerApi implements ServerApi {
+  /** `scenario`: one of {@link DEMO_ADDRESSES} (`?demo=`); Radmin on by default. */
+  constructor(scenario: string | null = null) {
+    const { reach, host } = DEMO_ADDRESSES[scenario ?? "radmin"] ?? DEMO_ADDRESSES.radmin!;
+    this.#status = {
+      ...this.#status,
+      reach,
+      address: `${host}:7780`,
+      joinLink: `ourcamp://${host}/join/k3j4h5g6f7d8s9a0?fp=${FP}`,
+    };
+  }
+
   #status: ServerStatus = {
     ...STARTING,
     phase: { kind: "running" },
@@ -107,6 +177,14 @@ export class DemoServerApi implements ServerApi {
       { userId: "u3", name: "Артём", role: "member", campfire: null, campfireId: null, micMuted: false, silenced: true, avatar: null },
     ],
     livekitPid: 18244,
+    reach: {
+      choice: { kind: "auto" },
+      options: [
+        { kind: "lan", ip: "192.168.1.2" },
+        { kind: "radmin", ip: "26.12.34.56" },
+      ],
+      note: null,
+    },
   };
   readonly #listeners = new Set<(status: ServerStatus) => void>();
   #nextId = 1;
@@ -121,6 +199,27 @@ export class DemoServerApi implements ServerApi {
   }
 
   retry(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  setAddress(choice: AddressChoice): Promise<void> {
+    if (choice.kind === "custom" && !/^[a-z0-9.-]+$/i.test(choice.host.trim())) {
+      return Promise.reject(new Error("Введите домен (mycamp.duckdns.org) или IP (85.12.34.56)"));
+    }
+    const host =
+      choice.kind === "custom"
+        ? choice.host.trim().toLowerCase()
+        : (this.#status.reach.options.find((o) => choice.kind === "detected" && o.kind === choice.which) ??
+            this.#status.reach.options[0])?.ip ?? "127.0.0.1";
+    return this.#change({
+      ...this.#status,
+      address: `${host}:7780`,
+      joinLink: `ourcamp://${host}/join/k3j4h5g6f7d8s9a0?fp=_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8`,
+      reach: { ...this.#status.reach, choice, note: null },
+    });
+  }
+
+  refreshAddresses(): Promise<void> {
     return Promise.resolve();
   }
 
