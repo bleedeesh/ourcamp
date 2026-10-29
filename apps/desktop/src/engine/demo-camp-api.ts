@@ -52,6 +52,22 @@ export class DemoCampApi implements CampApi {
     return Promise.resolve();
   }
 
+  #avatar: Uint8Array | null = null;
+
+  profileAvatar(): Promise<Uint8Array | null> {
+    return Promise.resolve(this.#avatar);
+  }
+
+  setProfileAvatar(picture: Uint8Array | null): Promise<void> {
+    this.#avatar = picture;
+    return Promise.resolve();
+  }
+
+  avatar(): Promise<Uint8Array> {
+    // The demo's people have no pictures; they show their initials.
+    return Promise.reject(new Error("no avatar in the demo"));
+  }
+
   kick(): Promise<void> {
     return Promise.resolve();
   }

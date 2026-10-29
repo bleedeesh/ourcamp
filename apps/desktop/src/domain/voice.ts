@@ -223,15 +223,6 @@ export class VoiceController {
     await this.#run(() => this.#engine.setLocalMute(userId, prefs.muted));
   }
 
-  async resetVolume(userId: UserId): Promise<void> {
-    const prefs = this.#volumes.reset(userId);
-    this.#setPrefs(userId, prefs);
-    await this.#run(async () => {
-      await this.#engine.setVolume(userId, prefs.volume);
-      await this.#engine.setLocalMute(userId, false);
-    });
-  }
-
   openVolumeMenu(menu: VolumeMenu): void {
     if (menu.userId === this.store.get().selfId) return;
     this.#setPrefs(menu.userId, this.prefsOf(menu.userId));

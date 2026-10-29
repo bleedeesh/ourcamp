@@ -965,6 +965,83 @@ fn can_publish(token: &str) -> Option<bool> {
         .can_publish
 }
 
+/// ADR-0035: a member sends an avatar; everyone's snapshot names it by hash and members
+/// fetch the same bytes. Only PNG/WebP within the size limit is kept.
+#[tokio::test]
+async fn avatars_are_kept_by_the_camp_and_shown_to_members() {
+    let room: Room = std::sync::Arc::default();
+    let (upstream, _calls) = fake_twirp_logged(room).await;
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let bob = client
+        .login(&DeviceKey::generate(), "Боб", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut bob_events = client.events(&bob).await.unwrap();
+
+    let picture = b"RIFF\x1a\0\0\0WEBPVP8 \x0e\0\0\0lena's face".to_vec();
+    client.set_avatar(&lena, picture.clone()).await.unwrap();
+    let hash = oc_proto::avatar_hash(&picture);
+    state_where(&mut bob_events, |s| {
+        s.members
+            .iter()
+            .any(|m| m.user_id == lena.user_id && m.avatar.as_deref() == Some(hash.as_str()))
+    })
+    .await;
+    assert_eq!(client.avatar(&bob, &lena.user_id).await.unwrap(), picture);
+    assert_eq!(
+        api_error(client.avatar(&bob, &bob.user_id).await),
+        ErrorCode::NotFound,
+        "Боб has none"
+    );
+
+    // The camp decides by the bytes, not the claim: an SVG dressed as a PNG is refused, as
+    // is anything past the limit.
+    assert_eq!(
+        raw_put_avatar(&camp, &lena, "image/png", b"<svg onload=alert(1)>").await,
+        400
+    );
+    let mut huge = b"\x89PNG\r\n\x1a\n".to_vec();
+    huge.resize(oc_proto::MAX_AVATAR_BYTES + 1, 0);
+    assert_eq!(raw_put_avatar(&camp, &lena, "image/png", &huge).await, 400);
+    assert_eq!(
+        client.avatar(&bob, &lena.user_id).await.unwrap(),
+        picture,
+        "kept"
+    );
+
+    client.clear_avatar(&lena).await.unwrap();
+    state_where(&mut bob_events, |s| {
+        s.members
+            .iter()
+            .any(|m| m.user_id == lena.user_id && m.avatar.is_none())
+    })
+    .await;
+}
+
+/// `PUT /api/v1/members/me/avatar` with whatever body: the status code.
+async fn raw_put_avatar(
+    camp: &Camp,
+    session: &oc_camp_client::Session,
+    mime: &str,
+    body: &[u8],
+) -> u16 {
+    support::put_bytes(
+        camp.running.local_addr,
+        camp.running.fingerprint,
+        "/api/v1/members/me/avatar",
+        session.token(),
+        mime,
+        body,
+    )
+    .await
+    .unwrap()
+}
+
 /// ADR-0033: from a client, moderators and admins kick and silence lower ranks only;
 /// LiveKit enforces the silence, the kicked member is told.
 #[tokio::test]

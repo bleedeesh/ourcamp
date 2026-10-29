@@ -61,6 +61,20 @@ class FakeCampApi implements CampApi {
     this.calls.push(`move:${id}:${userId}:${channelId}`);
     return this.failMove ? Promise.reject(new Error(this.failMove)) : Promise.resolve();
   }
+  avatarFetches = 0;
+  profile: Uint8Array | null = null;
+  profileAvatar(): Promise<Uint8Array | null> {
+    return Promise.resolve(this.profile);
+  }
+  setProfileAvatar(picture: Uint8Array | null): Promise<void> {
+    this.calls.push(`avatar:${picture === null ? "none" : picture.length}`);
+    this.profile = picture;
+    return Promise.resolve();
+  }
+  avatar(_id: string, _userId: string, hash: string): Promise<Uint8Array> {
+    this.avatarFetches++;
+    return hash === "bad" ? Promise.reject(new Error("gone")) : Promise.resolve(Uint8Array.of(1, 2, 3));
+  }
   failModeration: string | null = null;
   kick(id: string, userId: string): Promise<void> {
     this.calls.push(`kick:${id}:${userId}`);
@@ -435,4 +449,28 @@ test("kicking and silencing go to the camp; a refusal is said", async () => {
   api.failModeration = "Это может только тот, у кого роль выше";
   await camps.setSilenced("bob", false);
   assert.equal(camps.store.get().error, "Это может только тот, у кого роль выше");
+});
+
+test("your avatar comes from the device and goes back to it", async () => {
+  const { api, camps } = setup();
+  api.profile = Uint8Array.of(9, 9);
+  await camps.start();
+  await tick();
+  assert.deepEqual(camps.store.get().avatar, Uint8Array.of(9, 9), "offered in the join form");
+  await camps.setAvatar(Uint8Array.of(7));
+  await camps.setAvatar(null);
+  assert.deepEqual(api.calls.slice(-2), ["avatar:1", "avatar:none"]);
+  assert.equal(camps.store.get().avatar, null);
+});
+
+test("each avatar is fetched once per hash; a failure is tried again", async () => {
+  const { api, camps } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  await camps.start();
+  await Promise.all([camps.avatarOf("bob", "h1"), camps.avatarOf("bob", "h1")]);
+  assert.equal(api.avatarFetches, 1);
+  await assert.rejects(camps.avatarOf("bob", "bad"));
+  await tick();
+  await assert.rejects(camps.avatarOf("bob", "bad"));
+  assert.equal(api.avatarFetches, 3, "the failed one asked again");
 });

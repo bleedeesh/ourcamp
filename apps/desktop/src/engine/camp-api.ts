@@ -64,6 +64,12 @@ export interface CampApi {
   invite(id: string): Promise<string>;
   /** Moves someone sitting in voice to another campfire; needs the rights (ADR-0029). */
   moveMember(id: string, userId: UserId, channelId: string): Promise<void>;
+  /** Your avatar on this device (ADR-0035), or `null`. */
+  profileAvatar(): Promise<Uint8Array | null>;
+  /** Sets your avatar (a PNG/WebP from `makeAvatar`) or drops it; the open camp gets it at once. */
+  setProfileAvatar(picture: Uint8Array | null): Promise<void>;
+  /** A member's avatar by the hash the snapshot names (cached by the app). */
+  avatar(id: string, userId: UserId, hash: string): Promise<Uint8Array>;
   /** Kicks someone of a lower rank out of the camp, no ban (ADR-0033). */
   kick(id: string, userId: UserId): Promise<void>;
   /** Forbids someone of a lower rank to speak, or lifts it (ADR-0033). */
@@ -93,6 +99,8 @@ export interface CampState {
     readonly role: Role;
     /** Forbidden to speak until lifted (ADR-0028). */
     readonly silenced: boolean;
+    /** Hash of their avatar (ADR-0035); absent without one. */
+    readonly avatar?: string;
   }>;
   readonly presence: ReadonlyArray<{
     readonly channelId: string;

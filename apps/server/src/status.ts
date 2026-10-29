@@ -24,6 +24,8 @@ export interface Member {
   micMuted: boolean;
   /** Forbidden to speak until lifted (ADR-0028). */
   silenced: boolean;
+  /** Hash of their avatar (ADR-0035); null without one. */
+  avatar: string | null;
 }
 
 export interface ServerStatus {

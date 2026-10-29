@@ -133,6 +133,29 @@ pub async fn server_set_silenced(
         .map_err(|e| describe(&e))
 }
 
+/// A member's avatar for the window (ADR-0035): media type and base64url bytes.
+#[derive(serde::Serialize)]
+pub struct AvatarDto {
+    mime: String,
+    data: String,
+}
+
+#[tauri::command]
+pub async fn server_avatar(
+    host: State<'_, Arc<Host>>,
+    user_id: String,
+) -> Result<Option<AvatarDto>, String> {
+    let avatar = manager(&host)
+        .await?
+        .avatar(&user_id)
+        .await
+        .map_err(|e| describe(&e))?;
+    Ok(avatar.map(|(mime, bytes)| AvatarDto {
+        mime,
+        data: oc_proto::encode_bytes(&bytes),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

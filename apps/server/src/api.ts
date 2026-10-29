@@ -22,6 +22,14 @@ export interface ServerApi {
   /** Someone in voice to another campfire. */
   moveMember(userId: string, channelId: string): Promise<void>;
   setSilenced(userId: string, silenced: boolean): Promise<void>;
+  /** A member's avatar as a picture for <img> (ADR-0035); null without one. */
+  avatar(userId: string): Promise<Blob | null>;
+}
+
+/** base64url → bytes (as `oc_proto::encode_bytes` writes them). */
+function decodeBase64Url(text: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(binary, (c) => c.charCodeAt(0));
 }
 
 export function isTauri(): boolean {
@@ -72,6 +80,11 @@ export class TauriServerApi implements ServerApi {
   setSilenced(userId: string, silenced: boolean): Promise<void> {
     return invoke("server_set_silenced", { userId, silenced });
   }
+
+  async avatar(userId: string): Promise<Blob | null> {
+    const avatar = await invoke<{ mime: string; data: string } | null>("server_avatar", { userId });
+    return avatar === null ? null : new Blob([decodeBase64Url(avatar.data)], { type: avatar.mime });
+  }
 }
 
 /** Browser-only stand-in (`pnpm --filter @ourcamp/server dev`): a camp held in memory. */
@@ -89,9 +102,9 @@ export class DemoServerApi implements ServerApi {
     fingerprint: "_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8",
     joinLink: "ourcamp://192.168.1.2/join/k3j4h5g6f7d8s9a0?fp=_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8",
     members: [
-      { userId: "u1", name: "bleedeesh", role: "admin", campfire: "Voice", campfireId: "c0", micMuted: false, silenced: false },
-      { userId: "u2", name: "angelina", role: "moderator", campfire: "Voice", campfireId: "c0", micMuted: true, silenced: false },
-      { userId: "u3", name: "Артём", role: "member", campfire: null, campfireId: null, micMuted: false, silenced: true },
+      { userId: "u1", name: "bleedeesh", role: "admin", campfire: "Voice", campfireId: "c0", micMuted: false, silenced: false, avatar: null },
+      { userId: "u2", name: "angelina", role: "moderator", campfire: "Voice", campfireId: "c0", micMuted: true, silenced: false, avatar: null },
+      { userId: "u3", name: "Артём", role: "member", campfire: null, campfireId: null, micMuted: false, silenced: true, avatar: null },
     ],
     livekitPid: 18244,
   };
@@ -155,6 +168,11 @@ export class DemoServerApi implements ServerApi {
   setSilenced(userId: string, silenced: boolean): Promise<void> {
     const members = this.#status.members.map((m) => (m.userId === userId ? { ...m, silenced } : m));
     return this.#change({ ...this.#status, members });
+  }
+
+  avatar(): Promise<Blob | null> {
+    // The demo's people have no pictures.
+    return Promise.resolve(null);
   }
 
   #change(status: ServerStatus): Promise<void> {

@@ -195,10 +195,6 @@ export function VolumeMenu() {
           <Icon name={prefs.muted ? "speaker" : "speakerOff"} size={16} />
           {prefs.muted ? "Включить звук" : "Заглушить для меня"}
         </button>
-        <button type="button" className="menu-button" onClick={() => void voice.resetVolume(menu.userId)}>
-          <Icon name="reset" size={16} />
-          Сбросить
-        </button>
       </div>
 
       <Moderation key={menu.userId} userId={menu.userId} close={() => voice.closeVolumeMenu()} />

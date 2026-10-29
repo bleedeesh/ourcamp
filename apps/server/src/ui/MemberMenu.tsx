@@ -4,6 +4,7 @@ import { Icon } from "@ourcamp/ui/Icon.tsx";
 import type { ServerApi } from "../api.ts";
 import type { Channel, Member } from "../status.ts";
 import { useAction } from "./CampSettings.tsx";
+import { MemberAvatar } from "./MemberAvatar.tsx";
 
 /** Where the menu opened, and for whom. */
 export interface MenuAt {
@@ -84,9 +85,7 @@ export function MemberMenu({
       style={position ?? { left: at.x, top: at.y, visibility: "hidden" }}
     >
       <div className="context-menu__head">
-        <span className="avatar" style={{ width: 24, height: 24, fontSize: 11 }} aria-hidden="true">
-          {member.name.slice(0, 1).toUpperCase()}
-        </span>
+        <MemberAvatar member={member} size={24} api={api} />
         <span className="context-menu__name">{member.name}</span>
       </div>
       {member.campfireId !== null && targets.length > 0 && (

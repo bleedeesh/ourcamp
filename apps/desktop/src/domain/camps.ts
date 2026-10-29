@@ -33,6 +33,8 @@ export interface CampsState {
   readonly joinError: string | null;
   /** Short confirmation ("link copied"). */
   readonly notice: string | null;
+  /** Your avatar as this device keeps it (ADR-0035): offered in the join form. */
+  readonly avatar: Uint8Array | null;
   readonly error: string | null;
 }
 
@@ -63,6 +65,7 @@ export function campFromOpen(open: OpenCamp): Camp {
         silenced: false,
         role: open.self.role,
         streaming: false,
+  avatar: null,
       },
     },
   };
@@ -110,14 +113,48 @@ export class CampsController {
       joining: false,
       joinError: null,
       notice: null,
+      avatar: null,
       error: null,
     });
   }
 
   /** Loads the camp list and opens the last camp (or shows the first-run screen). */
+  /** Avatars by hash: fetched once per run (the app keeps them on disk as well). */
+  readonly #avatars = new Map<string, Promise<Uint8Array>>();
+
+  /**
+   * A member's avatar of the open camp by the hash its snapshot names. A failure is not
+   * remembered: the next render asks again.
+   */
+  avatarOf(userId: string, hash: string): Promise<Uint8Array> {
+    const { currentId } = this.store.get();
+    if (currentId === null) return Promise.reject(new Error("no camp open"));
+    let picture = this.#avatars.get(hash);
+    if (!picture) {
+      picture = this.#api.avatar(currentId, userId, hash);
+      this.#avatars.set(hash, picture);
+      picture.catch(() => this.#avatars.delete(hash));
+    }
+    return picture;
+  }
+
+  /** Sets your avatar (bytes from `makeAvatar`) or drops it (ADR-0035). */
+  async setAvatar(picture: Uint8Array | null): Promise<void> {
+    try {
+      await this.#api.setProfileAvatar(picture);
+      this.store.patch({ avatar: picture });
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
+  }
+
   async start(): Promise<void> {
     this.#unsubscribeLive ??= this.#api.onLive((live) => this.#onLive(live));
     this.#unsubscribeDirective ??= this.#api.onDirective((d) => void this.#onDirective(d));
+    void this.#api.profileAvatar().then(
+      (avatar) => this.store.patch({ avatar }),
+      () => {},
+    );
     try {
       const list = await this.#api.list();
       this.store.patch({ displayName: list.displayName, camps: list.camps, name: list.displayName });

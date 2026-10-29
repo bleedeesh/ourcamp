@@ -13,6 +13,7 @@ const m = (id: string, name: string, color: string, extra: Partial<Member> = {})
   silenced: false,
   role: "member",
   streaming: false,
+  avatar: null,
   ...extra,
 });
 

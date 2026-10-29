@@ -18,6 +18,8 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 
+/// What every API request but an avatar upload carries.
+const JSON: &str = "application/json";
 use crate::ClientError;
 
 /// Connect + TLS + request + response must finish within this.
@@ -115,7 +117,7 @@ impl Client {
         body: &impl Serialize,
     ) -> Result<(), ClientError> {
         let body = serde_json::to_vec(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
-        self.exchange(Method::POST, path, Some(bearer), Bytes::from(body))
+        self.exchange(Method::POST, path, Some(bearer), Bytes::from(body), JSON)
             .await
             .map(drop)
     }
@@ -128,7 +130,7 @@ impl Client {
         body: &impl Serialize,
     ) -> Result<(), ClientError> {
         let body = serde_json::to_vec(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
-        self.exchange(Method::PUT, path, Some(bearer), Bytes::from(body))
+        self.exchange(Method::PUT, path, Some(bearer), Bytes::from(body), JSON)
             .await
             .map(drop)
     }
@@ -139,7 +141,7 @@ impl Client {
         path: &str,
         bearer: &str,
     ) -> Result<(), ClientError> {
-        self.exchange(Method::DELETE, path, Some(bearer), Bytes::new())
+        self.exchange(Method::DELETE, path, Some(bearer), Bytes::new(), JSON)
             .await
             .map(drop)
     }
@@ -151,8 +153,33 @@ impl Client {
         bearer: Option<&str>,
         body: Bytes,
     ) -> Result<T, ClientError> {
-        let bytes = self.exchange(method, path, bearer, body).await?;
+        let bytes = self.exchange(method, path, bearer, body, JSON).await?;
         serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
+    }
+
+    /// `PUT` of raw bytes (an avatar) with a session; success has no body (`204`).
+    pub(crate) async fn put_bytes(
+        &self,
+        path: &str,
+        bearer: &str,
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> Result<(), ClientError> {
+        self.exchange(
+            Method::PUT,
+            path,
+            Some(bearer),
+            Bytes::from(body),
+            content_type,
+        )
+        .await
+        .map(drop)
+    }
+
+    /// `GET` of raw bytes (an avatar) with a session.
+    pub(crate) async fn get_bytes(&self, path: &str, bearer: &str) -> Result<Bytes, ClientError> {
+        self.exchange(Method::GET, path, Some(bearer), Bytes::new(), JSON)
+            .await
     }
 
     /// One request; the body of a success, or the API error.
@@ -162,12 +189,13 @@ impl Client {
         path: &str,
         bearer: Option<&str>,
         body: Bytes,
+        content_type: &'static str,
     ) -> Result<Bytes, ClientError> {
         let mut request = Request::builder()
             .method(method)
             .uri(path)
             .header(HOST, "ourcamp")
-            .header(CONTENT_TYPE, "application/json");
+            .header(CONTENT_TYPE, content_type);
         if let Some(token) = bearer {
             request = request.header(AUTHORIZATION, format!("Bearer {token}"));
         }

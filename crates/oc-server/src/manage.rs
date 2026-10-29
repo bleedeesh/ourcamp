@@ -8,7 +8,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use oc_proto::{CampEvent, Channel, ChannelKind, Role};
+use oc_proto::{AvatarFormat, CampEvent, Channel, ChannelKind, Role};
 use tokio::sync::{broadcast, Notify};
 
 use crate::rooms::{RoomError, RoomService};
@@ -295,6 +295,46 @@ impl Manager {
                 Ok(())
             }
         }
+    }
+
+    /// Keeps a member's avatar (ADR-0035); everyone's snapshot gets its new hash. `bytes`
+    /// are checked by the caller (size, [`AvatarFormat::sniff`]).
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`], [`ManageError::Store`].
+    pub async fn set_avatar(
+        &self,
+        user_id: &str,
+        format: AvatarFormat,
+        bytes: Vec<u8>,
+    ) -> Result<(), ManageError> {
+        let id = user_id.to_owned();
+        self.change(move |s| {
+            if s.set_avatar(&id, format, &bytes)? {
+                Ok(())
+            } else {
+                Err(ManageError::NotFound)
+            }
+        })
+        .await
+    }
+
+    /// A member's avatar: media type and bytes (the owner's window shows it).
+    ///
+    /// # Errors
+    /// [`ManageError::Store`].
+    pub async fn avatar(&self, user_id: &str) -> Result<Option<(String, Vec<u8>)>, ManageError> {
+        let id = user_id.to_owned();
+        self.read(move |s| Ok(s.avatar(&id)?)).await
+    }
+
+    /// Drops a member's avatar: they show their initial again.
+    ///
+    /// # Errors
+    /// [`ManageError::Store`].
+    pub async fn clear_avatar(&self, user_id: &str) -> Result<(), ManageError> {
+        let id = user_id.to_owned();
+        self.change(move |s| Ok(s.clear_avatar(&id)?)).await
     }
 
     /// Forbids a member to speak until lifted, or lifts it. It holds across reconnects:

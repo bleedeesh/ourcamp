@@ -55,6 +55,51 @@ pub fn decode_bytes(s: &str) -> Option<Vec<u8>> {
     base64url::decode(s)
 }
 
+// ---- avatars (ADR-0035) ----
+
+/// The largest avatar a camp keeps. The app sends a 128×128 picture of a few kilobytes.
+pub const MAX_AVATAR_BYTES: usize = 96 * 1024;
+
+/// Picture formats an avatar may be in: what webviews encode from a canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AvatarFormat {
+    /// `image/webp`: what webviews that can encode it make.
+    Webp,
+    /// `image/png`: the fallback where a webview cannot encode WebP.
+    Png,
+}
+
+impl AvatarFormat {
+    /// The format by the file's own signature, never by what the sender claims.
+    #[must_use]
+    pub fn sniff(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+            Some(Self::Webp)
+        } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            Some(Self::Png)
+        } else {
+            None
+        }
+    }
+
+    /// Its media type.
+    #[must_use]
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Webp => "image/webp",
+            Self::Png => "image/png",
+        }
+    }
+}
+
+/// Names one version of an avatar: base64url of the first 12 bytes of its SHA-256 (16
+/// characters). Snapshots carry it; apps fetch the picture only when it changes.
+#[must_use]
+pub fn avatar_hash(bytes: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    encode_bytes(&digest.as_ref()[..12])
+}
+
 // ---- camp ----
 
 /// What a channel is for (ADR-0026).
@@ -266,6 +311,9 @@ pub struct MemberInfo {
     /// answers = `false`.
     #[serde(default)]
     pub silenced: bool,
+    /// Hash of their avatar ([`avatar_hash`]), `None` without one (ADR-0035).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
 }
 
 /// People at one campfire.
@@ -351,6 +399,27 @@ mod tests {
     }
 
     #[test]
+    fn avatars_are_known_by_their_signature_not_their_claim() {
+        let webp = b"RIFF\x10\0\0\0WEBPVP8 ";
+        assert_eq!(AvatarFormat::sniff(webp), Some(AvatarFormat::Webp));
+        assert_eq!(
+            AvatarFormat::sniff(b"\x89PNG\r\n\x1a\n\0\0"),
+            Some(AvatarFormat::Png)
+        );
+        assert_eq!(AvatarFormat::sniff(b"GIF89a"), None);
+        assert_eq!(
+            AvatarFormat::sniff(b"<svg onload=alert(1)>"),
+            None,
+            "no SVG: it runs code"
+        );
+        assert_eq!(AvatarFormat::sniff(b"RIFF"), None, "too short");
+        let hash = avatar_hash(webp);
+        assert_eq!(hash.len(), 16);
+        assert_eq!(hash, avatar_hash(webp), "stable");
+        assert_ne!(hash, avatar_hash(b"other"));
+    }
+
+    #[test]
     fn kicking_and_silencing_reach_lower_ranks_only() {
         use Role::{Admin, Member, Moderator};
         assert!(!Member.governs(Member));
@@ -413,6 +482,7 @@ mod tests {
                 name: "Лена".into(),
                 role: Role::Moderator,
                 silenced: true,
+                avatar: Some("AAAAAAAAAAAAAAAA".into()),
             }],
             presence: vec![ChannelPresence {
                 channel_id: "c0".into(),
@@ -426,6 +496,7 @@ mod tests {
         assert_eq!(json["type"], "state");
         assert_eq!(json["members"][0]["role"], "moderator");
         assert_eq!(json["members"][0]["silenced"], true);
+        assert_eq!(json["members"][0]["avatar"], "AAAAAAAAAAAAAAAA");
         let moved = serde_json::to_value(CampEvent::Moved {
             channel_id: "c0".into(),
         })

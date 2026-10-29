@@ -257,6 +257,47 @@ impl CampClient {
             .await
     }
 
+    /// Sends this member's avatar (ADR-0035): a PNG or WebP of at most
+    /// [`oc_proto::MAX_AVATAR_BYTES`]; the camp checks both.
+    ///
+    /// # Errors
+    /// [`ErrorCode::BadRequest`] for another format or a bigger file,
+    /// [`ErrorCode::Unauthorized`].
+    pub async fn set_avatar(&self, session: &Session, picture: Vec<u8>) -> Result<(), ClientError> {
+        let format = oc_proto::AvatarFormat::sniff(&picture)
+            .ok_or_else(|| ClientError::Protocol("an avatar is a PNG or WebP".into()))?;
+        self.http
+            .put_bytes(
+                "/api/v1/members/me/avatar",
+                &session.token,
+                format.mime(),
+                picture,
+            )
+            .await
+    }
+
+    /// Drops this member's avatar.
+    ///
+    /// # Errors
+    /// [`ErrorCode::Unauthorized`].
+    pub async fn clear_avatar(&self, session: &Session) -> Result<(), ClientError> {
+        self.http
+            .delete_authorized("/api/v1/members/me/avatar", &session.token)
+            .await
+    }
+
+    /// A member's avatar, as the camp keeps it (check it with
+    /// [`oc_proto::AvatarFormat::sniff`] before showing).
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] without one, [`ErrorCode::Unauthorized`].
+    pub async fn avatar(&self, session: &Session, user_id: &str) -> Result<Vec<u8>, ClientError> {
+        self.http
+            .get_bytes(&format!("/api/v1/members/{user_id}/avatar"), &session.token)
+            .await
+            .map(|b| b.to_vec())
+    }
+
     /// Kicks someone of a lower rank ([`Role::governs`], ADR-0033); no ban.
     ///
     /// # Errors

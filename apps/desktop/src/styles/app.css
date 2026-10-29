@@ -318,6 +318,94 @@
   box-shadow: var(--ring-speaking);
 }
 
+/* A member's own picture (ADR-0035) fills the circle; the ring stays on the circle. */
+.avatar {
+  overflow: hidden;
+}
+
+.avatar__picture {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
+/* ---------- Avatar in the join form ---------- */
+
+.avatar-picker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 4px 0 2px;
+}
+
+.avatar-picker__button {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.avatar-picker__button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.avatar-picker__initial {
+  font-family: var(--font-head);
+  font-weight: 800;
+  font-size: 28px;
+  color: var(--bg-0);
+}
+
+.avatar-picker__badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: 0 0 0 3px var(--bg-1);
+}
+
+.avatar-picker__text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.avatar-picker__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
 /* ---------- Bottom panel ---------- */
 
 .panel {

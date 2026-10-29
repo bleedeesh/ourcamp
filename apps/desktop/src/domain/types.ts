@@ -19,6 +19,8 @@ export interface Member {
   readonly role: Role;
   /** The member is streaming their screen. */
   readonly streaming: boolean;
+  /** Hash of their avatar on the camp (ADR-0035); `null`: the initial instead. */
+  readonly avatar: string | null;
 }
 
 /** A voice channel ("костёр"). */

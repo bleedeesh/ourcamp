@@ -6,6 +6,7 @@ import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { DROP_ATTRIBUTE, dropTarget } from "@ourcamp/ui/drag.ts";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { DragGhost, useDragMove, type Drag, type Draggable } from "@ourcamp/ui/useDragMove.tsx";
+import { useAvatarUrl } from "./avatar-url.ts";
 import { useCampsController } from "./camps-context.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
@@ -141,14 +142,16 @@ function MemberRow({ userId, channelId, drag, grab }: { userId: UserId; channelI
   );
 }
 
+/** A member's picture (ADR-0035), or their initial on their colour until it arrives. */
 export function Avatar({ member, size, speaking }: { member: Member; size: number; speaking: boolean }) {
+  const picture = useAvatarUrl(member.id, member.avatar);
   return (
     <span
       className="avatar"
       data-speaking={speaking || undefined}
       style={{ width: size, height: size, background: member.color, fontSize: Math.round(size * 0.46) }}
     >
-      {member.name.slice(0, 1)}
+      {picture === null ? member.name.slice(0, 1) : <img className="avatar__picture" src={picture} alt="" draggable={false} />}
     </span>
   );
 }

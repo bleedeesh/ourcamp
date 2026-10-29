@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
@@ -14,9 +15,9 @@ use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
-    login_message, user_id, verify, CampEvent, CampInfo, CampState, Challenge, CurrentInvite,
-    ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse, MoveMember, Role,
-    RoomToken, SetSilenced, API_VERSION, PUBLIC_KEY_LEN,
+    login_message, user_id, verify, AvatarFormat, CampEvent, CampInfo, CampState, Challenge,
+    CurrentInvite, ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse,
+    MoveMember, Role, RoomToken, SetSilenced, API_VERSION, MAX_AVATAR_BYTES, PUBLIC_KEY_LEN,
 };
 
 use tokio::sync::{broadcast, watch};
@@ -185,6 +186,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/members/me", delete(leave))
+        .route(
+            "/api/v1/members/me/avatar",
+            put(put_avatar).delete(delete_avatar),
+        )
+        .route("/api/v1/members/{id}/avatar", get(avatar))
         .route("/api/v1/members/{id}", delete(kick))
         .route("/api/v1/members/{id}/move", post(move_member))
         .route("/api/v1/members/{id}/silenced", put(set_silenced))
@@ -395,6 +401,86 @@ async fn authorize(
     } else {
         Err(ApiError(ErrorCode::Forbidden))
     }
+}
+
+/// The member behind the request's session.
+async fn session_member(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<crate::store::Member, ApiError> {
+    let hash = session_hash(headers)?;
+    state
+        .with_store(move |s| s.session_member(&hash))
+        .await?
+        .ok_or(ApiError(ErrorCode::Unauthorized))
+}
+
+/// `PUT /api/v1/members/me/avatar`: the member's own avatar, the picture itself as the
+/// body (ADR-0035). PNG or WebP by its signature, at most `MAX_AVATAR_BYTES`; anything
+/// else is `bad_request` — the camp never decodes it, the apps' webviews do.
+async fn put_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let member = session_member(&state, &headers).await?;
+    let format = (body.len() <= MAX_AVATAR_BYTES)
+        .then(|| AvatarFormat::sniff(&body))
+        .flatten()
+        .ok_or(ApiError(ErrorCode::BadRequest))?;
+    state
+        .manager
+        .set_avatar(&member.user_id, format, body.to_vec())
+        .await
+        .map_err(manage_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/v1/members/me/avatar`: back to the initial.
+async fn delete_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let member = session_member(&state, &headers).await?;
+    state
+        .manager
+        .clear_avatar(&member.user_id)
+        .await
+        .map_err(manage_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/v1/members/{id}/avatar`: a member's avatar, for members only. Apps keep it
+/// by the hash the snapshot names and ask again only when that changes.
+async fn avatar(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    session_member(&state, &headers).await?;
+    let (mime, data) = state
+        .with_store(move |s| s.avatar(&user_id))
+        .await?
+        .ok_or(ApiError(ErrorCode::NotFound))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, mime),
+            // The type is ours (from the signature); no guessing a script out of it.
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
+        ],
+        data,
+    )
+        .into_response())
+}
+
+fn manage_error(e: ManageError) -> ApiError {
+    ApiError(match e {
+        ManageError::NotFound => ErrorCode::NotFound,
+        other => {
+            eprintln!("[oc-server] {other}");
+            ErrorCode::Internal
+        }
+    })
 }
 
 /// `DELETE /api/v1/members/{id}`: a moderator or admin kicks someone of a lower rank —

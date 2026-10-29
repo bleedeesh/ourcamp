@@ -11,6 +11,7 @@ const member = (name: string, campfire: string | null = null): Member => ({
   campfireId: campfire,
   micMuted: false,
   silenced: false,
+  avatar: null,
 });
 
 test("headline follows the phase", () => {
