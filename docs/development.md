@@ -176,6 +176,15 @@ target\debug\ourcamp-desktop.exe
 5. «Выгнать» → подтвердить: клиент выходит из голоса, сервер пропадает из его списка, тост
    «Вас выгнали с сервера …». Зайти снова по ссылке для друзей — пускает.
 
+### Что проверить: сервер на Linux (ADR-0043)
+
+Установку под systemd CI проверяет сам. Руками — на настоящем VPS:
+
+1. Артефакт `ourcamp-server-linux-x64` из CI → на сервер, `tar xzf`, `sudo ./install.sh --host <IP>`.
+2. `sudo ourcamp status` → ссылка; клиент заходит, голос идёт (порты TCP 7780, 7881, UDP 7882 открыты).
+3. `sudo reboot` → сервер поднялся сам, ссылка та же.
+4. Новый архив, `sudo ./install.sh` → настройки и люди на месте.
+
 ### Что проверить: домен с сертификатом (ADR-0042)
 
 Нужен сервер с доменом и `certbot` (или любой сертификат от центра, которому доверяет ПК).
@@ -306,6 +315,13 @@ target\debug\ourcamp-desktop.exe
 
 Если звука нет: в консоли `pnpm dev` будет строка `[oc-audio] output: <устройство> @ <частота> Hz`
 или причина ошибки; она же показывается в окне.
+
+## Сервер для Linux (ADR-0043)
+
+`pnpm server:pack` на Linux (после `pnpm livekit:fetch`; нужны `musl-tools` и
+`rustup target add x86_64-unknown-linux-musl`) → `target/pack/ourcamp-server-<версия>-linux-x64.tar.gz`.
+Обычно его собирает CI (задача `server-linux`, артефакты x64 и arm64). Как ставить —
+`packaging/linux/README.txt` (он же в архиве).
 
 ## Сервер лагеря (M3)
 

@@ -385,12 +385,29 @@ async fn main() -> ExitCode {
         println!("Для друзей: {}", running.links.join);
     }
 
-    if let Err(e) = tokio::signal::ctrl_c().await {
+    if let Err(e) = stop_requested().await {
         eprintln!("oc-server: cannot wait for Ctrl+C: {e}");
     }
     eprintln!("[oc-server] stopping");
     running.stop().await;
     ExitCode::SUCCESS
+}
+
+/// Ctrl+C in a terminal, or SIGTERM on unix: what `systemctl stop` and `docker stop`
+/// send (ADR-0043). Either way the camp stops cleanly — its LiveKit, the router's ports,
+/// the owner's control file.
+async fn stop_requested() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            pressed = tokio::signal::ctrl_c() => pressed,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }
 
 #[cfg(test)]
