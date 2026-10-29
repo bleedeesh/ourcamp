@@ -1,10 +1,11 @@
-//! LiveKit signalling over the camp's pinned TLS (ADR-0014, ADR-0019).
+//! LiveKit signalling over the camp's trusted TLS (ADR-0014, ADR-0019, ADR-0042).
 //!
 //! The LiveKit SDK opens its signalling WebSocket (and an occasional `validate` HTTP
 //! probe) through a process-wide transport from `livekit-net`. [`install`] replaces it
 //! with [`PinnedTransport`]: every `wss://`/`https://` connection must go to an address
-//! whose certificate fingerprint was registered with [`pin`] — anything else is refused
-//! (fail closed). Media keys travel in that signalling, so pinning it protects the audio.
+//! registered with [`trust`] — its pinned certificate, or a domain checked by an
+//! authority; anything else is refused (fail closed). Media keys travel in that
+//! signalling, so this protects the audio.
 
 use std::collections::HashMap;
 use std::io;
@@ -22,7 +23,7 @@ use livekit_net::{
     Header, HttpClient, HttpMethod, HttpResponse, TransportError, WsClient, WsConnectResult,
     WsConnection,
 };
-use oc_invite::Fingerprint;
+use oc_tls::Trust;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -31,22 +32,24 @@ use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use tokio_tungstenite::WebSocketStream;
 
-/// `host:port` (lower-case, as in the URL) → certificate fingerprint.
-static PINS: LazyLock<RwLock<HashMap<String, Fingerprint>>> = LazyLock::new(RwLock::default);
+/// `host:port` (lower-case, as in the URL) → how that camp is trusted.
+static CAMPS: LazyLock<RwLock<HashMap<String, Trust>>> = LazyLock::new(RwLock::default);
 
-/// Trusts `fingerprint` for `authority` (`host:port` as it appears in URLs, IPv6 in
-/// brackets). Re-pinning an address replaces its fingerprint.
-pub fn pin(authority: &str, fingerprint: Fingerprint) {
-    PINS.write()
+/// Lets the SDK connect to `authority` (`host:port` as it appears in URLs, IPv6 in
+/// brackets), trusting it by `trust`. Registering an address again replaces it.
+pub fn trust(authority: &str, trust: Trust) {
+    CAMPS
+        .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(authority.to_ascii_lowercase(), fingerprint);
+        .insert(authority.to_ascii_lowercase(), trust);
 }
 
-fn pinned(authority: &str) -> Option<Fingerprint> {
-    PINS.read()
+fn trusted(authority: &str) -> Option<Trust> {
+    CAMPS
+        .read()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&authority.to_ascii_lowercase())
-        .copied()
+        .cloned()
 }
 
 /// Whether unencrypted `ws://`/`http://` to loopback is allowed: the local LiveKit of
@@ -102,12 +105,12 @@ impl PinnedTransport {
         let io_error = |e: io::Error| refused(e.to_string());
 
         if secure {
-            let fingerprint = pinned(&authority).ok_or_else(|| {
+            let trust = trusted(&authority).ok_or_else(|| {
                 refused(format!(
                     "{authority} is not a known camp; refusing to connect"
                 ))
             })?;
-            let tls = crate::http::connect_pinned(&authority, fingerprint)
+            let tls = crate::http::connect(&authority, &trust)
                 .await
                 .map_err(io_error)?;
             Ok(Box::new(tls))
@@ -346,11 +349,20 @@ mod tests {
     }
 
     #[test]
-    fn pins_are_case_insensitive_and_replaceable() {
-        pin("Camp.Example:7780", Fingerprint([1; 32]));
-        assert_eq!(pinned("camp.example:7780"), Some(Fingerprint([1; 32])));
-        pin("camp.example:7780", Fingerprint([2; 32]));
-        assert_eq!(pinned("CAMP.EXAMPLE:7780"), Some(Fingerprint([2; 32])));
-        assert_eq!(pinned("camp.example:7781"), None, "port is part of the pin");
+    fn camps_are_case_insensitive_and_replaceable() {
+        let pin = |n| Some(oc_invite::Fingerprint([n; 32]));
+        trust("Camp.Example:7780", Trust::of(pin(1)));
+        assert_eq!(trusted("camp.example:7780").and_then(|t| t.pin()), pin(1));
+        trust("camp.example:7780", Trust::of(pin(2)));
+        assert_eq!(trusted("CAMP.EXAMPLE:7780").and_then(|t| t.pin()), pin(2));
+        assert!(
+            trusted("camp.example:7781").is_none(),
+            "port is part of the address"
+        );
+        trust("ourcamp.kz:7780", Trust::of(None));
+        assert!(
+            matches!(trusted("ourcamp.kz:7780"), Some(Trust::Authorities(_))),
+            "a domain camp, by its authority"
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Minimal HTTPS: one pinned TLS connection per request (logins, token requests and
+//! Minimal HTTPS: one TLS connection per request (logins, token requests and
 //! LiveKit's `validate` probe are rare), HTTP/1.1 via `hyper`.
 
 use std::io;
@@ -9,13 +9,12 @@ use http_body_util::{BodyExt, Full};
 use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST};
 use hyper::{HeaderMap, Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
-use oc_invite::Fingerprint;
 use oc_proto::ErrorBody;
+use oc_tls::Trust;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
-use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::TlsConnector;
 
 /// What every API request but an avatar upload carries.
@@ -27,28 +26,30 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// Responses are small; refuse anything that is not.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
-/// TCP + TLS to `authority`, trusting only the certificate with `fingerprint`.
-pub(crate) async fn connect_pinned(
-    authority: &str,
-    fingerprint: Fingerprint,
-) -> io::Result<TlsStream<TcpStream>> {
+/// TCP + TLS to `authority` (`host:port`), trusting only what `trust` allows: the pinned
+/// certificate (ADR-0014), or an authority's for the host's name (ADR-0042).
+pub(crate) async fn connect(authority: &str, trust: &Trust) -> io::Result<TlsStream<TcpStream>> {
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host);
+    let name = trust
+        .server_name(host)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let tcp = TcpStream::connect(authority).await?;
     tcp.set_nodelay(true)?;
-    // The name is only sent as SNI; the pin replaces name checks (ADR-0014).
-    let name = ServerName::try_from("ourcamp").expect("static name");
-    TlsConnector::from(oc_tls::client_config(fingerprint))
+    TlsConnector::from(trust.client_config())
         .connect(name, tcp)
         .await
 }
 
-/// One request over a fresh pinned connection; returns status, headers and body.
+/// One request over a fresh connection; returns status, headers and body.
 pub(crate) async fn send(
     authority: &str,
-    fingerprint: Fingerprint,
+    trust: &Trust,
     request: Request<Full<Bytes>>,
 ) -> io::Result<(StatusCode, HeaderMap, Bytes)> {
     let exchange = async {
-        let tls = connect_pinned(authority, fingerprint).await?;
+        let tls = connect(authority, trust).await?;
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
             .await
             .map_err(io::Error::other)?;
@@ -74,15 +75,12 @@ pub(crate) async fn send(
 /// JSON API client for one camp.
 pub(crate) struct Client {
     pub(crate) authority: String,
-    fingerprint: Fingerprint,
+    pub(crate) trust: Trust,
 }
 
 impl Client {
-    pub(crate) fn new(authority: String, fingerprint: Fingerprint) -> Self {
-        Self {
-            authority,
-            fingerprint,
-        }
+    pub(crate) fn new(authority: String, trust: Trust) -> Self {
+        Self { authority, trust }
     }
 
     pub(crate) async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
@@ -202,7 +200,7 @@ impl Client {
         let request = request
             .body(Full::new(body))
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let (status, _, bytes) = send(&self.authority, self.fingerprint, request).await?;
+        let (status, _, bytes) = send(&self.authority, &self.trust, request).await?;
 
         if status.is_success() {
             Ok(bytes)

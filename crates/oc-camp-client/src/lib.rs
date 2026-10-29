@@ -4,7 +4,8 @@
 //!
 //! * [`DeviceKey`] — the Ed25519 key that *is* the user until accounts exist (ADR-0015);
 //! * [`CampClient`] — HTTPS to the camp, trusting only the certificate pinned in the
-//!   invite link (`oc-tls`), and the API calls on top.
+//!   invite link, or an authority's certificate for the camp's domain (`oc-tls`), and
+//!   the API calls on top.
 //!
 //! ```no_run
 //! # async fn demo(link: &str) -> Result<(), oc_camp_client::ClientError> {
@@ -28,11 +29,12 @@ pub mod transport;
 use std::fmt;
 use std::io;
 
-use oc_invite::{Fingerprint, Host, Invite, InviteKind, Token};
+use oc_invite::{Host, Invite, InviteKind, Token};
 use oc_proto::{
-    CampInfo, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest, LoginResponse,
-    MoveMember, Role, RoomToken, SetSilenced, API_VERSION,
+    CampInfo, CampKey, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest,
+    LoginResponse, MoveMember, Role, RoomToken, SetSilenced, API_VERSION,
 };
+pub use oc_tls::Trust;
 
 pub use device::DeviceKey;
 pub use events::CampEvents;
@@ -59,6 +61,40 @@ impl fmt::Display for ClientError {
 }
 
 impl std::error::Error for ClientError {}
+
+/// What was wrong with the camp's certificate, for a message a person understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateProblem {
+    /// Not the certificate pinned in the link: an impostor, or a reinstalled camp.
+    NotPinned,
+    /// A domain's certificate that has run out (the owner did not renew it).
+    Expired,
+    /// A certificate for another name: an impostor, or a mistake in the camp's setup.
+    WrongName,
+    /// Not from an authority this computer trusts (self-signed, or an impostor).
+    UnknownIssuer,
+    /// Anything else wrong with it.
+    Other,
+}
+
+impl ClientError {
+    /// The certificate problem behind a failed connection, if that is what it was.
+    #[must_use]
+    pub fn certificate_problem(&self) -> Option<CertificateProblem> {
+        use tokio_rustls::rustls::{CertificateError as E, Error};
+        let Self::Io(e) = self else { return None };
+        let Error::InvalidCertificate(problem) = e.get_ref()?.downcast_ref::<Error>()? else {
+            return None;
+        };
+        Some(match problem {
+            E::ApplicationVerificationFailure => CertificateProblem::NotPinned,
+            E::Expired | E::ExpiredContext { .. } => CertificateProblem::Expired,
+            E::NotValidForName | E::NotValidForNameContext { .. } => CertificateProblem::WrongName,
+            E::UnknownIssuer => CertificateProblem::UnknownIssuer,
+            _ => CertificateProblem::Other,
+        })
+    }
+}
 
 impl From<io::Error> for ClientError {
     fn from(e: io::Error) -> Self {
@@ -103,30 +139,33 @@ impl fmt::Debug for Session {
     }
 }
 
-/// One camp, reached over pinned TLS.
+/// One camp, reached over TLS it is trusted by.
 pub struct CampClient {
     http: http::Client,
     host: Host,
     port: u16,
-    fingerprint: Fingerprint,
 }
 
 impl CampClient {
     /// The camp an invite link points to.
     #[must_use]
     pub fn new(invite: &Invite) -> Self {
-        Self::at(&invite.host, invite.port, invite.fingerprint)
+        Self::at(&invite.host, invite.port, Trust::of(invite.fingerprint))
     }
 
-    /// A camp by address and certificate fingerprint.
+    /// A camp by address, trusted by `trust` (usually [`Trust::of`] the link's pin).
     #[must_use]
-    pub fn at(host: &Host, port: u16, fingerprint: Fingerprint) -> Self {
+    pub fn at(host: &Host, port: u16, trust: Trust) -> Self {
         Self {
-            http: http::Client::new(format!("{host}:{port}"), fingerprint),
+            http: http::Client::new(format!("{host}:{port}"), trust),
             host: host.clone(),
             port,
-            fingerprint,
         }
+    }
+
+    /// What the login signature is bound to: what this client checks the camp by.
+    fn key(&self) -> (Option<oc_invite::Fingerprint>, String) {
+        (self.http.trust.pin(), self.host.to_string())
     }
 
     /// Name and channels. Fails with [`ClientError::Protocol`] for a server speaking a
@@ -165,7 +204,15 @@ impl CampClient {
         invite: Option<&str>,
     ) -> Result<Session, ClientError> {
         let Challenge { nonce } = self.http.post("/api/v1/auth/challenge", None, &()).await?;
-        let signature = key.sign(&oc_proto::login_message(&self.fingerprint, &nonce));
+        let (pin, host) = self.key();
+        let camp = pin.as_ref().map_or(
+            CampKey::Named {
+                host: &host,
+                port: self.port,
+            },
+            CampKey::Pinned,
+        );
+        let signature = key.sign(&oc_proto::login_message(camp, &nonce));
         let request = LoginRequest {
             public_key: oc_proto::encode_bytes(&key.public_key()),
             name: name.to_owned(),
@@ -187,11 +234,11 @@ impl CampClient {
     }
 
     /// Where this camp's voice server is: the camp itself (`/rtc` on the same port,
-    /// ADR-0019). Also pins the camp's certificate for the LiveKit transport, so the SDK
-    /// will connect there and nowhere else (see [`transport`]).
+    /// ADR-0019). Also registers how the camp is trusted with the LiveKit transport, so
+    /// the SDK will connect there and nowhere else (see [`transport`]).
     #[must_use]
     pub fn voice_url(&self) -> String {
-        transport::pin(&self.http.authority, self.fingerprint);
+        transport::trust(&self.http.authority, self.http.trust.clone());
         format!("wss://{}", self.http.authority)
     }
 
@@ -200,7 +247,7 @@ impl CampClient {
     /// # Errors
     /// [`ErrorCode::Unauthorized`] for an expired session; network/TLS errors.
     pub async fn events(&self, session: &Session) -> Result<CampEvents, ClientError> {
-        CampEvents::connect(&self.http.authority, self.fingerprint, &session.token).await
+        CampEvents::connect(&self.http.authority, &self.http.trust, &session.token).await
     }
 
     /// The camp's current friends link, for "copy invite".
@@ -219,7 +266,7 @@ impl CampClient {
             port: self.port,
             kind: InviteKind::Join,
             token,
-            fingerprint: self.fingerprint,
+            fingerprint: self.http.trust.pin(),
         })
     }
 

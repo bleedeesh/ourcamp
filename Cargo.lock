@@ -3520,6 +3520,7 @@ dependencies = [
  "rcgen",
  "ring",
  "rustls",
+ "rustls-native-certs",
 ]
 
 [[package]]

@@ -1,8 +1,8 @@
 //! `GET /api/v1/events`: the camp's live state over a pinned WebSocket (ADR-0021).
 
 use futures_util::{SinkExt, StreamExt};
-use oc_invite::Fingerprint;
 use oc_proto::{CampEvent, ErrorCode};
+use oc_tls::Trust;
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -20,7 +20,7 @@ pub struct CampEvents {
 impl CampEvents {
     pub(crate) async fn connect(
         authority: &str,
-        fingerprint: Fingerprint,
+        trust: &Trust,
         session: &str,
     ) -> Result<Self, ClientError> {
         let protocol = |e: WsError| ClientError::Protocol(e.to_string());
@@ -31,7 +31,7 @@ impl CampEvents {
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
         request.headers_mut().insert("authorization", bearer);
 
-        let tls = crate::http::connect_pinned(authority, fingerprint).await?;
+        let tls = crate::http::connect(authority, trust).await?;
         match tokio_tungstenite::client_async(request, tls).await {
             Ok((ws, _)) => Ok(Self { ws }),
             // Refused before the upgrade: the server's status says why.

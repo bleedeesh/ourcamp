@@ -83,3 +83,42 @@ pub async fn put_bytes(
     let text = String::from_utf8_lossy(&response);
     Ok(text.split(' ').nth(1).unwrap().parse().unwrap())
 }
+
+#[allow(
+    dead_code,
+    reason = "tests/server.rs uses it, tests/managed.rs does not"
+)]
+/// A made-up certificate authority, and the full chain it issued for `domain`, written
+/// into `dir` as certbot writes it (ADR-0042). The roots go to the client under test.
+pub fn issue_certificate(
+    dir: &std::path::Path,
+    domain: &str,
+) -> (
+    std::sync::Arc<rustls::RootCertStore>,
+    oc_server::CertificateFiles,
+) {
+    use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
+    let ca = || {
+        let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params
+    };
+    let root = CertifiedIssuer::self_signed(ca(), KeyPair::generate().unwrap()).unwrap();
+    let intermediate =
+        CertifiedIssuer::signed_by(ca(), KeyPair::generate().unwrap(), &root).unwrap();
+    let key = KeyPair::generate().unwrap();
+    let leaf = CertificateParams::new(vec![domain.to_owned()])
+        .unwrap()
+        .signed_by(&key, &intermediate)
+        .unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    let files = oc_server::CertificateFiles {
+        chain: dir.join("fullchain.pem"),
+        key: dir.join("privkey.pem"),
+    };
+    std::fs::write(&files.chain, leaf.pem() + &intermediate.pem()).unwrap();
+    std::fs::write(&files.key, key.serialize_pem()).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(root.der().clone()).unwrap();
+    (std::sync::Arc::new(roots), files)
+}

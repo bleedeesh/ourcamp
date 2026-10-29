@@ -493,6 +493,7 @@ mod tests {
             public_port: None,
             camp_name: name.into(),
             router: None,
+            certificate: None,
             livekit: oc_server::LiveKit {
                 url: "ws://127.0.0.1:7880".into(),
                 api_key: "devkey".into(),

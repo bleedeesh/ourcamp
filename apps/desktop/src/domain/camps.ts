@@ -45,7 +45,17 @@ export const NO_CAMP: Camp = { id: "", name: "", short: "", color: "#444444", ch
  * `ourcamp://host[:port]/join|claim/<token>?…fp=<43>`, or an open camp's
  * `ourcamp://host[:port][/]?…fp=<43>` (ADR-0040) — enough to ask the camp about it.
  */
-const LINK_SHAPE = /^ourcamp:\/\/[^/?\s]+(\/(join|claim)\/[0-9a-z]+)?\/?\?\S*fp=[A-Za-z0-9_-]{43}/i;
+const PINNED_SHAPE = /^ourcamp:\/\/[^/?\s]+(\/(join|claim)\/[0-9a-z]+)?\/?\?\S*fp=[A-Za-z0-9_-]{43}/i;
+
+/**
+ * A domain with a certificate from an authority needs no pin (ADR-0042):
+ * `ourcamp://ourcamp.kz[:port]`, or with a whole `/join/<16>` token. The name must end in
+ * a top-level domain of letters, so an IP address (which needs its pin) never fits.
+ */
+const DOMAIN_SHAPE =
+  /^ourcamp:\/\/([a-z0-9-]+\.)+[a-z]{2,}(:\d{1,5})?(\/(join\/[0-9a-z]{16}|claim\/[0-9a-z]{26}))?\/?(\?\S*)?$/i;
+
+const looksComplete = (link: string): boolean => PINNED_SHAPE.test(link) || DOMAIN_SHAPE.test(link);
 
 // The badge is recomputed on live renames too (roster.ts), so it lives there.
 export { campShort };
@@ -196,7 +206,7 @@ export class CampsController {
     if (!trimmed.toLowerCase().startsWith("ourcamp://")) {
       return this.store.patch({ check: { state: "error", message: "Это не ссылка OurCamp — она начинается с ourcamp://" } });
     }
-    if (!LINK_SHAPE.test(trimmed)) {
+    if (!looksComplete(trimmed)) {
       // Still being typed or cut short; say nothing until it could be complete.
       return this.store.patch({ check: { state: "idle" } });
     }

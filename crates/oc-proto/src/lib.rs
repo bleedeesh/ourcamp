@@ -18,13 +18,36 @@ const LOGIN_CONTEXT: &str = "ourcamp-login-v1";
 /// Length of an Ed25519 public key.
 pub const PUBLIC_KEY_LEN: usize = 32;
 
-/// The bytes a device signs to log into the camp whose certificate is `camp`.
+/// Which camp a login is for: what the client checked the camp's certificate against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CampKey<'a> {
+    /// The pinned self-signed certificate (a link with `fp`).
+    Pinned(&'a Fingerprint),
+    /// A domain whose certificate an authority issued (ADR-0042), and the port.
+    Named {
+        /// The domain, as in the link (any case).
+        host: &'a str,
+        /// The camp's port.
+        port: u16,
+    },
+}
+
+/// The bytes a device signs to log into `camp`.
 ///
-/// Binding to the camp's fingerprint means a signature collected by one camp is
-/// worthless at any other (ADR-0018).
+/// Binding to what the client verified means a signature collected by one camp is
+/// worthless at any other (ADR-0018): an impostor has neither the pinned certificate's
+/// key nor an authority's certificate for the domain. A fingerprint is base64url and
+/// never contains `:`, so the two kinds cannot be mistaken for each other.
 #[must_use]
-pub fn login_message(camp: &Fingerprint, nonce: &str) -> Vec<u8> {
-    format!("{LOGIN_CONTEXT}\n{camp}\n{nonce}").into_bytes()
+pub fn login_message(camp: CampKey<'_>, nonce: &str) -> Vec<u8> {
+    match camp {
+        CampKey::Pinned(fp) => format!("{LOGIN_CONTEXT}\n{fp}\n{nonce}"),
+        CampKey::Named { host, port } => format!(
+            "{LOGIN_CONTEXT}\nname:{}:{port}\n{nonce}",
+            host.to_ascii_lowercase()
+        ),
+    }
+    .into_bytes()
 }
 
 /// Stable user id derived from a device public key: Crockford base32 of the first 10
@@ -444,19 +467,30 @@ mod tests {
 
     #[test]
     fn login_message_is_domain_separated_and_bound_to_the_camp() {
-        let a = login_message(&Fingerprint([1; 32]), "n");
-        let b = login_message(&Fingerprint([2; 32]), "n");
+        let a = login_message(CampKey::Pinned(&Fingerprint([1; 32])), "n");
+        let b = login_message(CampKey::Pinned(&Fingerprint([2; 32])), "n");
         assert!(a.starts_with(b"ourcamp-login-v1\n"));
         assert_ne!(a, b);
+        let named = |host, port| login_message(CampKey::Named { host, port }, "n");
+        assert_eq!(
+            named("OurCamp.kz", 7780),
+            b"ourcamp-login-v1\nname:ourcamp.kz:7780\nn"
+        );
+        assert_ne!(
+            named("ourcamp.kz", 7780),
+            named("ourcamp.kz", 7781),
+            "another port, another camp"
+        );
+        assert_ne!(named("ourcamp.kz", 7780), named("evil.kz", 7780));
     }
 
     #[test]
     fn signature_verifies_only_for_its_message_and_key() {
         let k = key();
-        let msg = login_message(&Fingerprint([1; 32]), "nonce");
+        let msg = login_message(CampKey::Pinned(&Fingerprint([1; 32])), "nonce");
         let sig = k.sign(&msg);
         assert!(verify(&public(&k), &msg, sig.as_ref()));
-        let other_camp = login_message(&Fingerprint([2; 32]), "nonce");
+        let other_camp = login_message(CampKey::Pinned(&Fingerprint([2; 32])), "nonce");
         assert!(
             !verify(&public(&k), &other_camp, sig.as_ref()),
             "replay at another camp"

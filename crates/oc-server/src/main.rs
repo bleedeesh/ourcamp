@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! oc-server [--data DIR] [--bind ADDR] [--host HOST] [--port PORT] [--name NAME]
+//!           [--tls-cert FILE --tls-key FILE]                                a domain's certificate
 //!           [--livekit-bin PATH] [--rtc-tcp-port N] [--rtc-udp-port N]      managed
 //!           [--livekit-url URL [--livekit-key KEY] [--livekit-secret S]]    external
 //! oc-server [--data DIR] <command>      the owner's commands, to the running camp
@@ -21,8 +22,8 @@ use oc_invite::{Host, DEFAULT_PORT};
 use oc_server::network::{self, AddressKind};
 use oc_server::upnp::Gateway;
 use oc_server::{
-    find_livekit, lan_address, start, Config, LiveKit, LiveKitMode, ManagedLiveKit,
-    DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
+    find_livekit, lan_address, start, CertificateFiles, Config, LiveKit, LiveKitMode,
+    ManagedLiveKit, DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
 };
 
 const HELP: &str = "\
@@ -39,6 +40,11 @@ OurCamp Server (headless)
   --name NAME             name of a new camp                    [Мой сервер]
   --open                  anyone with the address may come in (ADR-0040)
   --invite-only           newcomers need the friends link       [as last set]
+
+A domain with a certificate from an authority (ADR-0042), links without fp:
+  --tls-cert FILE         its full chain, PEM (certbot: fullchain.pem)
+  --tls-key FILE          its private key, PEM (certbot: privkey.pem)
+                          with --host DOMAIN; reread when renewed
 
 Voice — the camp's own LiveKit (managed, the default):
   --livekit-bin PATH      livekit-server to run   [next to oc-server, dev/bin, PATH]
@@ -84,7 +90,6 @@ impl HostArg {
             .map_err(|e| format!("--host: {e}"))
     }
 
-    /// The address for links and voice; a network must be there now.
     /// The address for links and voice, and the router to open ports on (`router`).
     async fn resolve(self) -> Result<(Host, Option<Gateway>), String> {
         match self {
@@ -128,6 +133,7 @@ struct Args {
     name: String,
     /// `--open` / `--invite-only`; `None`: as the camp last was.
     open: Option<bool>,
+    certificate: Option<CertificateFiles>,
     voice: Voice,
 }
 
@@ -138,6 +144,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
     let mut port: Option<u16> = None;
     let mut name = String::from("Мой сервер");
     let mut open: Option<bool> = None;
+    let mut tls_cert: Option<PathBuf> = None;
+    let mut tls_key: Option<PathBuf> = None;
     let mut binary: Option<PathBuf> = None;
     let mut rtc_tcp_port: Option<u16> = None;
     let mut rtc_udp_port: Option<u16> = None;
@@ -163,6 +171,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
             }
             "--open" => open = Some(true),
             "--invite-only" => open = Some(false),
+            "--tls-cert" => tls_cert = Some(PathBuf::from(value()?)),
+            "--tls-key" => tls_key = Some(PathBuf::from(value()?)),
             "--livekit-bin" => binary = Some(PathBuf::from(value()?)),
             "--rtc-tcp-port" => rtc_tcp_port = Some(port_value(value()?)?),
             "--rtc-udp-port" => rtc_udp_port = Some(port_value(value()?)?),
@@ -171,6 +181,15 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
             "--livekit-secret" => secret = Some(value()?),
             other => return Err(format!("unknown argument {other} (see --help)")),
         }
+    }
+
+    let certificate = match (tls_cert, tls_key) {
+        (Some(chain), Some(key)) => Some(CertificateFiles { chain, key }),
+        (None, None) => None,
+        _ => return Err("--tls-cert and --tls-key go together".into()),
+    };
+    if certificate.is_some() && !matches!(host, Some(HostArg::Address(Host::Domain(_)))) {
+        return Err("--tls-cert is for a domain: give it with --host DOMAIN".into());
     }
 
     let voice = if let Some(url) = url {
@@ -208,6 +227,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
         port,
         name,
         open,
+        certificate,
         voice,
     }))
 }
@@ -331,6 +351,7 @@ async fn main() -> ExitCode {
         camp_name: args.name,
         router,
         livekit,
+        certificate: args.certificate,
     };
 
     let running = match start(config).await {
@@ -458,6 +479,34 @@ mod tests {
         };
         assert_eq!(binary, Some(PathBuf::from("/opt/livekit-server")));
         assert_eq!((rtc_tcp_port, rtc_udp_port), (17881, 17882));
+    }
+
+    #[test]
+    fn a_certificate_is_two_files_for_a_domain() {
+        let args = parse(&[
+            "--host",
+            "ourcamp.kz",
+            "--tls-cert",
+            "fullchain.pem",
+            "--tls-key",
+            "privkey.pem",
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            args.certificate,
+            Some(CertificateFiles {
+                chain: "fullchain.pem".into(),
+                key: "privkey.pem".into(),
+            })
+        );
+        let err = parse(&["--host", "ourcamp.kz", "--tls-cert", "a.pem"]).unwrap_err();
+        assert!(err.contains("go together"), "{err}");
+        let err = parse(&["--tls-cert", "a.pem", "--tls-key", "b.pem"]).unwrap_err();
+        assert!(err.contains("--host DOMAIN"), "no domain: {err}");
+        let err =
+            parse(&["--host", "192.0.2.15", "--tls-cert", "a", "--tls-key", "b"]).unwrap_err();
+        assert!(err.contains("--host DOMAIN"), "an IP: {err}");
     }
 
     #[test]
