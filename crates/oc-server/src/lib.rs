@@ -14,6 +14,7 @@
 mod api;
 mod livekit;
 mod manage;
+pub mod network;
 mod presence;
 mod rooms;
 mod rtc;
@@ -310,16 +311,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
 /// is sent. Falls back to loopback without a network.
 #[must_use]
 pub fn lan_address() -> Host {
-    let ip = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))
-        .and_then(|s| {
-            s.connect((std::net::Ipv4Addr::new(192, 0, 2, 1), 9))?; // TEST-NET-1, never routed
-            s.local_addr()
-        })
-        .map(|a| a.ip());
-    match ip {
-        Ok(std::net::IpAddr::V4(v4)) if !v4.is_unspecified() => Host::Ipv4(v4),
-        _ => Host::Ipv4(std::net::Ipv4Addr::LOCALHOST),
-    }
+    Host::Ipv4(network::default_address().unwrap_or(std::net::Ipv4Addr::LOCALHOST))
 }
 
 /// `ws://host:port[/]` → `host:port`. Plain `ws` only: LiveKit sits next to the server;

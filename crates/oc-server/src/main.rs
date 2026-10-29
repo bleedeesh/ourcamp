@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use oc_invite::{Host, DEFAULT_PORT};
+use oc_server::network::{self, AddressKind};
 use oc_server::{
     find_livekit, lan_address, start, Config, LiveKit, LiveKitMode, ManagedLiveKit,
     DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
@@ -23,6 +24,8 @@ OurCamp Server (headless)
   --data DIR              camp data: database + TLS identity   [./camp-data]
   --bind ADDR             listen address                        [0.0.0.0:7780]
   --host HOST             address friends use, put into links   [this PC's LAN IPv4]
+                          a domain or an IP, or a network found here:
+                          lan, public, radmin, hamachi, tailscale (ADR-0037)
   --port PORT             port put into links                   [the bound port]
   --name NAME             name of a new camp                    [Мой сервер]
 
@@ -51,11 +54,47 @@ enum Voice {
     External(LiveKit),
 }
 
+/// `--host`: an address, or a network to take this PC's address in (ADR-0037).
+#[derive(Debug, PartialEq, Eq)]
+enum HostArg {
+    Address(Host),
+    Network(AddressKind),
+}
+
+impl HostArg {
+    fn parse(value: &str) -> Result<Self, String> {
+        if let Some(kind) = AddressKind::parse(value) {
+            return Ok(Self::Network(kind));
+        }
+        value
+            .parse()
+            .map(Self::Address)
+            .map_err(|e| format!("--host: {e}"))
+    }
+
+    /// The address for links and voice; a network must be there now.
+    fn resolve(self) -> Result<Host, String> {
+        match self {
+            Self::Address(host) => Ok(host),
+            Self::Network(kind) => network::address_options()
+                .into_iter()
+                .find(|o| o.kind == kind)
+                .map(|o| Host::Ipv4(o.ip))
+                .ok_or_else(|| {
+                    format!(
+                        "--host {}: no such network on this PC (is the VPN on?)",
+                        kind.as_str()
+                    )
+                }),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Args {
     data_dir: PathBuf,
     bind: SocketAddr,
-    host: Option<Host>,
+    host: Option<HostArg>,
     port: Option<u16>,
     name: String,
     voice: Voice,
@@ -64,7 +103,7 @@ struct Args {
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
     let mut data_dir = PathBuf::from("camp-data");
     let mut bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PORT));
-    let mut host: Option<Host> = None;
+    let mut host: Option<HostArg> = None;
     let mut port: Option<u16> = None;
     let mut name = String::from("Мой сервер");
     let mut binary: Option<PathBuf> = None;
@@ -84,7 +123,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, St
         match flag.as_str() {
             "--data" => data_dir = PathBuf::from(value()?),
             "--bind" => bind = value()?.parse().map_err(|e| format!("--bind: {e}"))?,
-            "--host" => host = Some(value()?.parse().map_err(|e| format!("--host: {e}"))?),
+            "--host" => host = Some(HostArg::parse(&value()?)?),
             "--port" => port = Some(value()?.parse().map_err(|e| format!("--port: {e}"))?),
             "--name" => name = value()?,
             "--livekit-bin" => binary = Some(PathBuf::from(value()?)),
@@ -205,11 +244,18 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let public_host = match args.host.map(HostArg::resolve).transpose() {
+        Ok(host) => host.unwrap_or_else(lan_address),
+        Err(e) => {
+            eprintln!("oc-server: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let data_dir = std::path::absolute(&args.data_dir).unwrap_or_else(|_| args.data_dir.clone());
     let config = Config {
         data_dir: args.data_dir,
         bind: args.bind,
-        public_host: args.host.unwrap_or_else(lan_address),
+        public_host,
         public_port: args.port,
         camp_name: args.name,
         livekit,
@@ -309,7 +355,10 @@ mod tests {
         ])
         .unwrap()
         .unwrap();
-        assert_eq!(args.host, Some(Host::Domain("camp.example".into())));
+        assert_eq!(
+            args.host,
+            Some(HostArg::Address(Host::Domain("camp.example".into())))
+        );
         assert_eq!(args.port, Some(443));
         assert_eq!(args.bind, "127.0.0.1:9000".parse().unwrap());
         assert_eq!(args.name, "Кооп");
@@ -336,5 +385,21 @@ mod tests {
             .starts_with("--rtc-udp-port"));
         assert!(parse(&["--wat"]).unwrap_err().contains("unknown argument"));
         assert!(parse(&["--help"]).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_network_name_takes_this_pcs_address_there() {
+        let args = parse(&["--host", "radmin"]).unwrap().unwrap();
+        assert_eq!(args.host, Some(HostArg::Network(AddressKind::Radmin)));
+        // A VPN absent here is said, not silently replaced.
+        if !network::address_options()
+            .iter()
+            .any(|o| o.kind == AddressKind::Hamachi)
+        {
+            assert!(HostArg::Network(AddressKind::Hamachi)
+                .resolve()
+                .unwrap_err()
+                .contains("is the VPN on?"));
+        }
     }
 }

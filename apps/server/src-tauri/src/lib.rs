@@ -8,6 +8,7 @@
 //!                        └── livekit_pid_changes() ─► snapshot ─► server://status ─► UI
 //! ```
 
+mod address;
 mod manage;
 mod status;
 
@@ -15,7 +16,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use oc_server::{find_livekit, lan_address, Config, LiveKitMode, ManagedLiveKit, Running};
+use address::{AddressChoice, Reach};
+use oc_server::{find_livekit, Config, LiveKitMode, ManagedLiveKit, Running};
 use status::{snapshot, Base, ServerStatus};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -32,6 +34,8 @@ struct Host {
     data_dir: PathBuf,
     status: Mutex<ServerStatus>,
     running: tokio::sync::Mutex<Option<Running>>,
+    /// The friends address as last resolved (ADR-0037); shown in every status.
+    reach: Mutex<Reach>,
 }
 
 impl Host {
@@ -42,7 +46,12 @@ impl Host {
             .clone()
     }
 
-    fn publish(&self, app: &tauri::AppHandle, status: ServerStatus) {
+    fn publish(&self, app: &tauri::AppHandle, mut status: ServerStatus) {
+        status.reach = self
+            .reach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
         let _ = app.emit(STATUS_EVENT, status);
     }
@@ -52,10 +61,16 @@ impl Host {
             "livekit-server не найден: он должен лежать рядом с OurCamp Server \
              (в разработке — `pnpm livekit:fetch`)",
         )?;
+        // Networks come and go (a VPN switched on): detected anew on every start.
+        let choice = address::load(&self.data_dir);
+        let options = oc_server::network::address_options();
+        let (public_host, note) = address::resolve(&choice, &options);
+        *self.reach.lock().unwrap_or_else(PoisonError::into_inner) =
+            Reach::new(choice, &options, note);
         Ok(Config {
             data_dir: self.data_dir.clone(),
             bind: SocketAddr::from((Ipv4Addr::UNSPECIFIED, oc_invite::DEFAULT_PORT)),
-            public_host: lan_address(),
+            public_host,
             public_port: None,
             camp_name: NEW_CAMP_NAME.into(),
             livekit: LiveKitMode::Managed(ManagedLiveKit::new(binary)),
@@ -118,6 +133,12 @@ impl Host {
         }
     }
 
+    /// Stops the camp and starts it again: a new address goes into links and LiveKit.
+    async fn restart(self: Arc<Self>, app: tauri::AppHandle) {
+        self.stop().await;
+        self.start(app).await;
+    }
+
     /// The running camp's owner handle; `None` while it is not running.
     async fn manager(&self) -> Option<oc_server::Manager> {
         self.running.lock().await.as_ref().map(Running::manager)
@@ -146,6 +167,43 @@ fn server_status(host: tauri::State<'_, Arc<Host>>) -> ServerStatus {
 )]
 fn server_retry(app: tauri::AppHandle, host: tauri::State<'_, Arc<Host>>) {
     tauri::async_runtime::spawn(Arc::clone(&host).start(app));
+}
+
+/// Keeps a new friends address and restarts the camp with it (ADR-0037). Voice drops
+/// for a moment; apps reconnect by themselves.
+#[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects `State` and arguments by value"
+)]
+async fn server_set_address(
+    app: tauri::AppHandle,
+    host: tauri::State<'_, Arc<Host>>,
+    choice: AddressChoice,
+) -> Result<(), String> {
+    if let AddressChoice::Custom { host: typed } = &choice {
+        address::check_custom(typed)?;
+    }
+    address::save(&host.data_dir, &choice)
+        .map_err(|e| format!("Не удалось сохранить адрес: {e}"))?;
+    Arc::clone(&host).restart(app).await;
+    Ok(())
+}
+
+/// Looks for networks again (a VPN switched on after the start) without a restart.
+#[tauri::command]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects `State` by value"
+)]
+fn server_refresh_addresses(app: tauri::AppHandle, host: tauri::State<'_, Arc<Host>>) {
+    let options = oc_server::network::address_options();
+    {
+        let mut reach = host.reach.lock().unwrap_or_else(PoisonError::into_inner);
+        let fresh = Reach::new(reach.choice.clone(), &options, reach.note.clone());
+        *reach = fresh;
+    }
+    host.publish(&app, host.status());
 }
 
 /// Held for the whole run: one window per data directory, as in the client.
@@ -253,6 +311,7 @@ pub fn run() {
                 data_dir,
                 status: Mutex::new(ServerStatus::starting()),
                 running: tokio::sync::Mutex::new(None),
+                reach: Mutex::default(),
             });
             tauri::async_runtime::spawn(Arc::clone(&host).start(app.handle().clone()));
             app.manage(host);
@@ -270,6 +329,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             server_status,
             server_retry,
+            server_set_address,
+            server_refresh_addresses,
             manage::server_rename_camp,
             manage::server_set_role,
             manage::server_create_channel,
