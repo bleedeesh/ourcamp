@@ -15,7 +15,8 @@
     "./tauri-events.ts": "./src/tauri-events.ts",
     "./Icon.tsx": "./src/Icon.tsx",
     "./drag.ts": "./src/drag.ts",
-    "./useDragMove.tsx": "./src/useDragMove.tsx"
+    "./useDragMove.tsx": "./src/useDragMove.tsx",
+    "./context-menu.ts": "./src/context-menu.ts"
   },
   "peerDependencies": {
     "react": "^19.2.0",

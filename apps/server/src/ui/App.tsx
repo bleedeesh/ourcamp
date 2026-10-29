@@ -1,4 +1,4 @@
-import { useEffect, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
@@ -17,6 +17,7 @@ import {
   type ServerStatus,
 } from "../status.ts";
 import { CampName, Channels, useAction, type Dragging } from "./CampSettings.tsx";
+import { MemberMenu, type MenuAt } from "./MemberMenu.tsx";
 
 function TitleBar() {
   const win = () => (isTauri() ? getCurrentWindow() : null);
@@ -74,7 +75,7 @@ function LinkRow({ label, hint, link }: { label: string; hint: string; link: str
  * A member and the owner's hand on them: role (ADR-0026), silence and kick (ADR-0028).
  * Someone in voice can be dragged onto another channel (ADR-0029).
  */
-function MemberRow({ member, api, drag, grab }: { member: Member; api: ServerApi } & Dragging) {
+function MemberRow({ member, api, drag, grab, openMenu }: { member: Member; api: ServerApi } & Dragging) {
   const [kicking, setKicking] = useState(false);
   const [error, run, clear] = useAction();
 
@@ -119,7 +120,12 @@ function MemberRow({ member, api, drag, grab }: { member: Member; api: ServerApi
           },
         };
   return (
-    <li className="member" data-dragging={drag?.userId === member.userId || undefined} {...handle}>
+    <li
+      className="member"
+      data-dragging={drag?.userId === member.userId || undefined}
+      onContextMenu={openMenu(member.userId)}
+      {...handle}
+    >
       <span className="avatar" style={{ width: 32, height: 32, fontSize: 13 }} aria-hidden="true">
         {member.name.slice(0, 1).toUpperCase()}
       </span>
@@ -207,6 +213,16 @@ export function App({ api }: { api: ServerApi }) {
     setMoveError(null);
     api.moveMember(userId, channelId).catch((e: unknown) => setMoveError(e instanceof Error ? e.message : String(e)));
   });
+  const [menu, setMenu] = useState<MenuAt | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
+  // A right click at the pointer; Enter on a person opens it under them.
+  const openMenu = (userId: string) => (e: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pointer = "clientX" in e && (e.clientX !== 0 || e.clientY !== 0);
+    setMenu({ userId, x: pointer ? e.clientX : rect.left + 24, y: pointer ? e.clientY : rect.bottom });
+  };
+  const menuMember = menu === null ? undefined : status.members.find((m) => m.userId === menu.userId);
   const { phase } = status;
 
   return (
@@ -243,7 +259,14 @@ export function App({ api }: { api: ServerApi }) {
               <LinkRow label="Для друзей" hint="Отправьте её тем, кого зовёте на сервер." link={status.joinLink} />
             )}
 
-            <Channels channels={status.channels} members={status.members} api={api} drag={drag} grab={grab} />
+            <Channels
+              channels={status.channels}
+              members={status.members}
+              api={api}
+              drag={drag}
+              grab={grab}
+              openMenu={openMenu}
+            />
             {moveError && (
               <p className="member__error" role="alert">
                 {moveError}
@@ -254,7 +277,7 @@ export function App({ api }: { api: ServerApi }) {
               <h2 className="card__title">{crowd(status.members)}</h2>
               <ul className="list">
                 {status.members.map((m) => (
-                  <MemberRow key={m.userId} member={m} api={api} drag={drag} grab={grab} />
+                  <MemberRow key={m.userId} member={m} api={api} drag={drag} grab={grab} openMenu={openMenu} />
                 ))}
               </ul>
             </section>
@@ -268,6 +291,9 @@ export function App({ api }: { api: ServerApi }) {
         </footer>
       </main>
       <DragGhost drag={drag} />
+      {menu !== null && menuMember !== undefined && (
+        <MemberMenu key={menu.userId} at={menu} member={menuMember} channels={status.channels} api={api} onClose={closeMenu} />
+      )}
     </div>
   );
 }
