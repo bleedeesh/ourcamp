@@ -30,7 +30,6 @@ const ICONS = {
   shield: ["shield", "same"],
   speaker: ["volume-2", "first"],
   speakerOff: ["volume-x", "first"],
-  reset: ["rotate-ccw", null],
   check: ["check", null],
   plus: ["plus", null],
   link: ["link", null],

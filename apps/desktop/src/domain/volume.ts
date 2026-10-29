@@ -58,11 +58,6 @@ export class VolumeBook {
     return this.#write(userId, { ...this.get(userId), muted });
   }
 
-  /** Back to 100 %, unmuted. */
-  reset(userId: UserId): VolumePrefs {
-    return this.#write(userId, DEFAULT_PREFS);
-  }
-
   #write(userId: UserId, prefs: VolumePrefs): VolumePrefs {
     const isDefault = prefs.volume === DEFAULT_VOLUME && !prefs.muted;
     const next: Persisted = { ...this.#prefs };

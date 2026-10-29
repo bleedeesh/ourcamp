@@ -111,14 +111,14 @@ test("volume changes are clamped, persisted and sent to the engine", async () =>
   assert.match(storage.getItem("ourcamp.volumes.v1") ?? "", /"lena"/);
 });
 
-test("local mute toggles and reset restores defaults", async () => {
+test("local mute toggles and keeps the volume", async () => {
   const { engine, voice } = setup();
   await voice.setVolume("artem", 60);
   await voice.toggleLocalMute("artem");
   assert.deepEqual(voice.prefsOf("artem"), { volume: 60, muted: true });
-  await voice.resetVolume("artem");
-  assert.deepEqual(voice.prefsOf("artem"), { volume: 100, muted: false });
-  assert.deepEqual(engine.calls.slice(-2), ["volume:artem:100", "localMute:artem:false"]);
+  await voice.toggleLocalMute("artem");
+  assert.deepEqual(voice.prefsOf("artem"), { volume: 60, muted: false });
+  assert.deepEqual(engine.calls.slice(-2), ["localMute:artem:true", "localMute:artem:false"]);
 });
 
 test("speaking updates only touch the store when the speaker set changes", () => {

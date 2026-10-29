@@ -44,7 +44,7 @@ test("default prefs are not stored", () => {
   const storage = new MemoryStorage();
   const book = new VolumeBook(storage);
   book.setVolume("artem", 120);
-  book.reset("artem");
+  book.setVolume("artem", 100);
   assert.equal(storage.getItem("ourcamp.volumes.v1"), "{}");
 });
 
