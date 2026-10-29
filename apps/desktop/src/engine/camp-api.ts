@@ -64,6 +64,10 @@ export interface CampApi {
   invite(id: string): Promise<string>;
   /** Moves someone sitting in voice to another campfire; needs the rights (ADR-0029). */
   moveMember(id: string, userId: UserId, channelId: string): Promise<void>;
+  /** Kicks someone of a lower rank out of the camp, no ban (ADR-0033). */
+  kick(id: string, userId: UserId): Promise<void>;
+  /** Forbids someone of a lower rank to speak, or lifts it (ADR-0033). */
+  setSilenced(id: string, userId: UserId, silenced: boolean): Promise<void>;
   /** Live state of the camp opened last (who sits where, profiles); returns an unsubscribe. */
   onLive(listener: (live: CampLive) => void): () => void;
   /** What the open camp asks of you alone (ADR-0028); returns an unsubscribe. */

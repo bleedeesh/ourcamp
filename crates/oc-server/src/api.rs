@@ -9,14 +9,14 @@ use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpg
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
     login_message, user_id, verify, CampEvent, CampInfo, CampState, Challenge, CurrentInvite,
-    ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse, MoveMember,
-    RoomToken, API_VERSION, PUBLIC_KEY_LEN,
+    ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse, MoveMember, Role,
+    RoomToken, SetSilenced, API_VERSION, PUBLIC_KEY_LEN,
 };
 
 use tokio::sync::{broadcast, watch};
@@ -185,7 +185,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/members/me", delete(leave))
+        .route("/api/v1/members/{id}", delete(kick))
         .route("/api/v1/members/{id}/move", post(move_member))
+        .route("/api/v1/members/{id}/silenced", put(set_silenced))
         .route("/api/v1/channels/{id}/token", post(room_token))
         .route("/api/v1/events", get(events))
         .route("/rtc", any(crate::rtc::proxy))
@@ -347,25 +349,7 @@ async fn move_member(
     body: Result<Json<MoveMember>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
     let Json(req) = body?;
-    let hash = session_hash(&headers)?;
-    let (actor, target_role) = {
-        let target = target.clone();
-        state
-            .with_store(move |s| {
-                let target_role = s
-                    .members()?
-                    .into_iter()
-                    .find(|m| m.user_id == target)
-                    .map(|m| m.role);
-                Ok((s.session_member(&hash)?, target_role))
-            })
-            .await?
-    };
-    let actor = actor.ok_or(ApiError(ErrorCode::Unauthorized))?;
-    let target_role = target_role.ok_or(ApiError(ErrorCode::NotFound))?;
-    if !actor.role.moves(target_role) {
-        return Err(ApiError(ErrorCode::Forbidden));
-    }
+    authorize(&state, &headers, &target, Role::moves).await?;
     state
         .manager
         .move_member(&target, &req.channel_id)
@@ -377,6 +361,87 @@ async fn move_member(
                 ManageError::NotInVoice => ErrorCode::NotInVoice,
                 other => {
                     eprintln!("[oc-server] move: {other}");
+                    ErrorCode::Internal
+                }
+            })
+        })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The session's member may act on `target` by `rule` (ADR-0029, 0033). Unknown target:
+/// `not_found`; no right: `forbidden`.
+async fn authorize(
+    state: &AppState,
+    headers: &HeaderMap,
+    target: &str,
+    rule: fn(Role, Role) -> bool,
+) -> Result<(), ApiError> {
+    let hash = session_hash(headers)?;
+    let target = target.to_owned();
+    let (actor, target_role) = state
+        .with_store(move |s| {
+            let target_role = s
+                .members()?
+                .into_iter()
+                .find(|m| m.user_id == target)
+                .map(|m| m.role);
+            Ok((s.session_member(&hash)?, target_role))
+        })
+        .await?;
+    let actor = actor.ok_or(ApiError(ErrorCode::Unauthorized))?;
+    let target_role = target_role.ok_or(ApiError(ErrorCode::NotFound))?;
+    if rule(actor.role, target_role) {
+        Ok(())
+    } else {
+        Err(ApiError(ErrorCode::Forbidden))
+    }
+}
+
+/// `DELETE /api/v1/members/{id}`: a moderator or admin kicks someone of a lower rank —
+/// no ban, the friends link brings them back (ADR-0028, 0033).
+async fn kick(
+    State(state): State<AppState>,
+    Path(target): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    authorize(&state, &headers, &target, Role::governs).await?;
+    match state.manager.kick(&target).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(ManageError::NotFound) => Err(ApiError(ErrorCode::NotFound)),
+        // They are no member any more and their app was told to leave: done, though
+        // LiveKit did not take them out of the room itself.
+        Err(ManageError::LiveKit(e)) => {
+            eprintln!("[oc-server] kick: {e}");
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(other) => {
+            eprintln!("[oc-server] kick: {other}");
+            Err(ApiError(ErrorCode::Internal))
+        }
+    }
+}
+
+/// `PUT /api/v1/members/{id}/silenced`: a moderator or admin forbids someone of a lower
+/// rank to speak, or lifts it; LiveKit enforces it (ADR-0028, 0033).
+async fn set_silenced(
+    State(state): State<AppState>,
+    Path(target): Path<String>,
+    headers: HeaderMap,
+    body: Result<Json<SetSilenced>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(req) = body?;
+    authorize(&state, &headers, &target, Role::governs).await?;
+    state
+        .manager
+        .set_silenced(&target, req.silenced)
+        .await
+        .map_err(|e| {
+            ApiError(match e {
+                ManageError::NotFound => ErrorCode::NotFound,
+                // Saved, but LiveKit did not apply it now: the asker must not believe
+                // the person went quiet.
+                other => {
+                    eprintln!("[oc-server] silence: {other}");
                     ErrorCode::Internal
                 }
             })

@@ -453,6 +453,48 @@ impl Camps {
         })
     }
 
+    /// Kicks someone of a lower rank out of the camp; no ban (ADR-0033).
+    ///
+    /// # Errors
+    /// No rights over them, unknown member, unreachable camp.
+    pub async fn kick(&self, id: &str, user_id: &str) -> Result<(), CampError> {
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        match client.kick(&camp.session(), user_id).await {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(&camp, &client).await?;
+                client.kick(&session, user_id).await
+            }
+            other => other,
+        }
+        .map_err(moderation_error)
+    }
+
+    /// Forbids someone of a lower rank to speak, or lifts it (ADR-0033).
+    ///
+    /// # Errors
+    /// No rights over them, unknown member, unreachable camp.
+    pub async fn set_silenced(
+        &self,
+        id: &str,
+        user_id: &str,
+        silenced: bool,
+    ) -> Result<(), CampError> {
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        match client
+            .set_silenced(&camp.session(), user_id, silenced)
+            .await
+        {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(&camp, &client).await?;
+                client.set_silenced(&session, user_id, silenced).await
+            }
+            other => other,
+        }
+        .map_err(moderation_error)
+    }
+
     /// Whether `id` is the open camp (the one voice can be in).
     pub fn is_current(&self, id: &str) -> bool {
         self.lock().current.as_deref() == Some(id)
@@ -684,6 +726,18 @@ fn parse_link(link: &str) -> Result<Invite, CampError> {
 }
 
 /// A client error as a sentence for the UI.
+/// Kick and silence refusals: rights here are about rank, not just role (ADR-0033).
+fn moderation_error(e: ClientError) -> CampError {
+    match e {
+        ClientError::Api(ErrorCode::Forbidden) => {
+            "Это может только тот, у кого роль выше: модератор — для участников, админ — для модераторов"
+                .into()
+        }
+        ClientError::Api(ErrorCode::NotFound) => "Этого участника на сервере уже нет".into(),
+        other => describe(other),
+    }
+}
+
 fn describe(e: ClientError) -> CampError {
     match e {
         ClientError::Io(e) if e.to_string().contains("certificate") => {

@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { suppressNativeContextMenu } from "@ourcamp/ui/context-menu.ts";
 
 import "@fontsource/onest/400.css";
 import "@fontsource/onest/500.css";
@@ -19,6 +20,9 @@ const api = isTauri() ? new TauriServerApi() : new DemoServerApi();
 const root = document.getElementById("root");
 if (!root) throw new Error("#root element missing from index.html");
 
+
+// Right clicks open our own menus; the browser's Back/Reload/Inspect is no part of the app.
+suppressNativeContextMenu();
 createRoot(root).render(
   <StrictMode>
     <App api={api} />

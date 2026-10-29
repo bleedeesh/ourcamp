@@ -39,6 +39,7 @@ const ICONS = {
   pencil: ["pencil", "first"],
   trash: ["trash-2", null],
   hash: ["hash", null],
+  move: ["arrow-right-left", null],
   kick: ["user-x", '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2z" /><circle cx="9" cy="7" r="4" />'],
 };
 

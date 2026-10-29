@@ -107,8 +107,14 @@ function MemberRow({ userId, channelId, drag, grab }: { userId: UserId; channelI
         data-draggable={movable || undefined}
         data-dragging={drag?.userId === userId || undefined}
         onPointerDown={movable ? grab({ userId, name: member.name, from: channelId }) : undefined}
-        onClick={openMenu}
+        // The person's menu (volume, moderation) is a right click, as context menus are;
+        // the left button is for dragging. Enter or Space on the row opens it too: a
+        // keyboard click carries no mouse presses (`detail` 0).
+        onClick={(e) => {
+          if (e.detail === 0) openMenu(e);
+        }}
         onContextMenu={openMenu}
+        aria-haspopup={isSelf ? undefined : "dialog"}
         aria-label={isSelf ? `${member.name} (вы)` : `${member.name}, громкость ${localMuted ? "заглушен" : `${volume}%`}`}
       >
         <Avatar member={member} size={24} speaking={speaking && !micMuted && !deafened && !member.silenced} />

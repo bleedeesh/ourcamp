@@ -12,6 +12,21 @@ export function moves(actor: Role, target: Role): boolean {
   return RANK[actor] >= RANK.moderator && RANK[target] <= RANK[actor];
 }
 
+/**
+ * Whether `actor` may kick or silence someone of `target`'s role (ADR-0033), as
+ * `Role::governs` in oc-proto: moderators and admins, over lower ranks only.
+ */
+export function governs(actor: Role, target: Role): boolean {
+  return RANK[actor] >= RANK.moderator && RANK[target] < RANK[actor];
+}
+
+/** Whether you can kick or silence `userId` (never yourself). */
+export function canGovern(camp: Camp, selfId: UserId, userId: UserId): boolean {
+  const self = camp.members[selfId];
+  const target = camp.members[userId];
+  return userId !== selfId && self !== undefined && target !== undefined && governs(self.role, target.role);
+}
+
 /** Whether you can drag `userId` to another channel: yourself always, others by rank. */
 export function canMove(camp: Camp, selfId: UserId, userId: UserId): boolean {
   if (userId === selfId) return true;

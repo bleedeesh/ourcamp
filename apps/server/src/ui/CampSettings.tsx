@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type KeyboardEvent, type PointerEvent } from "react";
+import { useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { DROP_ATTRIBUTE, dropTarget } from "@ourcamp/ui/drag.ts";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
@@ -106,12 +106,18 @@ function ChannelIcon({ channel }: { channel: Channel }) {
 }
 
 /** Someone sitting in a campfire; drag them onto another one to move them (ADR-0029). */
-function Seated({ member, channelId, drag, grab }: { member: Member; channelId: string } & Dragging) {
+function Seated({ member, channelId, drag, grab, openMenu }: { member: Member; channelId: string } & Dragging) {
   return (
     <li
       className="seated__person"
+      tabIndex={0}
+      aria-haspopup="dialog"
       data-dragging={drag?.userId === member.userId || undefined}
       onPointerDown={grab({ userId: member.userId, name: member.name, from: channelId })}
+      onContextMenu={openMenu(member.userId)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") openMenu(member.userId)(e);
+      }}
     >
       <span className="avatar" style={{ width: 22, height: 22, fontSize: 11 }} aria-hidden="true">
         {member.name.slice(0, 1).toUpperCase()}
@@ -132,7 +138,14 @@ function Seated({ member, channelId, drag, grab }: { member: Member; channelId: 
   );
 }
 
-function ChannelRow({ channel, seated, api, drag, grab }: { channel: Channel; seated: readonly Member[]; api: ServerApi } & Dragging) {
+function ChannelRow({
+  channel,
+  seated,
+  api,
+  drag,
+  grab,
+  openMenu,
+}: { channel: Channel; seated: readonly Member[]; api: ServerApi } & Dragging) {
   const [mode, setMode] = useState<"view" | "rename" | "delete">("view");
   const [error, run, clear] = useAction();
   const voice = channel.kind === "voice";
@@ -209,7 +222,7 @@ function ChannelRow({ channel, seated, api, drag, grab }: { channel: Channel; se
       {seated.length > 0 && (
         <ul className="seated" aria-label={`В канале ${channel.name}`}>
           {seated.map((m) => (
-            <Seated key={m.userId} member={m} channelId={channel.id} drag={drag} grab={grab} />
+            <Seated key={m.userId} member={m} channelId={channel.id} drag={drag} grab={grab} openMenu={openMenu} />
           ))}
         </ul>
       )}
@@ -257,6 +270,8 @@ function NewChannel({ api }: { api: ServerApi }) {
 export interface Dragging {
   readonly drag: Drag | null;
   readonly grab: (who: Draggable) => (e: PointerEvent<HTMLElement>) => void;
+  /** Opens the person's menu (ADR-0034): a right click, or Enter on the person. */
+  readonly openMenu: (userId: string) => (e: MouseEvent<HTMLElement> | KeyboardEvent<HTMLElement>) => void;
 }
 
 /**
@@ -269,6 +284,7 @@ export function Channels({
   api,
   drag,
   grab,
+  openMenu,
 }: { channels: readonly Channel[]; members: readonly Member[]; api: ServerApi } & Dragging) {
   const seatedIn = (id: string) => members.filter((m) => m.campfireId === id);
   const anyoneSeated = members.some((m) => m.campfireId !== null);
@@ -277,7 +293,7 @@ export function Channels({
       <h2 className="card__title">Каналы</h2>
       <ul className="list">
         {channels.map((c) => (
-          <ChannelRow key={c.id} channel={c} seated={seatedIn(c.id)} api={api} drag={drag} grab={grab} />
+          <ChannelRow key={c.id} channel={c} seated={seatedIn(c.id)} api={api} drag={drag} grab={grab} openMenu={openMenu} />
         ))}
       </ul>
       {anyoneSeated && <p className="card__hint">Перетащите участника в другой канал — он перейдёт туда.</p>}
