@@ -24,8 +24,6 @@ export interface ServerApi {
   setSilenced(userId: string, silenced: boolean): Promise<void>;
   /** A member's avatar as a picture for <img> (ADR-0035); null without one. */
   avatar(userId: string): Promise<Blob | null>;
-  /** Takes a member's avatar down. */
-  clearAvatar(userId: string): Promise<void>;
 }
 
 /** base64url → bytes (as `oc_proto::encode_bytes` writes them). */
@@ -86,10 +84,6 @@ export class TauriServerApi implements ServerApi {
   async avatar(userId: string): Promise<Blob | null> {
     const avatar = await invoke<{ mime: string; data: string } | null>("server_avatar", { userId });
     return avatar === null ? null : new Blob([decodeBase64Url(avatar.data)], { type: avatar.mime });
-  }
-
-  clearAvatar(userId: string): Promise<void> {
-    return invoke("server_clear_avatar", { userId });
   }
 }
 
@@ -179,11 +173,6 @@ export class DemoServerApi implements ServerApi {
   avatar(): Promise<Blob | null> {
     // The demo's people have no pictures.
     return Promise.resolve(null);
-  }
-
-  clearAvatar(userId: string): Promise<void> {
-    const members = this.#status.members.map((m) => (m.userId === userId ? { ...m, avatar: null } : m));
-    return this.#change({ ...this.#status, members });
   }
 
   #change(status: ServerStatus): Promise<void> {

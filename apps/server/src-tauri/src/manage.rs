@@ -156,19 +156,6 @@ pub async fn server_avatar(
     }))
 }
 
-/// Takes a member's avatar down (an unfitting picture); they may send another.
-#[tauri::command]
-pub async fn server_clear_avatar(
-    host: State<'_, Arc<Host>>,
-    user_id: String,
-) -> Result<(), String> {
-    manager(&host)
-        .await?
-        .clear_avatar(&user_id)
-        .await
-        .map_err(|e| describe(&e))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

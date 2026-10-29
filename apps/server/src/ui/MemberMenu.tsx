@@ -116,13 +116,6 @@ export function MemberMenu({
         <Icon name="mic" off={!member.silenced} size={16} />
         {member.silenced ? "Разрешить говорить" : "Запретить говорить"}
       </button>
-      {member.avatar !== null && (
-        // An unfitting picture comes down; they may send another (ADR-0035).
-        <button type="button" className="context-menu__item" onClick={() => void act(() => api.clearAvatar(member.userId))}>
-          <Icon name="trash" size={16} />
-          Убрать аватарку
-        </button>
-      )}
       {open === "kick" ? (
         <div className="context-menu__confirm" role="alertdialog" aria-label={`Выгнать ${member.name}`}>
           <span>Выгнать «{member.name}» с сервера? Вернуться можно по ссылке для друзей.</span>

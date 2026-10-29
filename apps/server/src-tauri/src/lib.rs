@@ -279,7 +279,6 @@ pub fn run() {
             manage::server_move_member,
             manage::server_set_silenced,
             manage::server_avatar,
-            manage::server_clear_avatar,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri could not start");
