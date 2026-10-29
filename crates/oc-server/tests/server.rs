@@ -1296,3 +1296,111 @@ async fn moderation_reaches_the_member_and_livekit_enforces_it() {
     }
     camp.stop().await;
 }
+
+// ---- the owner's commands (ADR-0041) ----
+
+/// The control's snapshot once `ready` holds (it follows the camp's once-a-second state).
+async fn control_status_where(
+    control: &oc_server::control::ControlClient,
+    ready: impl Fn(&oc_proto::CampState) -> bool,
+) -> oc_server::control::Status {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let status = control.status().await.unwrap();
+        if ready(&status.state) {
+            return status;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the expected state within 5 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_owner_commands_the_running_camp_from_its_data_directory() {
+    use oc_server::control::{CallError, Command, ControlClient, CONTROL_FILE};
+
+    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let upstream = format!("ws://{}", free.local_addr().unwrap());
+    drop(free);
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let lena = DeviceKey::generate();
+    client
+        .login(&lena, "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+
+    let control = ControlClient::find(&camp.dir).unwrap();
+    let status = control_status_where(&control, |s| s.members.len() == 1).await;
+    assert_eq!(status.link, camp.running.links.join.to_string());
+
+    // A name in any case finds the person; the role is in the camp at once.
+    let said = control
+        .send(&Command::Role {
+            who: "лена".into(),
+            role: Role::Moderator,
+        })
+        .await
+        .unwrap();
+    assert!(said.contains("Лена"), "{said}");
+    // The answer comes once the camp shows the change: the next status has it.
+    let shown = control.status().await.unwrap().state;
+    assert_eq!(shown.members[0].role, Role::Moderator);
+    control
+        .send(&Command::AddChannel {
+            name: "Катка".into(),
+            text: false,
+        })
+        .await
+        .unwrap();
+    let moved = control
+        .send(&Command::Move {
+            who: "Лена".into(),
+            channel: "катка".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&moved, CallError::Refused(why) if why.contains("не в голосовом")),
+        "the new channel is found at once; Лена is just not in voice: {moved:?}"
+    );
+    let again = client.login(&lena, "Лена", None).await.unwrap();
+    assert_eq!(again.role, Role::Moderator);
+
+    // Someone unknown is refused in words, not with a crash.
+    let refused = control
+        .send(&Command::Kick {
+            who: "Боб".into()
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(refused, CallError::Refused(_)), "{refused:?}");
+
+    // Open: a stranger comes in without an invite.
+    control.send(&Command::Open { open: true }).await.unwrap();
+    let stranger = client.login(&DeviceKey::generate(), "Боб", None).await;
+    assert!(stranger.is_ok(), "{stranger:?}");
+
+    // Only the key in the data directory opens the control.
+    let file = camp.dir.join(CONTROL_FILE);
+    let real = std::fs::read_to_string(&file).unwrap();
+    let mut forged: Value = serde_json::from_str(&real).unwrap();
+    forged["key"] = json!("not-the-key");
+    std::fs::write(&file, forged.to_string()).unwrap();
+    let forged = ControlClient::find(&camp.dir).unwrap().status().await;
+    assert!(matches!(forged, Err(CallError::Refused(_))), "{forged:?}");
+    std::fs::write(&file, real).unwrap();
+
+    // A stopped camp leaves no control behind.
+    let dir = camp.dir.clone();
+    camp.running.stop().await;
+    assert!(!dir.join(CONTROL_FILE).exists());
+    assert!(matches!(
+        ControlClient::find(&dir),
+        Err(CallError::NotRunning)
+    ));
+    let _ = std::fs::remove_dir_all(dir);
+}

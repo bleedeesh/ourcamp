@@ -4,7 +4,13 @@
 //! oc-server [--data DIR] [--bind ADDR] [--host HOST] [--port PORT] [--name NAME]
 //!           [--livekit-bin PATH] [--rtc-tcp-port N] [--rtc-udp-port N]      managed
 //!           [--livekit-url URL [--livekit-key KEY] [--livekit-secret S]]    external
+//! oc-server [--data DIR] <command>      the owner's commands, to the running camp
 //! ```
+
+mod owner;
+
+/// Where the camp keeps its data unless `--data` says otherwise.
+const DATA_DIR: &str = "camp-data";
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -45,6 +51,7 @@ Voice — a LiveKit already running (external, e.g. `pnpm livekit` in Docker):
   --livekit-secret SECRET its API secret                        [secret]
 
   -h, --help              this text
+
 ";
 
 /// Which LiveKit, as the flags say. The binary is looked up only after parsing, so
@@ -125,7 +132,7 @@ struct Args {
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Option<Args>, String> {
-    let mut data_dir = PathBuf::from("camp-data");
+    let mut data_dir = PathBuf::from(DATA_DIR);
     let mut bind = SocketAddr::from((Ipv4Addr::UNSPECIFIED, DEFAULT_PORT));
     let mut host: Option<HostArg> = None;
     let mut port: Option<u16> = None;
@@ -251,12 +258,39 @@ fn livekit_mode(voice: Voice) -> Result<LiveKitMode, String> {
     }
 }
 
+/// `--data DIR` and the words left: a command word first means the owner's command.
+fn owner_words(args: &[String]) -> (PathBuf, Vec<String>) {
+    let mut data_dir = PathBuf::from(DATA_DIR);
+    let mut words = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--data" {
+            if let Some(dir) = it.next() {
+                data_dir = PathBuf::from(dir);
+            }
+        } else {
+            words.push(arg.clone());
+        }
+    }
+    (data_dir, words)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    let args = match parse_args(std::env::args().skip(1)) {
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    let (data_dir, words) = owner_words(&all);
+    match owner::parse(&words) {
+        Ok(Some(command)) => return owner::run(&data_dir, command).await,
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("oc-server: {e}");
+            return ExitCode::from(2);
+        }
+    }
+    let args = match parse_args(all.into_iter()) {
         Ok(Some(args)) => args,
         Ok(None) => {
-            print!("{HELP}");
+            print!("{HELP}{}", owner::HELP);
             return ExitCode::SUCCESS;
         }
         Err(e) => {

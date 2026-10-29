@@ -12,6 +12,7 @@
 //! ```
 
 mod api;
+pub mod control;
 mod livekit;
 mod manage;
 pub mod network;
@@ -162,6 +163,8 @@ pub struct Running {
     /// The ports on the router (ADR-0039); closed by `stop`.
     ports: watch::Receiver<ports::PortsState>,
     ports_task: Option<JoinHandle<()>>,
+    /// The owner's command line (ADR-0041); stops with the camp.
+    control: Option<JoinHandle<()>>,
 }
 
 impl Running {
@@ -205,6 +208,9 @@ impl Running {
         // The router's mappings go before the process may: they would outlive it.
         if let Some(ports) = self.ports_task {
             let _ = ports.await;
+        }
+        if let Some(control) = self.control {
+            let _ = control.await;
         }
         if let Some(livekit) = self.livekit {
             livekit.stop().await;
@@ -298,7 +304,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         livekit_authority.clone(),
         livekit.clone(),
     ));
-    let refresh = Arc::new(tokio::sync::Notify::new());
+    let refresh = Arc::new(presence::Refresh::new());
     let manager = Manager::new(
         Arc::clone(&store),
         Arc::clone(&rooms),
@@ -322,13 +328,8 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         refresh,
         shutdown_rx.clone(),
     ));
-    let (ports, ports_task) = match config.router {
-        Some(gateway) => {
-            let (ports, task) = ports::spawn(gateway, wanted, shutdown_rx.clone());
-            (ports, Some(task))
-        }
-        None => (watch::channel(ports::PortsState::Off).1, None),
-    };
+    let (ports, ports_task) = open_ports(config.router, wanted, &shutdown_rx);
+    let control = start_control(&config.data_dir, &manager, &state_rx, &links, &shutdown_rx).await;
     let task = tokio::spawn(serve::serve(listener, tls, api::router(state), shutdown_rx));
     Ok(Running {
         local_addr,
@@ -342,7 +343,43 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         manager,
         ports,
         ports_task,
+        control,
     })
+}
+
+/// Keeps the ports open on the router, when one was given (ADR-0039).
+fn open_ports(
+    router: Option<upnp::Gateway>,
+    wanted: Vec<ports::Port>,
+    shutdown: &watch::Receiver<bool>,
+) -> (watch::Receiver<ports::PortsState>, Option<JoinHandle<()>>) {
+    match router {
+        Some(gateway) => {
+            let (ports, task) = ports::spawn(gateway, wanted, shutdown.clone());
+            (ports, Some(task))
+        }
+        None => (watch::channel(ports::PortsState::Off).1, None),
+    }
+}
+
+/// The owner's command line (ADR-0041). Without it the camp still serves friends.
+async fn start_control(
+    data_dir: &std::path::Path,
+    manager: &Manager,
+    state: &watch::Receiver<Arc<oc_proto::CampState>>,
+    links: &Links,
+    shutdown: &watch::Receiver<bool>,
+) -> Option<JoinHandle<()>> {
+    control::start(
+        data_dir,
+        manager.clone(),
+        state.clone(),
+        (links.join.to_string(), links.open.to_string()),
+        shutdown.clone(),
+    )
+    .await
+    .map_err(|e| eprintln!("[oc-server] owner's control unavailable: {e}"))
+    .ok()
 }
 
 /// The ports friends come in by (ADR-0039): the camp's own, and voice's when the
