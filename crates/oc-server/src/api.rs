@@ -1,5 +1,7 @@
 //! HTTP API of the camp (`/api/v1`, ADR-0018). Clients reach it over the pinned TLS port.
 
+mod chat;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -7,7 +9,7 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::ws::{close_code, CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, delete, get, post, put};
@@ -165,9 +167,10 @@ impl IntoResponse for ApiError {
             ErrorCode::BadSignature | ErrorCode::NonceInvalid | ErrorCode::Unauthorized => {
                 StatusCode::UNAUTHORIZED
             }
-            ErrorCode::InviteRequired | ErrorCode::InviteInvalid | ErrorCode::Forbidden => {
-                StatusCode::FORBIDDEN
-            }
+            ErrorCode::InviteRequired
+            | ErrorCode::InviteInvalid
+            | ErrorCode::Forbidden
+            | ErrorCode::Silenced => StatusCode::FORBIDDEN,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::NotInVoice => StatusCode::CONFLICT,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
@@ -201,6 +204,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/members/{id}/move", post(move_member))
         .route("/api/v1/members/{id}/silenced", put(set_silenced))
         .route("/api/v1/channels/{id}/token", post(room_token))
+        .route(
+            "/api/v1/channels/{id}/messages",
+            get(chat::history).post(chat::post_message),
+        )
+        // Bodies above axum's 2 MB default are refused before the handler sees them.
+        .route(
+            "/api/v1/photos",
+            post(chat::put_photo).layer(DefaultBodyLimit::max(oc_proto::MAX_PHOTO_BYTES + 1)),
+        )
+        .route("/api/v1/photos/{hash}", get(chat::photo))
         .route("/api/v1/events", get(events))
         .route("/rtc", any(crate::rtc::proxy))
         .route("/rtc/{*rest}", any(crate::rtc::proxy))
@@ -650,7 +663,7 @@ async fn stream_events(mut socket: WebSocket, stream: EventStream) {
                 }
             }
             directive = directives.recv() => match directive {
-                Ok(directive) if directive.user_id == user_id => {
+                Ok(directive) if directive.to.includes(&user_id) => {
                     let Ok(message) = send(&directive.event) else { return };
                     if socket.send(message).await.is_err() {
                         return;
@@ -666,7 +679,9 @@ async fn stream_events(mut socket: WebSocket, stream: EventStream) {
                     }
                 }
                 // Someone else's, or missed while slow: a missed `kicked` still ends in
-                // a refused reconnect, a missed `moved` is only a missed move.
+                // a refused reconnect, a missed `moved` is only a missed move, and a
+                // missed `message` shows in the next snapshot's `chats` for the app to
+                // fetch.
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => break,
             },

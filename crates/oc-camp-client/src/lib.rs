@@ -31,8 +31,9 @@ use std::io;
 
 use oc_invite::{Host, Invite, InviteKind, Token};
 use oc_proto::{
-    CampInfo, CampKey, Challenge, CurrentInvite, ErrorCode, InviteInfo, LoginRequest,
-    LoginResponse, MoveMember, Role, RoomToken, SetSilenced, API_VERSION,
+    CampInfo, CampKey, Challenge, ChatMessage, CurrentInvite, ErrorCode, History, InviteInfo,
+    LoginRequest, LoginResponse, MoveMember, NewMessage, PhotoUploaded, Role, RoomToken,
+    SetSilenced, API_VERSION,
 };
 pub use oc_tls::Trust;
 
@@ -341,6 +342,76 @@ impl CampClient {
     pub async fn avatar(&self, session: &Session, user_id: &str) -> Result<Vec<u8>, ClientError> {
         self.http
             .get_bytes(&format!("/api/v1/members/{user_id}/avatar"), &session.token)
+            .await
+            .map(|b| b.to_vec())
+    }
+
+    /// A page of a chat (ADR-0044), oldest first: up to `limit` messages with `seq` below
+    /// `before` (up to the latest when `None`).
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`] for no such chat, [`ErrorCode::Unauthorized`].
+    pub async fn history(
+        &self,
+        session: &Session,
+        channel_id: &str,
+        before: Option<u64>,
+        limit: u32,
+    ) -> Result<Vec<ChatMessage>, ClientError> {
+        let before = before
+            .map(|seq| format!("&before={seq}"))
+            .unwrap_or_default();
+        let path = format!("/api/v1/channels/{channel_id}/messages?limit={limit}{before}");
+        let History { messages } = self.http.get_authorized(&path, &session.token).await?;
+        Ok(messages)
+    }
+
+    /// Writes in a chat; everyone, this member too, also gets it as a `message` event.
+    ///
+    /// # Errors
+    /// [`ErrorCode::Silenced`], [`ErrorCode::NotFound`], [`ErrorCode::BadRequest`] (too
+    /// long, nothing in it, a photo not uploaded), [`ErrorCode::Unauthorized`].
+    pub async fn post_message(
+        &self,
+        session: &Session,
+        channel_id: &str,
+        message: &NewMessage,
+    ) -> Result<ChatMessage, ClientError> {
+        self.http
+            .post(
+                &format!("/api/v1/channels/{channel_id}/messages"),
+                Some(&session.token),
+                message,
+            )
+            .await
+    }
+
+    /// Uploads a photo for the message that will show it; its hash names it there.
+    ///
+    /// # Errors
+    /// [`ClientError::Protocol`] for anything but WebP, PNG or JPEG;
+    /// [`ErrorCode::BadRequest`] (too big), [`ErrorCode::Silenced`].
+    pub async fn upload_photo(
+        &self,
+        session: &Session,
+        photo: Vec<u8>,
+    ) -> Result<String, ClientError> {
+        let format = oc_proto::PhotoFormat::sniff(&photo)
+            .ok_or_else(|| ClientError::Protocol("a photo is WebP, PNG or JPEG".into()))?;
+        let PhotoUploaded { hash } = self
+            .http
+            .post_bytes("/api/v1/photos", &session.token, format.mime(), photo)
+            .await?;
+        Ok(hash)
+    }
+
+    /// A photo by its hash.
+    ///
+    /// # Errors
+    /// [`ErrorCode::NotFound`], [`ErrorCode::Unauthorized`].
+    pub async fn photo(&self, session: &Session, hash: &str) -> Result<Vec<u8>, ClientError> {
+        self.http
+            .get_bytes(&format!("/api/v1/photos/{hash}"), &session.token)
             .await
             .map(|b| b.to_vec())
     }

@@ -808,6 +808,8 @@ impl Camps {
                                     channel_id,
                                 });
                             }
+                            // Chats come with the chat window (M5, step 2).
+                            Ok(CampEvent::Message(_)) => {}
                             // The camp closes the stream after this: nothing to reconnect to.
                             Ok(CampEvent::Kicked) => {
                                 self.kicked(&id);
@@ -959,6 +961,7 @@ fn describe(e: ClientError) -> CampError {
             ErrorCode::Unauthorized => "Сессия на сервере истекла",
             ErrorCode::NotFound => "Такого канала на сервере нет",
             ErrorCode::NotInVoice => "Участник уже вышел из голосового канала",
+            ErrorCode::Silenced => "Вам запрещено говорить и писать на этом сервере",
             ErrorCode::BadRequest => "Сервер не принял данные — проверьте имя (до 32 символов)",
             ErrorCode::Internal => "Ошибка на сервере",
         }

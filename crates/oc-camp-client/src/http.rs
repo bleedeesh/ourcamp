@@ -23,8 +23,11 @@ use crate::ClientError;
 
 /// Connect + TLS + request + response must finish within this.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-/// Responses are small; refuse anything that is not.
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+/// The largest JSON answer: a page of chat history (100 messages of up to 2000
+/// characters) is the biggest. Anything larger is refused.
+const MAX_JSON_BYTES: usize = 1024 * 1024;
+/// The largest picture: a photo (avatars are smaller).
+const MAX_PICTURE_BYTES: usize = oc_proto::MAX_PHOTO_BYTES;
 
 /// TCP + TLS to `authority` (`host:port`), trusting only what `trust` allows: the pinned
 /// certificate (ADR-0014), or an authority's for the host's name (ADR-0042).
@@ -42,11 +45,13 @@ pub(crate) async fn connect(authority: &str, trust: &Trust) -> io::Result<TlsStr
         .await
 }
 
-/// One request over a fresh connection; returns status, headers and body.
+/// One request over a fresh connection; returns status, headers and body (at most
+/// `limit` bytes).
 pub(crate) async fn send(
     authority: &str,
     trust: &Trust,
     request: Request<Full<Bytes>>,
+    limit: usize,
 ) -> io::Result<(StatusCode, HeaderMap, Bytes)> {
     let exchange = async {
         let tls = connect(authority, trust).await?;
@@ -60,7 +65,7 @@ pub(crate) async fn send(
             .await
             .map_err(io::Error::other)?;
         let (parts, body) = response.into_parts();
-        let bytes = http_body_util::Limited::new(body, MAX_RESPONSE_BYTES)
+        let bytes = http_body_util::Limited::new(body, limit)
             .collect()
             .await
             .map_err(io::Error::other)?
@@ -115,9 +120,16 @@ impl Client {
         body: &impl Serialize,
     ) -> Result<(), ClientError> {
         let body = serde_json::to_vec(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
-        self.exchange(Method::POST, path, Some(bearer), Bytes::from(body), JSON)
-            .await
-            .map(drop)
+        self.exchange(
+            Method::POST,
+            path,
+            Some(bearer),
+            Bytes::from(body),
+            JSON,
+            MAX_JSON_BYTES,
+        )
+        .await
+        .map(drop)
     }
 
     /// `PUT` with a session whose success has no body (`204`).
@@ -128,9 +140,16 @@ impl Client {
         body: &impl Serialize,
     ) -> Result<(), ClientError> {
         let body = serde_json::to_vec(body).map_err(|e| ClientError::Protocol(e.to_string()))?;
-        self.exchange(Method::PUT, path, Some(bearer), Bytes::from(body), JSON)
-            .await
-            .map(drop)
+        self.exchange(
+            Method::PUT,
+            path,
+            Some(bearer),
+            Bytes::from(body),
+            JSON,
+            MAX_JSON_BYTES,
+        )
+        .await
+        .map(drop)
     }
 
     /// `DELETE` with a session; success has no body (`204`).
@@ -139,9 +158,16 @@ impl Client {
         path: &str,
         bearer: &str,
     ) -> Result<(), ClientError> {
-        self.exchange(Method::DELETE, path, Some(bearer), Bytes::new(), JSON)
-            .await
-            .map(drop)
+        self.exchange(
+            Method::DELETE,
+            path,
+            Some(bearer),
+            Bytes::new(),
+            JSON,
+            MAX_JSON_BYTES,
+        )
+        .await
+        .map(drop)
     }
 
     async fn request<T: DeserializeOwned>(
@@ -151,7 +177,9 @@ impl Client {
         bearer: Option<&str>,
         body: Bytes,
     ) -> Result<T, ClientError> {
-        let bytes = self.exchange(method, path, bearer, body, JSON).await?;
+        let bytes = self
+            .exchange(method, path, bearer, body, JSON, MAX_JSON_BYTES)
+            .await?;
         serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
     }
 
@@ -169,18 +197,47 @@ impl Client {
             Some(bearer),
             Bytes::from(body),
             content_type,
+            MAX_JSON_BYTES,
         )
         .await
         .map(drop)
     }
 
-    /// `GET` of raw bytes (an avatar) with a session.
-    pub(crate) async fn get_bytes(&self, path: &str, bearer: &str) -> Result<Bytes, ClientError> {
-        self.exchange(Method::GET, path, Some(bearer), Bytes::new(), JSON)
-            .await
+    /// `POST` of raw bytes (a photo) with a session; a JSON answer.
+    pub(crate) async fn post_bytes<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        bearer: &str,
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> Result<T, ClientError> {
+        let bytes = self
+            .exchange(
+                Method::POST,
+                path,
+                Some(bearer),
+                Bytes::from(body),
+                content_type,
+                MAX_JSON_BYTES,
+            )
+            .await?;
+        serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
     }
 
-    /// One request; the body of a success, or the API error.
+    /// `GET` of raw bytes (an avatar, a photo) with a session.
+    pub(crate) async fn get_bytes(&self, path: &str, bearer: &str) -> Result<Bytes, ClientError> {
+        self.exchange(
+            Method::GET,
+            path,
+            Some(bearer),
+            Bytes::new(),
+            JSON,
+            MAX_PICTURE_BYTES,
+        )
+        .await
+    }
+
+    /// One request; the body of a success (at most `limit` bytes), or the API error.
     async fn exchange(
         &self,
         method: Method,
@@ -188,6 +245,7 @@ impl Client {
         bearer: Option<&str>,
         body: Bytes,
         content_type: &'static str,
+        limit: usize,
     ) -> Result<Bytes, ClientError> {
         let mut request = Request::builder()
             .method(method)
@@ -200,7 +258,7 @@ impl Client {
         let request = request
             .body(Full::new(body))
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let (status, _, bytes) = send(&self.authority, &self.trust, request).await?;
+        let (status, _, bytes) = send(&self.authority, &self.trust, request, limit).await?;
 
         if status.is_success() {
             Ok(bytes)

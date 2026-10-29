@@ -369,8 +369,9 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
 
     let (shutdown, shutdown_rx) = watch::channel(false);
     let (events, events_rx) = watch::channel(Arc::new(initial));
-    // Events for one member (ADR-0028); a few in flight at most, so 64 is plenty.
-    let (directives, _) = tokio::sync::broadcast::channel(64);
+    // Events for one member (ADR-0028) and chat messages for all (ADR-0044). A slow
+    // stream that falls this far behind skips some; the snapshot's `chats` tells its app.
+    let (directives, _) = tokio::sync::broadcast::channel(256);
     let state_rx = events_rx.clone();
     let store = Arc::new(std::sync::Mutex::new(store));
     let rooms = Arc::new(rooms::RoomService::new(

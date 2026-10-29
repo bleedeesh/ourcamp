@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 
 use crate::presence::Refresh;
 use crate::rooms::{RoomError, RoomService};
-use crate::store::{Store, StoreError};
+use crate::store::{Author, Posted, Store, StoreError};
 
 /// Longest camp name, in characters.
 pub const MAX_CAMP_NAME: usize = 48;
@@ -74,11 +74,31 @@ fn name(raw: &str, max: usize) -> Result<&str, ManageError> {
     Ok(name)
 }
 
-/// An event for one member's `/api/v1/events` stream (ADR-0028).
+/// An event for `/api/v1/events` streams beside the snapshots: one member's (ADR-0028),
+/// or everyone's (a chat message, ADR-0044).
 #[derive(Debug, Clone)]
 pub(crate) struct Directive {
-    pub user_id: String,
+    pub to: Audience,
     pub event: CampEvent,
+}
+
+/// Whose streams a [`Directive`] goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Audience {
+    /// This member's.
+    Member(String),
+    /// Every member's.
+    Everyone,
+}
+
+impl Audience {
+    /// Whether `user_id`'s stream gets it.
+    pub(crate) fn includes(&self, user_id: &str) -> bool {
+        match self {
+            Self::Member(id) => id == user_id,
+            Self::Everyone => true,
+        }
+    }
 }
 
 /// The owner's handle on a running camp. Cheap to clone.
@@ -247,9 +267,44 @@ impl Manager {
     /// offline, and their next connect reflects the change anyway.
     fn tell(&self, user_id: &str, event: CampEvent) {
         let _ = self.directives.send(Directive {
-            user_id: user_id.to_owned(),
+            to: Audience::Member(user_id.to_owned()),
             event,
         });
+    }
+
+    /// Keeps a message in a chat and sends it to everyone (ADR-0044); the snapshot's
+    /// `chats` follows, for apps that missed the event. `message` was checked by the
+    /// caller (length, photo sizes).
+    ///
+    /// # Errors
+    /// [`ManageError::Store`].
+    pub async fn post_message(
+        &self,
+        channel_id: &str,
+        author: Author<'_>,
+        message: oc_proto::NewMessage,
+    ) -> Result<Posted, ManageError> {
+        let (channel_id, user_id, name) = (
+            channel_id.to_owned(),
+            author.user_id.to_owned(),
+            author.name.to_owned(),
+        );
+        let posted = self
+            .change(move |s| {
+                let author = Author {
+                    user_id: &user_id,
+                    name: &name,
+                };
+                Ok(s.post_message(&channel_id, author, &message.text, message.photo.as_ref())?)
+            })
+            .await?;
+        if let Posted::Message(sent) = &posted {
+            let _ = self.directives.send(Directive {
+                to: Audience::Everyone,
+                event: CampEvent::Message(sent.clone()),
+            });
+        }
+        Ok(posted)
     }
 
     /// Removes a member (a kick, not a ban — the friends link brings them back): their

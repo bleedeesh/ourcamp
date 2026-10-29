@@ -4,6 +4,8 @@
 //! exact bytes a device signs to log in. Server and client depend on this crate, so
 //! they cannot drift apart.
 
+use std::collections::BTreeMap;
+
 use oc_invite::{base32, base64url, Fingerprint};
 use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
@@ -121,6 +123,107 @@ impl AvatarFormat {
 pub fn avatar_hash(bytes: &[u8]) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
     encode_bytes(&digest.as_ref()[..12])
+}
+
+// ---- chats (M5, ADR-0044) ----
+
+/// The longest message, in characters.
+pub const MAX_MESSAGE_CHARS: usize = 2000;
+/// The largest photo a camp keeps. The app sends one at most 1600 px on its long side.
+pub const MAX_PHOTO_BYTES: usize = 2 * 1024 * 1024;
+/// The largest side a photo may claim, in pixels.
+pub const MAX_PHOTO_SIDE: u32 = 4096;
+/// The most messages one history request returns.
+pub const MAX_HISTORY: u32 = 100;
+
+/// Picture formats a photo may be in: what webviews encode, and what cameras save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhotoFormat {
+    /// `image/webp`.
+    Webp,
+    /// `image/png`.
+    Png,
+    /// `image/jpeg`.
+    Jpeg,
+}
+
+impl PhotoFormat {
+    /// The format by the file's own signature, never by what the sender claims.
+    #[must_use]
+    pub fn sniff(bytes: &[u8]) -> Option<Self> {
+        match AvatarFormat::sniff(bytes) {
+            Some(AvatarFormat::Webp) => Some(Self::Webp),
+            Some(AvatarFormat::Png) => Some(Self::Png),
+            None if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) => Some(Self::Jpeg),
+            None => None,
+        }
+    }
+
+    /// Its media type.
+    #[must_use]
+    pub fn mime(self) -> &'static str {
+        match self {
+            Self::Webp => "image/webp",
+            Self::Png => "image/png",
+            Self::Jpeg => "image/jpeg",
+        }
+    }
+}
+
+/// A photo in a message: which one, and its size for laying it out before it loads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Photo {
+    /// [`avatar_hash`] of its bytes, as `POST /api/v1/photos` answered.
+    pub hash: String,
+    /// Pixels, 1–[`MAX_PHOTO_SIDE`].
+    pub width: u32,
+    /// Pixels, 1–[`MAX_PHOTO_SIDE`].
+    pub height: u32,
+}
+
+/// One message in a chat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    /// The chat (a text channel).
+    pub channel_id: String,
+    /// 1, 2, 3… within the chat: unread = the chat's last `seq` − the last one read.
+    pub seq: u64,
+    /// See [`user_id`]. The author may have left since.
+    pub author_id: String,
+    /// The author's name when they wrote it: for authors no longer in the camp.
+    pub author_name: String,
+    /// Unix time, milliseconds.
+    pub sent_at: i64,
+    /// Up to [`MAX_MESSAGE_CHARS`]; empty only with a photo.
+    pub text: String,
+    /// At most one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<Photo>,
+}
+
+/// `POST /api/v1/channels/{id}/messages`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewMessage {
+    /// What to say; may be empty with a photo.
+    pub text: String,
+    /// A photo uploaded with `POST /api/v1/photos` just before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<Photo>,
+}
+
+/// `GET /api/v1/channels/{id}/messages`: oldest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct History {
+    /// Up to the asked `limit`, all with `seq` below the asked `before`.
+    pub messages: Vec<ChatMessage>,
+}
+
+/// `POST /api/v1/photos`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhotoUploaded {
+    /// What a message names it by.
+    pub hash: String,
 }
 
 // ---- camp ----
@@ -310,6 +413,8 @@ pub enum CampEvent {
     },
     /// You were removed from the camp; the stream ends after this.
     Kicked,
+    /// Someone wrote in a chat (ADR-0044); everyone gets it.
+    Message(ChatMessage),
 }
 
 /// The camp as it is now: its name and channels, who is in it and who sits at which
@@ -328,6 +433,10 @@ pub struct CampState {
     /// Anyone with the address may come in (ADR-0040).
     #[serde(default)]
     pub open: bool,
+    /// Chat id → the `seq` of its last message, for chats with any (ADR-0044): what an
+    /// app compares with what it has read, and how it notices messages it missed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub chats: BTreeMap<String, u64>,
 }
 
 /// A camp member's profile.
@@ -393,6 +502,8 @@ pub enum ErrorCode {
     NotFound,
     /// Moving someone who is not in voice right now (ADR-0029).
     NotInVoice,
+    /// Writing while forbidden to speak (ADR-0044): it covers the chats too.
+    Silenced,
     /// Server-side failure.
     Internal,
 }
@@ -536,6 +647,7 @@ mod tests {
                 }],
             }],
             open: true,
+            chats: BTreeMap::from([("c1".into(), 7)]),
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "state");
@@ -565,7 +677,55 @@ mod tests {
         );
         assert_eq!(json["presence"][0]["channelId"], "c0");
         assert_eq!(json["presence"][0]["members"][0]["micMuted"], true);
+        assert_eq!(json["chats"]["c1"], 7);
         assert_eq!(serde_json::from_value::<CampEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn a_chat_message_travels_flat_and_without_an_absent_photo() {
+        let message = ChatMessage {
+            channel_id: "c1".into(),
+            seq: 3,
+            author_id: "u".into(),
+            author_name: "Лена".into(),
+            sent_at: 1_790_000_000_000,
+            text: "Привет".into(),
+            photo: None,
+        };
+        let json = serde_json::to_value(CampEvent::Message(message.clone())).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "message", "channelId": "c1", "seq": 3, "authorId": "u",
+                "authorName": "Лена", "sentAt": 1_790_000_000_000_i64, "text": "Привет",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<CampEvent>(json).unwrap(),
+            CampEvent::Message(message)
+        );
+        let old: CampState =
+            serde_json::from_str(r#"{"name":"x","channels":[],"members":[],"presence":[]}"#)
+                .unwrap();
+        assert!(old.chats.is_empty(), "a camp from before chats");
+    }
+
+    #[test]
+    fn photos_are_known_by_their_signature() {
+        assert_eq!(
+            PhotoFormat::sniff(b"\xFF\xD8\xFF\xE0rest"),
+            Some(PhotoFormat::Jpeg)
+        );
+        assert_eq!(
+            PhotoFormat::sniff(b"\x89PNG\r\n\x1a\nrest"),
+            Some(PhotoFormat::Png)
+        );
+        assert_eq!(
+            PhotoFormat::sniff(b"RIFF\0\0\0\0WEBPVP8 "),
+            Some(PhotoFormat::Webp)
+        );
+        assert_eq!(PhotoFormat::sniff(b"GIF89a"), None);
+        assert_eq!(PhotoFormat::Jpeg.mime(), "image/jpeg");
     }
 
     #[test]

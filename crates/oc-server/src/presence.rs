@@ -97,6 +97,7 @@ fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreRe
         members,
         presence,
         open: camp.open,
+        chats: store.latest_messages()?,
     })
 }
 
