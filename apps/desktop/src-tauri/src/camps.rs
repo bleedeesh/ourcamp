@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::voice::room::RoomAccess;
 
 mod chat;
-pub use chat::{ChatListener, ChatUpdate, OutgoingPhoto};
+pub use chat::{ChatContext, ChatListener, ChatUpdate, OutgoingPhoto};
 
 const KEY_FILE: &str = "device.key";
 const CAMPS_FILE: &str = "camps.json";
@@ -178,6 +178,8 @@ pub struct Camps {
     listener: Mutex<Option<StateListener>>,
     directives: Mutex<Option<DirectiveListener>>,
     chats: Mutex<Option<ChatListener>>,
+    /// The last live update, for a window that opens later (the chat, ADR-0046).
+    last_live: Mutex<Option<CampLive>>,
     /// The task following the open camp's events; replaced when another camp opens.
     follower: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
@@ -247,6 +249,7 @@ impl Camps {
             listener: Mutex::new(None),
             directives: Mutex::new(None),
             chats: Mutex::new(None),
+            last_live: Mutex::new(None),
             follower: Mutex::new(None),
         })
     }
@@ -776,6 +779,10 @@ impl Camps {
     }
 
     fn notify(&self, live: CampLive) {
+        *self
+            .last_live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(live.clone());
         let listener = self
             .listener
             .lock()

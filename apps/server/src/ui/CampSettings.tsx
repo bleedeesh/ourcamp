@@ -304,7 +304,7 @@ export function Channels({
       </ul>
       {anyoneSeated && <p className="card__hint">Перетащите участника в другой канал — он перейдёт туда.</p>}
       <NewChannel api={api} />
-      <p className="card__hint">Чаты появятся у участников вместе с окном чата (M5).</p>
+      <p className="card__hint">Чаты — вкладки в окне чата у участников; сообщения удаляются вместе с чатом.</p>
     </section>
   );
 }

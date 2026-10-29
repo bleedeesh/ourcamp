@@ -23,6 +23,7 @@ import { TauriCampApi } from "./engine/tauri-camp-api.ts";
 import { isTauri, TauriEngine } from "./engine/tauri-engine.ts";
 import { copyText } from "@ourcamp/ui/clipboard.ts";
 import { App } from "./ui/App.tsx";
+import { AvatarSourceContext, type AvatarSource } from "./ui/avatar-url.ts";
 import { CampsProvider } from "./ui/camps-context.tsx";
 import { VoiceProvider } from "./ui/voice-context.tsx";
 
@@ -44,6 +45,7 @@ const camps = new CampsController(campApi, voice, {
 });
 voice.start();
 void camps.start();
+const avatarSource: AvatarSource = (userId, hash) => camps.avatarOf(userId, hash);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root element missing from index.html");
@@ -54,9 +56,11 @@ suppressNativeContextMenu();
 createRoot(root).render(
   <StrictMode>
     <CampsProvider controller={camps}>
-      <VoiceProvider controller={voice}>
-        <App />
-      </VoiceProvider>
+      <AvatarSourceContext.Provider value={avatarSource}>
+        <VoiceProvider controller={voice}>
+          <App />
+        </VoiceProvider>
+      </AvatarSourceContext.Provider>
     </CampsProvider>
   </StrictMode>,
 );

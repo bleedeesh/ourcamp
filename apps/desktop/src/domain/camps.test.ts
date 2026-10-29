@@ -125,6 +125,9 @@ class FakeCampApi implements CampApi {
     this.calls.push(`read:${id}:${channelId}:${seq}`);
     return Promise.resolve();
   }
+  chatContext() {
+    return Promise.resolve(null);
+  }
   #chat: ((u: ChatUpdate) => void) | null = null;
   onChat(listener: (u: ChatUpdate) => void) {
     this.#chat = listener;

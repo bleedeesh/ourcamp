@@ -321,6 +321,20 @@ pub fn chat_mark_read(
     camps(&state)?.mark_read(&id, &channel_id, seq)
 }
 
+/// The open camp for the chat window: as opened, with its latest snapshot (ADR-0046).
+#[tauri::command]
+pub fn chat_context(
+    state: State<'_, CampsState>,
+) -> Result<Option<crate::camps::ChatContext>, String> {
+    Ok(camps(&state)?.chat_context())
+}
+
+/// Opens the chat window beside the main one, or brings it forward.
+#[tauri::command]
+pub fn chat_window_open(app: tauri::AppHandle) -> Result<(), String> {
+    crate::windows::open_chat(&app).map_err(|e| format!("Не удалось открыть окно чата: {e}"))
+}
+
 /// The camp's friends link, to copy.
 #[tauri::command]
 pub async fn camp_invite(state: State<'_, CampsState>, id: String) -> Result<String, String> {

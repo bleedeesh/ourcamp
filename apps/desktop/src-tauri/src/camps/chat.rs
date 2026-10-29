@@ -40,6 +40,17 @@ pub enum ChatUpdate {
 /// Receives [`ChatUpdate`]s.
 pub type ChatListener = std::sync::Arc<dyn Fn(ChatUpdate) + Send + Sync>;
 
+/// The open camp as the chat window needs it when it opens (ADR-0046): what the main
+/// window got from opening it, and the latest snapshot (members, chats, who is silenced).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatContext {
+    /// As opened, with what this device has read.
+    pub camp: super::OpenCamp,
+    /// The latest live update about it; `None` until the first one.
+    pub live: Option<super::CampLive>,
+}
+
 /// A photo to send, as the window made it (at most 1600 px on its long side).
 #[derive(Debug, Clone)]
 pub struct OutgoingPhoto {
@@ -169,6 +180,24 @@ impl Camps {
             eprintln!("[ourcamp] photo cache: {e}");
         }
         Ok(bytes)
+    }
+
+    /// The open camp for a window that opens now; `None` with no camp open.
+    #[must_use]
+    pub fn chat_context(&self) -> Option<ChatContext> {
+        let id = self.lock().current.clone()?;
+        let camp = self.camp(&id).ok()?;
+        let live = self
+            .last_live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .filter(|live| live.camp_id == id);
+        let offline = live.as_ref().is_some_and(|live| !live.online);
+        Some(ChatContext {
+            camp: self.opened(&camp, offline),
+            live,
+        })
     }
 
     /// Marks a chat read up to `seq` (never back) and tells every window.

@@ -3,7 +3,7 @@ import { canGovern, canMove } from "../domain/roster.ts";
 import type { UserId } from "../domain/types.ts";
 import { MAX_VOLUME, MIN_VOLUME, VOLUME_STEP } from "../domain/volume.ts";
 import { useCampsController } from "./camps-context.tsx";
-import { Avatar } from "./ChannelTree.tsx";
+import { Avatar } from "./Avatar.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
 
