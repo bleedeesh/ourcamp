@@ -26,6 +26,31 @@ const CAMP_STATE_EVENT: &str = "camp://state";
 /// What the camp asked of this member alone (ADR-0028). Must match
 /// `CAMP_DIRECTIVE_EVENT` in `src/engine/tauri-camp-api.ts`.
 const CAMP_DIRECTIVE_EVENT: &str = "camp://directive";
+/// Chat updates for every window (ADR-0044). Must match `CAMP_CHAT_EVENT` in
+/// `src/engine/tauri-camp-api.ts`.
+const CAMP_CHAT_EVENT: &str = "camp://chat";
+
+/// Sends what the camps say to every window: live state, your directives, chats.
+fn forward_camp_events(app: &tauri::AppHandle, camps: &Camps) {
+    let to_ui = app.clone();
+    camps.set_state_listener(Arc::new(move |live| {
+        if let Err(e) = tauri::Emitter::emit(&to_ui, CAMP_STATE_EVENT, live) {
+            eprintln!("[ourcamp] camp state event: {e}");
+        }
+    }));
+    let to_ui = app.clone();
+    camps.set_directive_listener(Arc::new(move |directive| {
+        if let Err(e) = tauri::Emitter::emit(&to_ui, CAMP_DIRECTIVE_EVENT, directive) {
+            eprintln!("[ourcamp] camp directive event: {e}");
+        }
+    }));
+    let to_ui = app.clone();
+    camps.set_chat_listener(Arc::new(move |update| {
+        if let Err(e) = tauri::Emitter::emit(&to_ui, CAMP_CHAT_EVENT, update) {
+            eprintln!("[ourcamp] camp chat event: {e}");
+        }
+    }));
+}
 
 /// Starts the application. Called from `main.rs` (desktop) and mobile entry points.
 ///
@@ -65,7 +90,8 @@ pub fn run() {
                         // A second window would join voice as the same person and LiveKit
                         // would throw the first one out (`DuplicateIdentity`).
                         eprintln!(
-                            "[ourcamp] OurCamp is already running with this profile; \n                             for a second person on this PC set OC_PROFILE=<name> (debug builds)"
+                            "[ourcamp] OurCamp is already running with this profile; \
+                             for a second person on this PC set OC_PROFILE=<name> (debug builds)"
                         );
                         std::process::exit(0);
                     }
@@ -81,18 +107,7 @@ pub fn run() {
                 eprintln!("[ourcamp] {reason}");
             }
             if let Ok(camps) = &camps {
-                let handle = app.handle().clone();
-                camps.set_state_listener(Arc::new(move |live| {
-                    if let Err(e) = tauri::Emitter::emit(&handle, CAMP_STATE_EVENT, live) {
-                        eprintln!("[ourcamp] camp state event: {e}");
-                    }
-                }));
-                let app = app.handle().clone();
-                camps.set_directive_listener(Arc::new(move |directive| {
-                    if let Err(e) = tauri::Emitter::emit(&app, CAMP_DIRECTIVE_EVENT, directive) {
-                        eprintln!("[ourcamp] camp directive event: {e}");
-                    }
-                }));
+                forward_camp_events(app.handle(), camps);
             }
             app.manage(camps);
             if let Some(engine) = for_levels {
@@ -127,6 +142,10 @@ pub fn run() {
             commands::camp_kick,
             commands::camp_set_silenced,
             commands::camp_avatar,
+            commands::chat_history,
+            commands::chat_send,
+            commands::chat_photo,
+            commands::chat_mark_read,
             commands::profile_avatar,
             commands::profile_set_avatar,
         ])

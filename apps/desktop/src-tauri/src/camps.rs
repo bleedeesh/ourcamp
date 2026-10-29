@@ -1,12 +1,14 @@
 //! Camps this device has joined (ADR-0020), kept in the app's data directory:
 //!
 //! * `device.key` — the device's Ed25519 key, i.e. who you are in every camp (ADR-0015);
-//! * `camps.json` — per camp: address, certificate pin, session, cached name and channels;
-//!   plus your display name and the camp you were last in.
+//! * `camps.json` — per camp: address, certificate pin, session, cached name and channels,
+//!   how far each chat is read (ADR-0044); plus your display name and the camp you were
+//!   last in.
 //!
 //! Every network call goes through `oc-camp-client` (pinned TLS). Errors come back as
 //! Russian text for the UI.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,9 @@ use oc_proto::{
 use serde::{Deserialize, Serialize};
 
 use crate::voice::room::RoomAccess;
+
+mod chat;
+pub use chat::{ChatListener, ChatUpdate, OutgoingPhoto};
 
 const KEY_FILE: &str = "device.key";
 const CAMPS_FILE: &str = "camps.json";
@@ -65,6 +70,9 @@ struct SavedCamp {
     /// Hash of the avatar this camp has from us; `None`: none (or never sent).
     #[serde(default)]
     avatar_sent: Option<String>,
+    /// Chat id → the last `seq` read there (ADR-0044); a chat not here: nothing read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    read: BTreeMap<String, u64>,
 }
 
 impl SavedCamp {
@@ -155,6 +163,8 @@ pub struct OpenCamp {
     pub me: SelfInfo,
     /// The server could not be reached; name and channels are the last known ones.
     pub offline: bool,
+    /// Chat id → the last `seq` read on this device (ADR-0044).
+    pub read: BTreeMap<String, u64>,
 }
 
 /// The device key and the joined camps.
@@ -167,6 +177,7 @@ pub struct Camps {
     /// Where live camp state goes (the app forwards it to the webview).
     listener: Mutex<Option<StateListener>>,
     directives: Mutex<Option<DirectiveListener>>,
+    chats: Mutex<Option<ChatListener>>,
     /// The task following the open camp's events; replaced when another camp opens.
     follower: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
@@ -235,6 +246,7 @@ impl Camps {
             saved: Mutex::new(saved),
             listener: Mutex::new(None),
             directives: Mutex::new(None),
+            chats: Mutex::new(None),
             follower: Mutex::new(None),
         })
     }
@@ -337,7 +349,7 @@ impl Camps {
             })?;
         let info = client.camp().await.map_err(describe)?;
         let id = camp_id(&link);
-        let camp = SavedCamp {
+        let mut camp = SavedCamp {
             id: id.clone(),
             by_name: link.fingerprint().is_none(),
             host: link.host().to_string(),
@@ -348,6 +360,19 @@ impl Camps {
             role: session.role,
             session: session.token().to_owned(),
             avatar_sent: None,
+            read: BTreeMap::new(),
+        };
+        // Coming back keeps what was read; a first join starts at now. The lock is let
+        // go before the await: a guard held across it would make the future not `Send`.
+        let known = self
+            .lock()
+            .camps
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| c.read.clone());
+        camp.read = match known {
+            Some(read) => read,
+            None => Self::read_up_to_now(&client, &session, &camp).await,
         };
         self.update(|saved| {
             name.clone_into(&mut saved.display_name);
@@ -530,6 +555,7 @@ impl Camps {
                 role: camp.role,
             },
             offline,
+            read: camp.read.clone(),
         }
     }
 
@@ -808,8 +834,12 @@ impl Camps {
                                     channel_id,
                                 });
                             }
-                            // Chats come with the chat window (M5, step 2).
-                            Ok(CampEvent::Message(_)) => {}
+                            Ok(CampEvent::Message(message)) => {
+                                self.chat_update(ChatUpdate::Message {
+                                    camp_id: id.clone(),
+                                    message,
+                                });
+                            }
                             // The camp closes the stream after this: nothing to reconnect to.
                             Ok(CampEvent::Kicked) => {
                                 self.kicked(&id);
@@ -1257,6 +1287,107 @@ mod tests {
             server.stop().await;
             let _ = fs::remove_dir_all(dir);
             let _ = fs::remove_dir_all(server_dir);
+        });
+    }
+
+    /// ADR-0044: what was said before you came is not unread; what is said after reaches
+    /// the UI live; read marks only move forward and outlive a restart; a photo is
+    /// fetched once and then comes from the cache, even with the camp down.
+    #[test]
+    fn chats_are_read_from_the_join_on_and_photos_kept() {
+        tauri::async_runtime::block_on(async {
+            let (server, server_dir) = camp("chat").await;
+            let link = server.links.join.to_string();
+            let (bob_dir, dir) = (temp_dir("chat-bob"), temp_dir("chat-lena"));
+            let bob = Camps::load(&bob_dir).unwrap();
+            let bobs = bob.join(&link, "Боб").await.unwrap();
+            bob.send(&bobs.id, "c1", "Был тут раньше".into(), None)
+                .await
+                .unwrap();
+
+            let lena = Arc::new(Camps::load(&dir).unwrap());
+            let seen: Arc<Mutex<Vec<ChatUpdate>>> = Arc::default();
+            let sink = Arc::clone(&seen);
+            lena.set_chat_listener(Arc::new(move |u| sink.lock().unwrap().push(u)));
+            let online = Arc::new(tokio::sync::Notify::new());
+            let ready = Arc::clone(&online);
+            lena.set_state_listener(Arc::new(move |live| {
+                if live.online {
+                    ready.notify_one();
+                }
+            }));
+            let opened = lena.join(&link, "Лена").await.unwrap();
+            assert_eq!(
+                opened.read.get("c1"),
+                Some(&1),
+                "Боб's old message is not unread"
+            );
+            lena.follow(&opened.id);
+            tokio::time::timeout(Duration::from_secs(5), online.notified())
+                .await
+                .expect("following");
+
+            let sent = bob
+                .send(&bobs.id, "c1", "Привет, Лена".into(), None)
+                .await
+                .unwrap();
+            let live = (0..50).find_map(|_| {
+                let got = seen.lock().unwrap().first().cloned();
+                if got.is_none() {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                got
+            });
+            assert_eq!(
+                live,
+                Some(ChatUpdate::Message {
+                    camp_id: opened.id.clone(),
+                    message: sent.clone(),
+                })
+            );
+            let history = lena.history(&opened.id, "c1", None, 50).await.unwrap();
+            assert_eq!(history.len(), 2);
+            assert_eq!(history[1], sent);
+
+            seen.lock().unwrap().clear();
+            lena.mark_read(&opened.id, "c1", 2).unwrap();
+            lena.mark_read(&opened.id, "c1", 1).unwrap();
+            assert_eq!(
+                *seen.lock().unwrap(),
+                [ChatUpdate::Read {
+                    camp_id: opened.id.clone(),
+                    channel_id: "c1".into(),
+                    seq: 2,
+                }],
+                "forward only"
+            );
+
+            let png = b"\x89PNG\r\n\x1a\nnot a real picture".to_vec();
+            let photo = OutgoingPhoto {
+                bytes: png.clone(),
+                width: 10,
+                height: 10,
+            };
+            let shown = lena
+                .send(&opened.id, "c1", String::new(), Some(photo))
+                .await
+                .unwrap();
+            let hash = shown.photo.expect("a photo").hash;
+            assert_eq!(bob.photo(&bobs.id, &hash).await.unwrap(), png);
+
+            lena.unfollow();
+            server.stop().await;
+            assert_eq!(
+                bob.photo(&bobs.id, &hash).await.unwrap(),
+                png,
+                "from the cache"
+            );
+            let again = Camps::load(&dir).unwrap();
+            assert_eq!(again.camp(&opened.id).unwrap().read.get("c1"), Some(&2));
+
+            for d in [dir, bob_dir, server_dir] {
+                let _ = fs::remove_dir_all(d);
+            }
         });
     }
 

@@ -1,6 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { CampApi, CampDirective, CampList, CampLive, CampPreview, OpenCamp } from "../engine/camp-api.ts";
+import type {
+  CampApi,
+  CampDirective,
+  CampList,
+  CampLive,
+  CampPreview,
+  ChatMessage,
+  ChatUpdate,
+  OpenCamp,
+} from "../engine/camp-api.ts";
 import { campfires, CampsController, campShort, NO_CAMP } from "./camps.ts";
 import { FakeEngine, MemoryStorage } from "./test-support.ts";
 import { VoiceController } from "./voice.ts";
@@ -20,6 +29,7 @@ const opened = (id: string, name: string, offline = false): OpenCamp => ({
   ],
   self: { userId: "me", name: "Дима", role: id === "own" ? "admin" : "member" },
   offline,
+  read: {},
 });
 
 /** Records calls; previews resolve when the test says so. */
@@ -101,6 +111,27 @@ class FakeCampApi implements CampApi {
   onDirective(listener: (d: CampDirective) => void) {
     this.#directive = listener;
     return () => (this.#directive = null);
+  }
+  history(): Promise<ChatMessage[]> {
+    return Promise.resolve([]);
+  }
+  send(): Promise<ChatMessage> {
+    return Promise.reject(new Error("not in these tests"));
+  }
+  photo(): Promise<Uint8Array> {
+    return Promise.reject(new Error("not in these tests"));
+  }
+  markRead(id: string, channelId: string, seq: number): Promise<void> {
+    this.calls.push(`read:${id}:${channelId}:${seq}`);
+    return Promise.resolve();
+  }
+  #chat: ((u: ChatUpdate) => void) | null = null;
+  onChat(listener: (u: ChatUpdate) => void) {
+    this.#chat = listener;
+    return () => (this.#chat = null);
+  }
+  emitChat(u: ChatUpdate) {
+    this.#chat?.(u);
   }
   /** Like Rust: on a kick the device has already forgotten the camp. */
   emitDirective(d: CampDirective) {
@@ -511,4 +542,47 @@ test("an open camp's address is checked and joined like an invite", async () => 
   api.pending.get(`ourcamp://ourcamp.kz/?fp=${FP}`)?.resolve({ name: "OurCamp KZ", channels: 2, kind: "open", usable: false });
   await closed;
   assert.equal(camps.canJoin(), false, "a camp that takes invites only");
+});
+
+test("the Чат button counts what is unread in the open camp's chats", async () => {
+  const { api, camps } = setup();
+  api.list_ = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+  const withChats = (read: Record<string, number>): OpenCamp => ({
+    ...opened("vk", "Вечерний кооп"),
+    channels: [...opened("vk", "Вечерний кооп").channels, { id: "t1", name: "Общий", kind: "text", afk: false }],
+    read,
+  });
+  api.open = (id) => {
+    api.calls.push(`open:${id}`);
+    return Promise.resolve(withChats({ t1: 3 }));
+  };
+  await camps.start();
+  assert.equal(camps.store.get().unread, 0, "nothing known before the first snapshot");
+
+  const state = (chats: Record<string, number>): CampLive => ({
+    campId: "vk",
+    online: true,
+    state: { name: "Вечерний кооп", channels: withChats({}).channels, members: [], presence: [], chats },
+  });
+  api.emitLive(state({ t1: 5 }));
+  assert.equal(camps.store.get().unread, 2);
+
+  const message = (seq: number, authorId: string): ChatUpdate => ({
+    type: "message",
+    campId: "vk",
+    message: { channelId: "t1", seq, authorId, authorName: "Боб", sentAt: 0, text: "Привет" },
+  });
+  api.emitChat(message(6, "bob"));
+  assert.equal(camps.store.get().unread, 3, "a live message");
+  api.emitLive(state({ t1: 5 }));
+  assert.equal(camps.store.get().unread, 3, "a snapshot from before it does not take it back");
+  api.emitChat({ ...message(9, "bob"), campId: "elsewhere" });
+  assert.equal(camps.store.get().unread, 3, "another camp's chat");
+
+  api.emitChat({ type: "read", campId: "vk", channelId: "t1", seq: 6 });
+  assert.equal(camps.store.get().unread, 0, "read in the chat window");
+
+  api.emitChat(message(7, "me"));
+  assert.equal(camps.store.get().unread, 0, "your own message is read");
+  assert.ok(api.calls.includes("read:vk:t1:7"), "and marked read on the device");
 });

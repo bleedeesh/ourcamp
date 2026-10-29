@@ -1,3 +1,4 @@
+import { badgeText, unreadLabel } from "../domain/chat.ts";
 import { linkView, type LinkView } from "../domain/link.ts";
 import { Avatar } from "./ChannelTree.tsx";
 import { useCamps } from "./camps-context.tsx";
@@ -33,6 +34,7 @@ export function BottomPanel() {
   const deafened = useVoice((s) => s.deafened);
   const link = useVoice((s) => s.link);
   const campOffline = useCamps((s) => s.offline);
+  const unread = useCamps((s) => s.unread);
   // A moderator forbade speaking (ADR-0028): the button is locked until lifted.
   const silenced = self?.silenced === true;
   const micOff = micMuted || silenced;
@@ -87,9 +89,20 @@ export function BottomPanel() {
 
       {/* Chat and streams open their own windows (roadmap M5/M6). */}
       <div className="panel__windows">
-        <button type="button" className="wide-button" aria-disabled="true" title="Скоро">
+        <button
+          type="button"
+          className="wide-button"
+          aria-disabled="true"
+          title="Окно чата — скоро (M5, шаг 3)"
+          aria-label={unread > 0 ? `Чат, ${unreadLabel(unread)}` : "Чат"}
+        >
           <Icon name="chat" size={18} />
           Чат
+          {unread > 0 && (
+            <span className="unread-badge" aria-hidden="true">
+              {badgeText(unread)}
+            </span>
+          )}
         </button>
         <button type="button" className="wide-button" aria-disabled="true" title="Скоро">
           <Icon name="screen" size={18} />
