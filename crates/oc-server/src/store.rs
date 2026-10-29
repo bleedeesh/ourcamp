@@ -240,6 +240,21 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        if version < 6 {
+            // Members' avatars (ADR-0035): a copy of what their app sent, kept apart so the
+            // member list stays small. Leaving or a kick takes it along.
+            let tx = self.conn.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE avatars (
+                     user_id TEXT PRIMARY KEY REFERENCES members (user_id) ON DELETE CASCADE,
+                     hash    TEXT NOT NULL,
+                     mime    TEXT NOT NULL,
+                     data    BLOB NOT NULL
+                 );",
+            )?;
+            tx.pragma_update(None, "user_version", 6)?;
+            tx.commit()?;
+        }
         if version == 0 {
             seed_new_camp(&self.conn)?;
         }
@@ -465,18 +480,67 @@ impl Store {
     /// # Errors
     /// On database failure.
     pub fn members(&self) -> StoreResult<Vec<oc_proto::MemberInfo>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT user_id, name, role, silenced FROM members ORDER BY user_id")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT m.user_id, m.name, m.role, m.silenced, a.hash
+             FROM members m LEFT JOIN avatars a ON a.user_id = m.user_id
+             ORDER BY m.user_id",
+        )?;
         let rows = stmt.query_map([], |r| {
             Ok(oc_proto::MemberInfo {
                 user_id: r.get(0)?,
                 name: r.get(1)?,
                 role: role_from(&r.get::<_, String>(2)?),
                 silenced: r.get(3)?,
+                avatar: r.get(4)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Keeps `user_id`'s avatar (ADR-0035), replacing the one before. `bytes` were checked
+    /// by the caller (`AvatarFormat::sniff`, size). `false`: no such member.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn set_avatar(
+        &self,
+        user_id: &str,
+        format: oc_proto::AvatarFormat,
+        bytes: &[u8],
+    ) -> StoreResult<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO avatars (user_id, hash, mime, data)
+             SELECT user_id, ?2, ?3, ?4 FROM members WHERE user_id = ?1
+             ON CONFLICT (user_id) DO UPDATE
+                 SET hash = excluded.hash, mime = excluded.mime, data = excluded.data",
+            params![user_id, oc_proto::avatar_hash(bytes), format.mime(), bytes],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Drops `user_id`'s avatar; they show their initial again.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn clear_avatar(&self, user_id: &str) -> StoreResult<()> {
+        self.conn
+            .execute("DELETE FROM avatars WHERE user_id = ?1", [user_id])?;
+        Ok(())
+    }
+
+    /// `user_id`'s avatar: media type and bytes.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn avatar(&self, user_id: &str) -> StoreResult<Option<(String, Vec<u8>)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT mime, data FROM avatars WHERE user_id = ?1",
+                [user_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
     }
 
     /// Forbids or allows a member to speak (ADR-0028). `false`: no such member.
@@ -688,6 +752,7 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oc_proto::AvatarFormat;
 
     #[test]
     fn a_camp_without_the_old_afk_campfire_gets_exactly_one_at_the_end() {
@@ -908,6 +973,45 @@ mod tests {
             Ok(Role::Member),
             "a member is let in, still a member"
         );
+    }
+
+    /// ADR-0035: a member's avatar is kept, replaced, listed by hash, dropped — and goes
+    /// with them when they leave.
+    #[test]
+    fn avatars_are_kept_per_member_and_leave_with_them() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        let join = store.join_token().unwrap().as_str().to_owned();
+        store.login(device("a"), Some(&join)).unwrap().unwrap();
+        let first = b"RIFF\x10\0\0\0WEBPone";
+        let second = b"\x89PNG\r\n\x1a\ntwo";
+
+        assert!(store.set_avatar("a", AvatarFormat::Webp, first).unwrap());
+        assert!(
+            !store
+                .set_avatar("ghost", AvatarFormat::Webp, first)
+                .unwrap(),
+            "no member, no avatar"
+        );
+        assert_eq!(
+            store.members().unwrap()[0].avatar,
+            Some(oc_proto::avatar_hash(first))
+        );
+        store.set_avatar("a", AvatarFormat::Png, second).unwrap();
+        assert_eq!(
+            store.avatar("a").unwrap(),
+            Some(("image/png".to_owned(), second.to_vec())),
+            "replaced"
+        );
+        store.clear_avatar("a").unwrap();
+        assert_eq!(store.members().unwrap()[0].avatar, None);
+
+        store.set_avatar("a", AvatarFormat::Webp, first).unwrap();
+        store.remove_member("a").unwrap();
+        let left: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM avatars", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "leaving takes the avatar along");
     }
 
     #[test]

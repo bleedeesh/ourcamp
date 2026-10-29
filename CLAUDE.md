@@ -39,7 +39,7 @@
 - `crates/oc-camp-client` — клиент лагеря без UI: ключ устройства (Ed25519 на `ring`), HTTPS с
   пиннингом через `oc-tls` (hyper), вход, токены комнат, `transport` — закреплённый
   `WsClient`/`HttpClient` для LiveKit SDK (ставится в `lib.rs` приложения). Им ходят тесты сервера.
-- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v5: участники, роли, костёр AFK — ADR-0025, запрет говорить — ADR-0028,
+- `crates/oc-server` — M3 шаги 1–5 (прокси `/rtc`, ADR-0019; опрос LiveKit и `/api/v1/events`, ADR-0021): headless-сервер (`pnpm server`), SQLite (v6: участники, роли, костёр AFK — ADR-0025, запрет говорить — ADR-0028, аватарки — ADR-0035,
   сессии), TLS 7780, ссылка для друзей, вход по подписи, роли и каналы v4 (ADR-0026), токены LiveKit (ADR-0017, 0018),
   выход из лагеря `DELETE /api/v1/members/me`.
   `livekit/` — свой LiveKit (`managed` по умолчанию, ADR-0022): ключ в `livekit-keys.json`, конфиг через
@@ -80,7 +80,7 @@ Voice/Chat/AFK, `manage.rs`, ADR-0026); модерация из окна ✅ (в
 адресные события `moved`/`kicked`, `silenced` в базе v5 и права LiveKit, ADR-0028); перенос перетаскиванием в окне и клиенте ✅ (`useDragMove`, `POST /members/{id}/move`, ADR-0029); пинг и качество
 связи в панели (ADR-0030), клиент в трее (ADR-0031), своя иконка окна сервера (ADR-0032); модерация из клиента ✅ (меню участника,
 выгнать/запретить — только младших по рангу, `Role::governs`, ADR-0033); правый клик — свои меню, меню браузера выключено (ADR-0034); дальше M4 по ADR-0035/0036 (раздел «Без центрального
-сервиса» в roadmap): ник и аватарка, «адрес для друзей» и VPN, шаг 7 (порты), домен и открытые серверы; CLI владельца для headless.
+сервиса» в roadmap): ник и аватарка ✅ (`avatar` на устройстве, `avatars/` — кэш по хешу, `makeAvatar` — canvas), «адрес для друзей» и VPN, шаг 7 (порты), домен и открытые серверы; CLI владельца для headless.
 Контракт UI↔движок (`src/engine/engine.ts`, `src-tauri/src/commands.rs`) не менять без
 необходимости. Roadmap: `docs/roadmap.md` (M0–M8).
 

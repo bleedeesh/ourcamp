@@ -17,6 +17,7 @@ import {
   type ServerStatus,
 } from "../status.ts";
 import { CampName, Channels, useAction, type Dragging } from "./CampSettings.tsx";
+import { MemberAvatar } from "./MemberAvatar.tsx";
 import { MemberMenu, type MenuAt } from "./MemberMenu.tsx";
 
 function TitleBar() {
@@ -126,9 +127,7 @@ function MemberRow({ member, api, drag, grab, openMenu }: { member: Member; api:
       onContextMenu={openMenu(member.userId)}
       {...handle}
     >
-      <span className="avatar" style={{ width: 32, height: 32, fontSize: 13 }} aria-hidden="true">
-        {member.name.slice(0, 1).toUpperCase()}
-      </span>
+      <MemberAvatar member={member} size={32} api={api} />
       <span className="member__who">
         <span className="member__line">
           <span className="member__name">{member.name}</span>

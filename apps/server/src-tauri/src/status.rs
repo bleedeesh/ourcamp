@@ -30,6 +30,8 @@ pub struct Member {
     pub mic_muted: bool,
     /// Forbidden to speak until lifted (ADR-0028).
     pub silenced: bool,
+    /// Hash of their avatar (ADR-0035); `None` without one.
+    pub avatar: Option<String>,
 }
 
 /// The whole window, as data.
@@ -116,6 +118,7 @@ pub fn snapshot(base: &Base, state: &CampState, livekit_pid: Option<u32>) -> Ser
                 role: m.role,
                 mic_muted: seat.as_ref().is_some_and(|(_, _, muted)| *muted),
                 silenced: m.silenced,
+                avatar: m.avatar.clone(),
                 campfire_id: seat.as_ref().map(|(id, _, _)| id.clone()),
                 campfire: seat.map(|(_, name, _)| name),
             }
@@ -166,6 +169,7 @@ mod tests {
             name: name.into(),
             role,
             silenced: false,
+            avatar: None,
         }
     }
 

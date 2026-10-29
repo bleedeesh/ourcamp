@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { CampApi, CampDirective, CampList, CampLive, CampPreview, OpenCamp } from "./camp-api.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
+import { decodeBase64Url, encodeBase64Url } from "../domain/avatar.ts";
 
 /** Event emitted by `src-tauri/src/lib.rs` (`CAMP_STATE_EVENT`). */
 const CAMP_STATE_EVENT = "camp://state";
@@ -35,6 +36,19 @@ export class TauriCampApi implements CampApi {
 
   moveMember(id: string, userId: string, channelId: string): Promise<void> {
     return invoke("camp_move_member", { id, userId, channelId });
+  }
+
+  async profileAvatar(): Promise<Uint8Array | null> {
+    const picture = await invoke<string | null>("profile_avatar");
+    return picture === null ? null : decodeBase64Url(picture);
+  }
+
+  setProfileAvatar(picture: Uint8Array | null): Promise<void> {
+    return invoke("profile_set_avatar", { picture: picture === null ? null : encodeBase64Url(picture) });
+  }
+
+  async avatar(id: string, userId: string, hash: string): Promise<Uint8Array> {
+    return decodeBase64Url(await invoke<string>("camp_avatar", { id, userId, hash }));
   }
 
   kick(id: string, userId: string): Promise<void> {

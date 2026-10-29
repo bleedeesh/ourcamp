@@ -126,6 +126,9 @@ pub fn run() {
             commands::camp_move_member,
             commands::camp_kick,
             commands::camp_set_silenced,
+            commands::camp_avatar,
+            commands::profile_avatar,
+            commands::profile_set_avatar,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start OurCamp");

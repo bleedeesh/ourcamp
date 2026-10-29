@@ -5,6 +5,7 @@ import { Icon } from "@ourcamp/ui/Icon.tsx";
 import type { Drag, Draggable } from "@ourcamp/ui/useDragMove.tsx";
 
 import type { ServerApi } from "../api.ts";
+import { MemberAvatar } from "./MemberAvatar.tsx";
 import { MAX_CAMP_NAME, MAX_CHANNEL_NAME, nameProblem, type Channel, type Member } from "../status.ts";
 
 /** Runs a change; a refusal shows next to the control instead of being lost. */
@@ -106,7 +107,14 @@ function ChannelIcon({ channel }: { channel: Channel }) {
 }
 
 /** Someone sitting in a campfire; drag them onto another one to move them (ADR-0029). */
-function Seated({ member, channelId, drag, grab, openMenu }: { member: Member; channelId: string } & Dragging) {
+function Seated({
+  member,
+  channelId,
+  api,
+  drag,
+  grab,
+  openMenu,
+}: { member: Member; channelId: string; api: ServerApi } & Dragging) {
   return (
     <li
       className="seated__person"
@@ -119,9 +127,7 @@ function Seated({ member, channelId, drag, grab, openMenu }: { member: Member; c
         if (e.key === "Enter") openMenu(member.userId)(e);
       }}
     >
-      <span className="avatar" style={{ width: 22, height: 22, fontSize: 11 }} aria-hidden="true">
-        {member.name.slice(0, 1).toUpperCase()}
-      </span>
+      <MemberAvatar member={member} size={22} api={api} />
       <span className="seated__name">{member.name}</span>
       {member.silenced ? (
         <span className="member__silenced" title="Говорить запрещено">
@@ -222,7 +228,7 @@ function ChannelRow({
       {seated.length > 0 && (
         <ul className="seated" aria-label={`В канале ${channel.name}`}>
           {seated.map((m) => (
-            <Seated key={m.userId} member={m} channelId={channel.id} drag={drag} grab={grab} openMenu={openMenu} />
+            <Seated key={m.userId} member={m} channelId={channel.id} api={api} drag={drag} grab={grab} openMenu={openMenu} />
           ))}
         </ul>
       )}

@@ -219,6 +219,38 @@ pub async fn camp_set_silenced(
     camps(&state)?.set_silenced(&id, &user_id, silenced).await
 }
 
+/// Your avatar on this device, base64url (ADR-0035); `None` without one.
+#[tauri::command]
+pub fn profile_avatar(state: State<'_, CampsState>) -> Result<Option<String>, String> {
+    Ok(camps(&state)?.avatar().map(|b| oc_proto::encode_bytes(&b)))
+}
+
+/// Sets your avatar (base64url of a PNG/WebP), or drops it with `None`.
+#[tauri::command]
+pub async fn profile_set_avatar(
+    state: State<'_, CampsState>,
+    picture: Option<String>,
+) -> Result<(), String> {
+    let picture = picture
+        .map(|p| oc_proto::decode_bytes(&p).ok_or_else(|| "Повреждённая картинка".to_owned()))
+        .transpose()?;
+    camps(&state)?.set_avatar(picture).await
+}
+
+/// A member's avatar by its hash, base64url (from the cache or the camp).
+#[tauri::command]
+pub async fn camp_avatar(
+    state: State<'_, CampsState>,
+    id: String,
+    user_id: String,
+    hash: String,
+) -> Result<String, String> {
+    camps(&state)?
+        .member_avatar(&id, &user_id, &hash)
+        .await
+        .map(|b| oc_proto::encode_bytes(&b))
+}
+
 /// The camp's friends link, to copy.
 #[tauri::command]
 pub async fn camp_invite(state: State<'_, CampsState>, id: String) -> Result<String, String> {

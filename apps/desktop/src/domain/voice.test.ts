@@ -14,6 +14,7 @@ const member = (id: string) => ({
   silenced: false,
   role: "member" as const,
   streaming: false,
+  avatar: null,
 });
 
 const camp: Camp = {

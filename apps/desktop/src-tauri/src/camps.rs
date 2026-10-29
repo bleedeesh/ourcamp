@@ -15,13 +15,20 @@ use std::time::Duration;
 
 use oc_camp_client::{CampClient, ClientError, DeviceKey, Session};
 use oc_invite::{Fingerprint, Host, Invite, InviteError};
-use oc_proto::{CampEvent, CampState, Channel, ErrorCode, InviteKindDto, Role};
+use oc_proto::{
+    avatar_hash, AvatarFormat, CampEvent, CampState, Channel, ErrorCode, InviteKindDto, Role,
+    MAX_AVATAR_BYTES,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::voice::room::RoomAccess;
 
 const KEY_FILE: &str = "device.key";
 const CAMPS_FILE: &str = "camps.json";
+/// Your avatar (ADR-0035): the one copy that counts; camps keep theirs.
+const AVATAR_FILE: &str = "avatar";
+/// Other people's avatars, by content hash: fetched once, kept across restarts.
+const AVATAR_CACHE: &str = "avatars";
 
 /// User-facing error text.
 pub type CampError = String;
@@ -51,6 +58,9 @@ struct SavedCamp {
     role: Role,
     /// Bearer token. A secret, like a browser cookie for this camp.
     session: String,
+    /// Hash of the avatar this camp has from us; `None`: none (or never sent).
+    #[serde(default)]
+    avatar_sent: Option<String>,
 }
 
 impl SavedCamp {
@@ -141,6 +151,8 @@ pub struct OpenCamp {
 /// The device key and the joined camps.
 pub struct Camps {
     file: PathBuf,
+    /// The data directory: the avatar and the avatar cache live here too.
+    dir: PathBuf,
     key: DeviceKey,
     saved: Mutex<Saved>,
     /// Where live camp state goes (the app forwards it to the webview).
@@ -209,6 +221,7 @@ impl Camps {
         };
         Ok(Self {
             file,
+            dir: dir.to_owned(),
             key,
             saved: Mutex::new(saved),
             listener: Mutex::new(None),
@@ -312,6 +325,7 @@ impl Camps {
             user_id: session.user_id.clone(),
             role: session.role,
             session: session.token().to_owned(),
+            avatar_sent: None,
         };
         self.update(|saved| {
             name.clone_into(&mut saved.display_name);
@@ -319,6 +333,7 @@ impl Camps {
             saved.camps.push(camp.clone());
             saved.current = Some(id);
         })?;
+        self.sync_avatar(&camp.id).await;
         Ok(self.opened(&camp, false))
     }
 
@@ -348,7 +363,138 @@ impl Camps {
             }
             saved.current = Some(camp.id.clone());
         })?;
+        if !offline {
+            self.sync_avatar(&camp.id).await;
+        }
         Ok(self.opened(&camp, offline))
+    }
+
+    /// Your avatar as this device keeps it (ADR-0035).
+    #[must_use]
+    pub fn avatar(&self) -> Option<Vec<u8>> {
+        fs::read(self.dir.join(AVATAR_FILE)).ok()
+    }
+
+    /// Sets (or with `None` drops) your avatar on this device, then on the open camp; the
+    /// others get it when next opened.
+    ///
+    /// # Errors
+    /// Not a PNG/WebP within the size limit, or the file cannot be written.
+    pub async fn set_avatar(&self, picture: Option<Vec<u8>>) -> Result<(), CampError> {
+        let path = self.dir.join(AVATAR_FILE);
+        match picture {
+            Some(bytes) => {
+                if bytes.len() > MAX_AVATAR_BYTES || AvatarFormat::sniff(&bytes).is_none() {
+                    return Err("Аватарка — картинка PNG или WebP до 96 КБ".into());
+                }
+                let tmp = path.with_extension("tmp");
+                fs::write(&tmp, &bytes)
+                    .and_then(|()| fs::rename(&tmp, &path))
+                    .map_err(|e| format!("Не удалось сохранить аватарку: {e}"))?;
+            }
+            None => match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("Не удалось убрать аватарку: {e}")),
+            },
+        }
+        let current = self.lock().current.clone();
+        if let Some(id) = current {
+            self.sync_avatar(&id).await;
+        }
+        Ok(())
+    }
+
+    /// Brings camp `id`'s copy of your avatar in line with this device's. Best effort:
+    /// a camp that does not answer gets it next time it is opened.
+    async fn sync_avatar(&self, id: &str) {
+        let Ok(camp) = self.camp(id) else { return };
+        let mine = self.avatar();
+        let hash = mine.as_deref().map(avatar_hash);
+        if hash == camp.avatar_sent {
+            return;
+        }
+        let Ok(client) = camp.client() else { return };
+        let send = |session: Session| {
+            let (client, mine) = (&client, mine.clone());
+            async move {
+                match mine {
+                    Some(bytes) => client.set_avatar(&session, bytes).await,
+                    None => client.clear_avatar(&session).await,
+                }
+            }
+        };
+        let result = match send(camp.session()).await {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                match self.relogin(&camp, &client).await {
+                    Ok(session) => send(session).await,
+                    Err(e) => {
+                        eprintln!("[ourcamp] avatar to {}: {e}", camp.name);
+                        return;
+                    }
+                }
+            }
+            other => other,
+        };
+        match result {
+            Ok(()) => {
+                if let Err(e) = self.update(|saved| {
+                    if let Some(stored) = saved.camps.iter_mut().find(|c| c.id == id) {
+                        stored.avatar_sent.clone_from(&hash);
+                    }
+                }) {
+                    eprintln!("[ourcamp] avatar to {}: {e}", camp.name);
+                }
+            }
+            Err(e) => eprintln!("[ourcamp] avatar to {}: {}", camp.name, describe(e)),
+        }
+    }
+
+    /// A member's avatar by the hash the camp's snapshot names, from the cache or the camp.
+    ///
+    /// # Errors
+    /// A malformed hash, no such avatar, unreachable camp.
+    pub async fn member_avatar(
+        &self,
+        id: &str,
+        user_id: &str,
+        hash: &str,
+    ) -> Result<Vec<u8>, CampError> {
+        // The hash names a file: it must be what `avatar_hash` makes, never a path.
+        if hash.len() != 16
+            || !hash
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err("Неверное имя аватарки".into());
+        }
+        let cached = self.dir.join(AVATAR_CACHE).join(hash);
+        if let Ok(bytes) = fs::read(&cached) {
+            if avatar_hash(&bytes) == hash {
+                return Ok(bytes);
+            }
+        }
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        let bytes = match client.avatar(&camp.session(), user_id).await {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(&camp, &client).await?;
+                client.avatar(&session, user_id).await
+            }
+            other => other,
+        }
+        .map_err(describe)?;
+        if AvatarFormat::sniff(&bytes).is_none() {
+            return Err("Сервер прислал не картинку".into());
+        }
+        // Kept under its own hash: if it changed meanwhile, the next snapshot names it.
+        let file = self.dir.join(AVATAR_CACHE).join(avatar_hash(&bytes));
+        if let Err(e) =
+            fs::create_dir_all(self.dir.join(AVATAR_CACHE)).and_then(|()| fs::write(&file, &bytes))
+        {
+            eprintln!("[ourcamp] avatar cache: {e}");
+        }
+        Ok(bytes)
     }
 
     fn opened(&self, camp: &SavedCamp, offline: bool) -> OpenCamp {
@@ -1017,6 +1163,71 @@ mod tests {
             server.stop().await;
             let _ = fs::remove_dir_all(dir);
             let _ = fs::remove_dir_all(server_dir);
+        });
+    }
+
+    /// ADR-0035: the avatar lives on the device and reaches the camp on joining; another
+    /// member fetches it once by hash, then from the cache — even with the camp down.
+    #[test]
+    fn your_avatar_reaches_the_camp_and_others_fetch_it_once() {
+        tauri::async_runtime::block_on(async {
+            let (server, server_dir) = camp("avatar").await;
+            let link = server.links.join.to_string();
+            let (lena_dir, bob_dir) = (temp_dir("avatar-lena"), temp_dir("avatar-bob"));
+            let lena = Camps::load(&lena_dir).unwrap();
+            let picture = b"RIFF\x1a\0\0\0WEBPVP8 \x0e\0\0\0lena's face".to_vec();
+
+            assert!(lena.set_avatar(Some(b"GIF89a".to_vec())).await.is_err());
+            lena.set_avatar(Some(picture.clone())).await.unwrap();
+            assert_eq!(lena.avatar(), Some(picture.clone()), "kept on the device");
+            let opened = lena.join(&link, "Лена").await.unwrap();
+
+            let hash = avatar_hash(&picture);
+            let has = |want: Option<&str>| {
+                let mut state = server.camp_state();
+                let me = opened.me.user_id.clone();
+                let want = want.map(str::to_owned);
+                async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        state.wait_for(|s| {
+                            s.members
+                                .iter()
+                                .any(|m| m.user_id == me && m.avatar == want)
+                        }),
+                    )
+                    .await
+                    .is_ok()
+                }
+            };
+            assert!(has(Some(&hash)).await, "sent on joining");
+
+            let bob = Camps::load(&bob_dir).unwrap();
+            let theirs = bob.join(&link, "Боб").await.unwrap();
+            let fetched = bob
+                .member_avatar(&theirs.id, &opened.me.user_id, &hash)
+                .await
+                .unwrap();
+            assert_eq!(fetched, picture);
+            assert!(bob
+                .member_avatar(&theirs.id, &opened.me.user_id, "../../device.key")
+                .await
+                .is_err());
+
+            lena.set_avatar(None).await.unwrap();
+            assert!(has(None).await, "dropped on the open camp at once");
+
+            server.stop().await;
+            assert_eq!(
+                bob.member_avatar(&theirs.id, &opened.me.user_id, &hash)
+                    .await
+                    .unwrap(),
+                picture,
+                "from the cache, the camp being down"
+            );
+            for d in [lena_dir, bob_dir, server_dir] {
+                let _ = fs::remove_dir_all(d);
+            }
         });
     }
 

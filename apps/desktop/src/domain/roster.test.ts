@@ -13,6 +13,7 @@ const member = (id: string, extra = {}) => ({
   silenced: false,
   role: "member" as const,
   streaming: false,
+  avatar: null,
   ...extra,
 });
 

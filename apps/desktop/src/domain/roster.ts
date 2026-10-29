@@ -76,6 +76,7 @@ function newcomer(id: UserId, name: string): Member {
     silenced: false,
     role: "member",
     streaming: false,
+  avatar: null,
   };
 }
 
@@ -114,7 +115,13 @@ export function applyCampState(camp: Camp, state: CampState, currentChannelId: s
   const members: Record<UserId, Member> = { ...camp.members };
   for (const info of state.members) {
     const known = members[info.userId] ?? newcomer(info.userId, info.name);
-    members[info.userId] = { ...known, name: info.name, role: info.role, silenced: info.silenced };
+    members[info.userId] = {
+      ...known,
+      name: info.name,
+      role: info.role,
+      silenced: info.silenced,
+      avatar: info.avatar ?? null,
+    };
   }
   const presence = new Map(state.presence.map((p) => [p.channelId, p.members]));
   const roomMembers = new Set(camp.channels.find((c) => c.id === currentChannelId)?.memberIds ?? []);
