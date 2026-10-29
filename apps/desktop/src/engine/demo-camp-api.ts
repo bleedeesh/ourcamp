@@ -4,6 +4,7 @@ import type {
   CampList,
   CampPreview,
   ChannelInfo,
+  ChatContext,
   ChatMessage,
   ChatUpdate,
   OpenCamp,
@@ -21,9 +22,11 @@ const DEMO_CHATS: readonly ChannelInfo[] = [
 
 /** What was said in the demo chats: yesterday evening, then tonight (the mockup's lines). */
 function demoMessages(): Map<string, ChatMessage[]> {
-  const today = new Date();
-  today.setHours(21, 0, 0, 0);
-  const yesterday = today.getTime() - 24 * 60 * 60 * 1000;
+  const evening = new Date();
+  evening.setHours(21, 0, 0, 0);
+  const yesterday = evening.getTime() - 24 * 60 * 60 * 1000;
+  // Tonight's lines were a few minutes ago, whenever the demo runs.
+  const tonight = Date.now() - 10 * 60 * 1000;
   const at = (day: number, minutes: number) => day + minutes * 60 * 1000;
   const say = (channelId: string) => {
     let seq = 0;
@@ -47,9 +50,9 @@ function demoMessages(): Map<string, ChatMessage[]> {
         chat("lena", "Лена", at(yesterday, 103), "Я смогу только после девяти"),
         chat("max", "Макс", at(yesterday, 104), "Тогда в 21:00, кто опоздает — дежурит по костру"),
         chat("artem", "Артём", at(yesterday, 105), "Договорились"),
-        chat("artem", "Артём", at(today.getTime(), 2), "Лена, включи стрим, хочу глянуть билд"),
-        chat("lena", "Лена", at(today.getTime(), 3), "Запустила, жмите LIVE возле моего ника"),
-        chat("max", "Макс", at(today.getTime(), 5), "Я без микро, пишу сюда. Через 10 минут буду"),
+        chat("artem", "Артём", at(tonight, 2), "Лена, включи стрим, хочу глянуть билд"),
+        chat("lena", "Лена", at(tonight, 3), "Запустила, жмите LIVE возле моего ника"),
+        chat("max", "Макс", at(tonight, 5), "Я без микро, пишу сюда. Через 10 минут буду"),
       ],
     ],
     [
@@ -165,16 +168,25 @@ export class DemoCampApi implements CampApi {
       authorName: this.#name || "Дима",
       sentAt: Date.now(),
       text: text.trimEnd(),
-      ...(photo && { photo: { hash: "demo", width: photo.width, height: photo.height } }),
+      ...(photo && { photo: { hash: this.#keep(photo.bytes), width: photo.width, height: photo.height } }),
     };
     this.#messages.set(channelId, [...all, message]);
     this.#chat?.({ type: "message", campId: DEMO_ID, message });
     return message;
   }
 
-  photo(): Promise<Uint8Array> {
-    // The demo keeps no photos: the window shows the placeholder.
-    return Promise.reject(new Error("no photos in the demo"));
+  /** Photos sent in the demo, kept for this page's life. */
+  readonly #photos = new Map<string, Uint8Array>();
+
+  #keep(bytes: Uint8Array): string {
+    const hash = `demo-${this.#photos.size}`;
+    this.#photos.set(hash, bytes);
+    return hash;
+  }
+
+  photo(_id: string, hash: string): Promise<Uint8Array> {
+    const bytes = this.#photos.get(hash);
+    return bytes ? Promise.resolve(bytes) : Promise.reject(new Error("no such photo in the demo"));
   }
 
   markRead(_id: string, channelId: string, seq: number): Promise<void> {
@@ -210,6 +222,32 @@ export class DemoCampApi implements CampApi {
       this.#messages.set("chat", [...all, message]);
       this.#chat?.({ type: "message", campId: DEMO_ID, message });
     }, 3000);
+  }
+
+  /**
+   * The demo chat window opens on its own page: it brings the demo camp along, as if the
+   * main window had it open, with the demo's people.
+   */
+  chatContext(): Promise<ChatContext | null> {
+    const open = this.#open();
+    const members = Object.values(DEMO_CAMP.members).map((m) => ({
+      userId: m.id,
+      name: m.name,
+      role: m.role,
+      silenced: m.silenced,
+    }));
+    return Promise.resolve({
+      camp: open,
+      live: {
+        campId: DEMO_ID,
+        online: true,
+        state: { name: DEMO_CAMP.name, channels: open.channels, members, presence: [], chats: this.#latest() },
+      },
+    });
+  }
+
+  #latest(): Record<string, number> {
+    return Object.fromEntries([...this.#messages].map(([id, all]) => [id, all.at(-1)?.seq ?? 0]));
   }
 
   #open(): OpenCamp {

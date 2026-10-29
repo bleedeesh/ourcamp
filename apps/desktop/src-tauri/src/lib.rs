@@ -9,6 +9,7 @@ mod commands;
 mod levels;
 mod participants;
 mod voice;
+mod windows;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -117,12 +118,15 @@ pub fn run() {
             tray(app)?;
             Ok(())
         })
-        // The close button hides the window into the tray: voice and the camp stay on,
-        // like in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031).
+        // The main window's close button hides it into the tray: voice and the camp stay
+        // on, like in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031).
+        // The chat window simply closes (ADR-0046).
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == windows::MAIN {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -146,6 +150,8 @@ pub fn run() {
             commands::chat_send,
             commands::chat_photo,
             commands::chat_mark_read,
+            commands::chat_context,
+            commands::chat_window_open,
             commands::profile_avatar,
             commands::profile_set_avatar,
         ])
@@ -162,7 +168,7 @@ pub fn run() {
 
 /// Shows the window again (from the tray or a second launch).
 fn show_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    if let Some(window) = app.get_webview_window(windows::MAIN) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

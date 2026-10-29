@@ -80,6 +80,13 @@ export interface OutgoingPhoto {
   readonly height: number;
 }
 
+/** The open camp as the chat window gets it when it opens (ADR-0046). */
+export interface ChatContext {
+  readonly camp: OpenCamp;
+  /** The latest live update about it; `null` until the first one. */
+  readonly live: CampLive | null;
+}
+
 /** What changed in the open camp's chats, mirrors `camps::ChatUpdate`; every window hears it. */
 export type ChatUpdate =
   | { readonly type: "message"; readonly campId: string; readonly message: ChatMessage }
@@ -128,6 +135,8 @@ export interface CampApi {
   markRead(id: string, channelId: string, seq: number): Promise<void>;
   /** Messages and read marks of the open camp's chats (ADR-0044); returns an unsubscribe. */
   onChat(listener: (update: ChatUpdate) => void): () => void;
+  /** The camp open in the main window, for the chat window (ADR-0046); `null` with none. */
+  chatContext(): Promise<ChatContext | null>;
 }
 
 /**

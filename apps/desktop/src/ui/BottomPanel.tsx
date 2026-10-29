@@ -1,6 +1,7 @@
 import { badgeText, unreadLabel } from "../domain/chat.ts";
 import { linkView, type LinkView } from "../domain/link.ts";
-import { Avatar } from "./ChannelTree.tsx";
+import { openChatWindow } from "../engine/windows.ts";
+import { Avatar } from "./Avatar.tsx";
 import { useCamps } from "./camps-context.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { useVoice, useVoiceController } from "./voice-context.tsx";
@@ -92,9 +93,8 @@ export function BottomPanel() {
         <button
           type="button"
           className="wide-button"
-          aria-disabled="true"
-          title="Окно чата — скоро (M5, шаг 3)"
           aria-label={unread > 0 ? `Чат, ${unreadLabel(unread)}` : "Чат"}
+          onClick={() => void openChatWindow()}
         >
           <Icon name="chat" size={18} />
           Чат

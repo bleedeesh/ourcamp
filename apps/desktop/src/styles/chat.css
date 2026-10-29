@@ -1,0 +1,433 @@
+/* The chat window (ADR-0046), after the mockup's screen 9: tabs of the camp's chats, the
+   feed, the composer. Shared parts (title bar, avatar, badge) come from app.css. */
+
+.chat-app {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-1);
+}
+
+.chat-app__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.titlebar__brand--chat {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.titlebar__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.chat-empty {
+  margin: auto;
+  max-width: 280px;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* ---------- Tabs: the camp's chats ---------- */
+
+.chat-tabs__wrap {
+  padding: 10px 10px 4px;
+}
+
+.chat-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius-l);
+  background: var(--bg-0);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.chat-tabs__tab {
+  flex: 1 0 auto;
+  min-width: 72px;
+  max-width: 180px;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.chat-tabs__tab:hover {
+  color: var(--text);
+}
+
+.chat-tabs__tab[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.chat-tabs__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Feed ---------- */
+
+.feed {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.feed__scroller {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 14px 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Few messages sit at the bottom, by the composer. */
+.feed__spacer {
+  margin-top: auto;
+}
+
+.feed__day,
+.feed__note {
+  margin: 0;
+  padding: 10px 0 4px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.feed__note--error {
+  color: #ff8a98;
+}
+
+.feed__quiet {
+  margin: 0;
+  padding: 24px 0;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text-faint);
+}
+
+.feed__unread {
+  margin: 8px 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-text);
+}
+
+.feed__unread::before,
+.feed__unread::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--accent-soft);
+}
+
+.feed__jump {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.feed__jump .icon {
+  transform: rotate(90deg);
+}
+
+/* ---------- Message ---------- */
+
+.message {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 1px 0;
+}
+
+.message[data-head] {
+  padding-top: 8px;
+}
+
+/* A turn's later lines: the time shows in the avatar's column on hover. */
+.message__gutter-time {
+  flex: 0 0 30px;
+  padding-top: 3px;
+  font-size: 10px;
+  color: var(--text-faint);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  visibility: hidden;
+}
+
+.message:hover .message__gutter-time {
+  visibility: visible;
+}
+
+.message__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.message__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.message__author {
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message__time {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.message__text {
+  margin: 2px 0 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #e0e0e0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.message__photo {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  max-height: 280px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  background: var(--surface);
+  cursor: zoom-in;
+}
+
+.message__photo:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.message__photo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.message__photo-wait {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  min-height: 60px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ---------- Composer ---------- */
+
+.composer {
+  padding: 6px 10px 10px;
+}
+
+.composer__bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 5px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+}
+
+.composer__button {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--radius-m);
+  background: var(--surface-2);
+  color: var(--text-2);
+  display: grid;
+  place-items: center;
+}
+
+.composer__button:hover {
+  color: var(--text);
+}
+
+.composer__button--send {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.composer__button--send:hover {
+  color: var(--on-accent);
+}
+
+.composer__button--send[aria-busy] {
+  opacity: 0.6;
+}
+
+.composer__field {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  max-height: 140px;
+  padding: 8px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  resize: none;
+  outline: none;
+}
+
+.composer__field::placeholder {
+  color: var(--text-faint);
+}
+
+.composer__error {
+  margin: 0 4px 6px;
+  font-size: 13px;
+  color: #ff8a98;
+}
+
+.composer__count {
+  margin: 4px 6px 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.composer__count[data-over] {
+  color: #ff8a98;
+}
+
+.composer--locked {
+  margin: 6px 10px 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attachment {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 6px;
+  padding: 6px;
+  border-radius: var(--radius-l);
+  background: var(--bg-2);
+}
+
+.attachment__thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-s);
+  object-fit: cover;
+}
+
+.attachment__label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.attachment__remove {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+}
+
+.attachment__remove:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* ---------- Photo over the window ---------- */
+
+.photo-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.88);
+  cursor: zoom-out;
+}
+
+.photo-viewer__image {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-m);
+  object-fit: contain;
+}
+
+.photo-viewer__close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+}

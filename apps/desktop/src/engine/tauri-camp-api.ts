@@ -5,6 +5,7 @@ import type {
   CampList,
   CampLive,
   CampPreview,
+  ChatContext,
   ChatMessage,
   ChatUpdate,
   OpenCamp,
@@ -99,5 +100,9 @@ export class TauriCampApi implements CampApi {
 
   onChat(listener: (update: ChatUpdate) => void): () => void {
     return subscribe<ChatUpdate>(CAMP_CHAT_EVENT, listener);
+  }
+
+  chatContext(): Promise<ChatContext | null> {
+    return invoke("chat_context");
   }
 }
