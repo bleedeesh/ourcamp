@@ -18,6 +18,8 @@ export interface ServerApi {
   /** Looks for networks again (a VPN switched on after the start). */
   refreshAddresses(): Promise<void>;
   renameCamp(name: string): Promise<void>;
+  /** Opens the camp to anyone with its address, or back to invites only (ADR-0040). */
+  setOpen(open: boolean): Promise<void>;
   setRole(userId: string, role: Role): Promise<void>;
   createChannel(name: string, kind: Channel["kind"]): Promise<void>;
   renameChannel(id: string, name: string): Promise<void>;
@@ -64,6 +66,10 @@ export class TauriServerApi implements ServerApi {
 
   renameCamp(name: string): Promise<void> {
     return invoke("server_rename_camp", { name });
+  }
+
+  setOpen(open: boolean): Promise<void> {
+    return invoke("server_set_open", { open });
   }
 
   setRole(userId: string, role: Role): Promise<void> {
@@ -182,14 +188,16 @@ export const DEMO_ADDRESSES: Record<string, { reach: Reach; host: string }> = {
 
 /** Browser-only stand-in (`pnpm --filter @ourcamp/server dev`): a camp held in memory. */
 export class DemoServerApi implements ServerApi {
-  /** `scenario`: one of {@link DEMO_ADDRESSES} (`?demo=`); Radmin on by default. */
-  constructor(scenario: string | null = null) {
+  /** `scenario`: one of {@link DEMO_ADDRESSES} (`?demo=`); Radmin on by default. `open`: an open camp (`&open`). */
+  constructor(scenario: string | null = null, open = false) {
     const { reach, host } = DEMO_ADDRESSES[scenario ?? "radmin"] ?? DEMO_ADDRESSES.radmin!;
     this.#status = {
       ...this.#status,
       reach,
+      open,
       address: `${host}:7780`,
       joinLink: `ourcamp://${host}/join/k3j4h5g6f7d8s9a0?fp=${FP}`,
+      openLink: `ourcamp://${host}?fp=${FP}`,
     };
   }
 
@@ -247,6 +255,7 @@ export class DemoServerApi implements ServerApi {
       ...this.#status,
       address: `${host}:7780`,
       joinLink: `ourcamp://${host}/join/k3j4h5g6f7d8s9a0?fp=_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8`,
+      openLink: `ourcamp://${host}?fp=_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8`,
       reach: { ...this.#status.reach, choice, note: null, ports: null },
     });
   }
@@ -257,6 +266,10 @@ export class DemoServerApi implements ServerApi {
 
   renameCamp(name: string): Promise<void> {
     return this.#change({ ...this.#status, campName: name.trim() });
+  }
+
+  setOpen(open: boolean): Promise<void> {
+    return this.#change({ ...this.#status, open });
   }
 
   setRole(userId: string, role: Role): Promise<void> {

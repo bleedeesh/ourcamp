@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use oc_invite::{Fingerprint, Host, Invite, InviteKind, Token};
+use oc_invite::{Address, Fingerprint, Host, Invite, InviteKind, Token};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -106,6 +106,8 @@ impl fmt::Debug for LiveKit {
 pub struct Links {
     /// For friends. Roles are given in the server window, not by links (ADR-0026).
     pub join: Invite,
+    /// The camp's address alone: lets anyone in while the camp is open (ADR-0040).
+    pub open: Address,
 }
 
 /// Why the server did not start.
@@ -262,6 +264,11 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
             InviteKind::Join,
             store.join_token().map_err(StartError::Store)?,
         ),
+        open: Address {
+            host: config.public_host.clone(),
+            port: config.public_port.unwrap_or(local_addr.port()),
+            fingerprint: identity.fingerprint,
+        },
     };
     let camp = store.camp().map_err(StartError::Store)?;
     let wanted = wanted_ports(local_addr.port(), &config.livekit);

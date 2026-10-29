@@ -207,6 +207,7 @@ async fn camp(State(state): State<AppState>) -> Result<Json<CampInfo>, ApiError>
         api_version: API_VERSION,
         name: camp.name,
         channels: camp.channels,
+        open: camp.open,
     }))
 }
 

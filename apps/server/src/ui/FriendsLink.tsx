@@ -11,7 +11,22 @@ import { useAction } from "./CampSettings.tsx";
  * network, a VPN like Radmin, the public address of a hosting server, or one's own
  * domain or IP. A new address restarts the camp: voice drops for a moment.
  */
-export function FriendsLink({ link, reach, api }: { link: string; reach: Reach; api: ServerApi }) {
+export function FriendsLink({
+  joinLink,
+  openLink,
+  open,
+  reach,
+  api,
+}: {
+  joinLink: string;
+  openLink: string | null;
+  open: boolean;
+  reach: Reach;
+  api: ServerApi;
+}) {
+  // Open (ADR-0040): the address alone is the link; otherwise the invite.
+  const link = open && openLink !== null ? openLink : joinLink;
+  const [entry, runEntry] = useAction();
   const [copied, setCopied] = useState<"idle" | "copied" | string>("idle");
   const [value, setValue] = useState(choiceValue(reach.choice));
   const [host, setHost] = useState(reach.choice.kind === "custom" ? reach.choice.host : "");
@@ -65,7 +80,33 @@ export function FriendsLink({ link, reach, api }: { link: string; reach: Reach; 
         </button>
       </div>
       <code className="link__value">{link}</code>
-      <span className="link__hint">{copied !== "idle" && copied !== "copied" ? copied : "Отправьте её тем, кого зовёте на сервер."}</span>
+      <span className="link__hint">
+        {copied !== "idle" && copied !== "copied"
+          ? copied
+          : open
+            ? "Без приглашения: по ней зайдёт любой, у кого она есть."
+            : "Отправьте её тем, кого зовёте на сервер."}
+      </span>
+
+      <div className="entry">
+        <span id="friends-entry-label" className="address__label">
+          Вход
+        </span>
+        <span className="segmented" role="radiogroup" aria-labelledby="friends-entry-label">
+          <button type="button" role="radio" aria-checked={!open} onClick={() => open && void runEntry(() => api.setOpen(false))}>
+            По приглашению
+          </button>
+          <button type="button" role="radio" aria-checked={open} onClick={() => !open && void runEntry(() => api.setOpen(true))}>
+            Открытый
+          </button>
+        </span>
+        <span className="address__hint">
+          {open
+            ? "Зайдёт любой, у кого есть адрес. Мешающих — выгнать или запретить им говорить в меню человека."
+            : "Зайдут только те, кому вы дали ссылку-приглашение."}
+        </span>
+        {entry && <span className="name-edit__error">{entry}</span>}
+      </div>
 
       <div className="address">
         <span id="friends-address-label" className="address__label">

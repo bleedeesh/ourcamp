@@ -60,6 +60,7 @@ fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreRe
         channels: camp.channels,
         members,
         presence,
+        open: camp.open,
     })
 }
 

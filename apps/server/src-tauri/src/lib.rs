@@ -379,6 +379,7 @@ pub fn run() {
             server_set_address,
             server_refresh_addresses,
             manage::server_rename_camp,
+            manage::server_set_open,
             manage::server_set_role,
             manage::server_create_channel,
             manage::server_rename_channel,

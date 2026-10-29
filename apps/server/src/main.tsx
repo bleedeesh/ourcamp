@@ -16,7 +16,7 @@ import { DemoServerApi, isTauri, TauriServerApi } from "./api.ts";
 import { App } from "./ui/App.tsx";
 
 // In the browser, `?demo=radmin-off` (etc., see DEMO_ADDRESSES) shows an address situation.
-const api = isTauri() ? new TauriServerApi() : new DemoServerApi(new URLSearchParams(location.search).get("demo"));
+const api = isTauri() ? new TauriServerApi() : new DemoServerApi(new URLSearchParams(location.search).get("demo"), new URLSearchParams(location.search).has("open"));
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root element missing from index.html");

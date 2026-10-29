@@ -138,6 +138,12 @@ export function JoinPanel() {
               <span className="camp-card__name">{check.preview.name}</span>
               <span className="camp-card__sub">{campfires(check.preview.channels)}</span>
               {/* Admin keys are retired (ADR-0026): roles come from the server window. */}
+              {check.preview.kind === "open" &&
+                (check.preview.usable ? (
+                  <span className="camp-card__sub">Открытый сервер — приглашение не нужно</span>
+                ) : (
+                  <span className="join__error">Сервер пускает только по приглашению — попросите ссылку-приглашение</span>
+                ))}
               {check.preview.kind === "claim" && (
                 <span className="join__error">
                   Ключ админа больше не действует — попросите ссылку для друзей, роль выдаст владелец сервера

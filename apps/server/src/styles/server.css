@@ -795,3 +795,15 @@
   font-size: 12px;
   color: var(--online);
 }
+
+/* ---------- Entry: invites or open (ADR-0040) ---------- */
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}

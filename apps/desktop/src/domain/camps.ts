@@ -41,8 +41,11 @@ export interface CampsState {
 /** Placeholder until a camp is open: the camp view is not rendered then. */
 export const NO_CAMP: Camp = { id: "", name: "", short: "", color: "#444444", channels: [], members: {} };
 
-/** `ourcamp://host[:port]/join|claim/<token>?…fp=<43>` — enough to ask the camp about it. */
-const LINK_SHAPE = /^ourcamp:\/\/[^/\s]+\/(join|claim)\/[0-9a-z]+\?\S*fp=[A-Za-z0-9_-]{43}/i;
+/**
+ * `ourcamp://host[:port]/join|claim/<token>?…fp=<43>`, or an open camp's
+ * `ourcamp://host[:port][/]?…fp=<43>` (ADR-0040) — enough to ask the camp about it.
+ */
+const LINK_SHAPE = /^ourcamp:\/\/[^/?\s]+(\/(join|claim)\/[0-9a-z]+)?\/?\?\S*fp=[A-Za-z0-9_-]{43}/i;
 
 // The badge is recomputed on live renames too (roster.ts), so it lives there.
 export { campShort };
