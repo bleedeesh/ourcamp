@@ -959,6 +959,7 @@ mod tests {
             public_host: Host::Ipv4(std::net::Ipv4Addr::LOCALHOST),
             public_port: None,
             camp_name: "Вечерний кооп".into(),
+            router: None,
             livekit: oc_server::LiveKit {
                 url: livekit,
                 api_key: "devkey".into(),

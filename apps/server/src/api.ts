@@ -100,8 +100,10 @@ export class TauriServerApi implements ServerApi {
   }
 }
 
-const LAN = { kind: "lan", ip: "192.168.1.2" } as const;
-const RADMIN = { kind: "radmin", ip: "26.12.34.56" } as const;
+const LAN = { kind: "lan", ip: "192.168.1.2", grey: false } as const;
+const RADMIN = { kind: "radmin", ip: "26.12.34.56", grey: false } as const;
+const ROUTER = { kind: "router", ip: "85.143.20.11", grey: false } as const;
+const ROUTER_CHOSEN = { kind: "detected", which: "router" } as const;
 const FP = "_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8";
 
 /**
@@ -111,10 +113,10 @@ const FP = "_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8";
  */
 export const DEMO_ADDRESSES: Record<string, { reach: Reach; host: string }> = {
   // Radmin installed and on; the owner has not picked anything.
-  radmin: { reach: { choice: { kind: "auto" }, options: [LAN, RADMIN], note: null }, host: LAN.ip },
+  radmin: { reach: { choice: { kind: "auto" }, options: [LAN, RADMIN], note: null, ports: null }, host: LAN.ip },
   // Radmin picked: the link goes through the tunnel.
   "radmin-chosen": {
-    reach: { choice: { kind: "detected", which: "radmin" }, options: [LAN, RADMIN], note: null },
+    reach: { choice: { kind: "detected", which: "radmin" }, options: [LAN, RADMIN], note: null, ports: null },
     host: RADMIN.ip,
   },
   // Radmin picked, then switched off: the main network meanwhile, and it is said.
@@ -123,27 +125,59 @@ export const DEMO_ADDRESSES: Record<string, { reach: Reach; host: string }> = {
       choice: { kind: "detected", which: "radmin" },
       options: [LAN],
       note: "Radmin VPN сейчас не найден — ссылка ведёт по основной сети. Включите его и выберите снова",
+      ports: null,
     },
     host: LAN.ip,
   },
   // No VPN at all: a home network only.
-  lan: { reach: { choice: { kind: "auto" }, options: [LAN], note: null }, host: LAN.ip },
+  lan: { reach: { choice: { kind: "auto" }, options: [LAN], note: null, ports: null }, host: LAN.ip },
+  // The internet through the router: ports opened over UPnP, the port answers.
+  router: {
+    reach: { choice: ROUTER_CHOSEN, options: [LAN, ROUTER], note: null, ports: { state: "open", externalIp: ROUTER.ip, answers: true } },
+    host: ROUTER.ip,
+  },
+  // Opened, but the router does not loop back: only a friend can tell.
+  "router-noloop": {
+    reach: { choice: ROUTER_CHOSEN, options: [LAN, ROUTER], note: null, ports: { state: "open", externalIp: ROUTER.ip, answers: null } },
+    host: ROUTER.ip,
+  },
+  // The router refused a port.
+  "router-failed": {
+    reach: {
+      choice: ROUTER_CHOSEN,
+      options: [LAN, ROUTER],
+      note: null,
+      ports: { state: "failed", message: "порт 7780 на роутере уже занят другим устройством" },
+    },
+    host: ROUTER.ip,
+  },
+  // The provider's "grey" address (CGNAT): no way in from the internet at all.
+  "router-grey": {
+    reach: {
+      choice: ROUTER_CHOSEN,
+      options: [LAN, RADMIN, { kind: "router", ip: "100.91.68.10", grey: true }],
+      note: "Провайдер даёт «серый» адрес (CGNAT): из интернета к этому ПК не подключиться, даже с открытыми портами. Друзей можно позвать через Radmin VPN, или сервер — на хостинг",
+      ports: null,
+    },
+    host: LAN.ip,
+  },
   // Every VPN this window knows about.
   "all-vpns": {
     reach: {
       choice: { kind: "auto" },
-      options: [LAN, RADMIN, { kind: "hamachi", ip: "25.40.11.7" }, { kind: "tailscale", ip: "100.101.2.3" }],
+      options: [LAN, RADMIN, { kind: "hamachi", ip: "25.40.11.7", grey: false }, { kind: "tailscale", ip: "100.101.2.3", grey: false }],
       note: null,
+      ports: null,
     },
     host: LAN.ip,
   },
   // A DDNS name or a static IP typed by the owner.
   custom: {
-    reach: { choice: { kind: "custom", host: "mycamp.duckdns.org" }, options: [LAN, RADMIN], note: null },
+    reach: { choice: { kind: "custom", host: "mycamp.duckdns.org" }, options: [LAN, RADMIN], note: null, ports: null },
     host: "mycamp.duckdns.org",
   },
   // A hosting server: the public address is on the network card.
-  hosting: { reach: { choice: { kind: "auto" }, options: [{ kind: "public", ip: "85.143.20.11" }], note: null }, host: "85.143.20.11" },
+  hosting: { reach: { choice: { kind: "auto" }, options: [{ kind: "public", ip: "85.143.20.11", grey: false }], note: null, ports: null }, host: "85.143.20.11" },
 };
 
 /** Browser-only stand-in (`pnpm --filter @ourcamp/server dev`): a camp held in memory. */
@@ -179,11 +213,9 @@ export class DemoServerApi implements ServerApi {
     livekitPid: 18244,
     reach: {
       choice: { kind: "auto" },
-      options: [
-        { kind: "lan", ip: "192.168.1.2" },
-        { kind: "radmin", ip: "26.12.34.56" },
-      ],
+      options: [LAN, RADMIN],
       note: null,
+      ports: null,
     },
   };
   readonly #listeners = new Set<(status: ServerStatus) => void>();
@@ -215,7 +247,7 @@ export class DemoServerApi implements ServerApi {
       ...this.#status,
       address: `${host}:7780`,
       joinLink: `ourcamp://${host}/join/k3j4h5g6f7d8s9a0?fp=_Sr2o8XYvU2szmjofpL8y3VsZdOgO-e0cqwXOJZqBP8`,
-      reach: { ...this.#status.reach, choice, note: null },
+      reach: { ...this.#status.reach, choice, note: null, ports: null },
     });
   }
 

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { copyText } from "@ourcamp/ui/clipboard.ts";
 import { Select } from "@ourcamp/ui/Select.tsx";
 
-import { addressEntries, addressHint, choiceFromValue, choiceValue, type AddressChoice, type Reach } from "../address.ts";
+import { addressEntries, addressHint, choiceFromValue, choiceValue, portsLine, type AddressChoice, type Reach } from "../address.ts";
 import type { ServerApi } from "../api.ts";
 import { useAction } from "./CampSettings.tsx";
 
@@ -51,6 +51,8 @@ export function FriendsLink({ link, reach, api }: { link: string; reach: Reach; 
   };
 
   const shown: Reach = { ...reach, choice: choiceFromValue(value, host) };
+  const ports = portsLine(reach.ports);
+  const hint = addressHint(shown);
   const editingHost = value === "custom";
   const hostChanged = reach.choice.kind !== "custom" || reach.choice.host !== host.trim();
 
@@ -96,8 +98,13 @@ export function FriendsLink({ link, reach, api }: { link: string; reach: Reach; 
             </button>
           </form>
         )}
-        <span className="address__hint">{addressHint(shown)}</span>
+        {hint !== null && <span className="address__hint">{hint}</span>}
         {reach.note && <span className="address__note">{reach.note}</span>}
+        {ports && (
+          <span className={ports.warn ? "address__note" : "address__ports"} role="status">
+            {ports.text}
+          </span>
+        )}
         {error && <span className="name-edit__error">{error}</span>}
         <span className="address__hint">Смена адреса перезапускает сервер: разговор прервётся на пару секунд.</span>
       </div>

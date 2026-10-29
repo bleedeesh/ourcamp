@@ -39,6 +39,7 @@ fn config(data_dir: PathBuf, (tcp, udp): (u16, u16)) -> Config {
         public_host: Host::Ipv4(Ipv4Addr::LOCALHOST),
         public_port: None,
         camp_name: "Свой LiveKit".into(),
+        router: None,
         livekit: LiveKitMode::Managed(ManagedLiveKit {
             binary: binary(),
             rtc_tcp_port: tcp,

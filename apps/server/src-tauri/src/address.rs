@@ -5,7 +5,11 @@
 use std::path::Path;
 
 use oc_invite::Host;
-use oc_server::network::{AddressKind, AddressOption};
+use oc_server::network::{is_public, AddressKind, AddressOption};
+use oc_server::ports::PortsState;
+
+/// Said when the router's own address is "grey".
+const GREY: &str = "Провайдер даёт «серый» адрес (CGNAT): из интернета к этому ПК не                     подключиться, даже с открытыми портами. Друзей можно позвать через                     Radmin VPN, или сервер — на хостинг";
 use serde::{Deserialize, Serialize};
 
 /// The window's own settings, next to the camp's data.
@@ -30,6 +34,47 @@ pub enum AddressChoice {
 pub struct AddressOptionDto {
     pub kind: &'static str,
     pub ip: String,
+    /// The router's address is "grey" (CGNAT): no way in from the internet.
+    pub grey: bool,
+}
+
+/// The camp's ports on the router (ADR-0039), for the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PortsDto {
+    Opening,
+    Open {
+        external_ip: String,
+        /// `true`: the port answered at the public address from inside.
+        answers: Option<bool>,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+impl PortsDto {
+    /// `None`: nothing asked of the router.
+    pub fn of(state: &PortsState) -> Option<Self> {
+        match state {
+            PortsState::Off => None,
+            PortsState::Opening => Some(Self::Opening),
+            PortsState::Open {
+                external_ip,
+                answers,
+            } => Some(Self::Open {
+                external_ip: external_ip.to_string(),
+                answers: *answers,
+            }),
+            PortsState::Failed(message) => Some(Self::Failed {
+                message: message.clone(),
+            }),
+        }
+    }
 }
 
 /// Everything the window shows about the address.
@@ -40,6 +85,8 @@ pub struct Reach {
     pub options: Vec<AddressOptionDto>,
     /// Why the link is not at the chosen address right now (the VPN is off).
     pub note: Option<String>,
+    /// The ports on the router; `None` unless the internet address is chosen.
+    pub ports: Option<PortsDto>,
 }
 
 impl Reach {
@@ -51,9 +98,11 @@ impl Reach {
                 .map(|o| AddressOptionDto {
                     kind: o.kind.as_str(),
                     ip: o.ip.to_string(),
+                    grey: o.kind == AddressKind::Router && !is_public(o.ip),
                 })
                 .collect(),
             note,
+            ports: None,
         }
     }
 }
@@ -66,6 +115,7 @@ fn title(kind: AddressKind) -> &'static str {
         AddressKind::Radmin => "Radmin VPN",
         AddressKind::Hamachi => "Hamachi",
         AddressKind::Tailscale => "Tailscale",
+        AddressKind::Router => "Интернет через роутер",
     }
 }
 
@@ -84,6 +134,9 @@ pub fn resolve(choice: &AddressChoice, options: &[AddressOption]) -> (Host, Opti
         AddressChoice::Detected { which } => {
             let kind = AddressKind::parse(which);
             if let Some(found) = kind.and_then(|k| options.iter().find(|o| o.kind == k)) {
+                if found.kind == AddressKind::Router && !is_public(found.ip) {
+                    return (default(), Some(GREY.to_owned()));
+                }
                 return (Host::Ipv4(found.ip), None);
             }
             let name: &str = kind.map_or(which, |k| title(k));
@@ -193,6 +246,28 @@ mod tests {
             Host::Ipv4(Ipv4Addr::LOCALHOST),
             "no network at all"
         );
+    }
+
+    #[test]
+    fn a_grey_router_address_is_no_way_in() {
+        let mut options = options();
+        options.push(AddressOption {
+            kind: AddressKind::Router,
+            ip: Ipv4Addr::new(85, 143, 20, 11),
+        });
+        assert_eq!(
+            resolve(&detected("router"), &options),
+            (Host::Ipv4(Ipv4Addr::new(85, 143, 20, 11)), None)
+        );
+        options.last_mut().unwrap().ip = Ipv4Addr::new(100, 91, 68, 10);
+        let (host, note) = resolve(&detected("router"), &options);
+        assert_eq!(
+            host,
+            Host::Ipv4(LAN),
+            "a grey address in a link helps nobody"
+        );
+        assert!(note.unwrap().contains("CGNAT"));
+        assert!(Reach::new(detected("router"), &options, None).options[2].grey);
     }
 
     #[test]

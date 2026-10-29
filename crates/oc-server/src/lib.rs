@@ -15,12 +15,14 @@ mod api;
 mod livekit;
 mod manage;
 pub mod network;
+pub mod ports;
 mod presence;
 mod rooms;
 mod rtc;
 mod serve;
 pub mod store;
 mod tls;
+pub mod upnp;
 
 use std::fmt;
 use std::io;
@@ -58,6 +60,8 @@ pub struct Config {
     pub camp_name: String,
     /// Where voice rooms live.
     pub livekit: LiveKitMode,
+    /// The home router to open the camp's ports on (ADR-0039); `None`: leave it alone.
+    pub router: Option<upnp::Gateway>,
 }
 
 /// The two LiveKit modes of ADR-0016.
@@ -153,6 +157,9 @@ pub struct Running {
     /// The snapshot clients get on `/api/v1/events` (ADR-0021).
     state: watch::Receiver<Arc<oc_proto::CampState>>,
     manager: Manager,
+    /// The ports on the router (ADR-0039); closed by `stop`.
+    ports: watch::Receiver<ports::PortsState>,
+    ports_task: Option<JoinHandle<()>>,
 }
 
 impl Running {
@@ -182,15 +189,43 @@ impl Running {
         self.manager.clone()
     }
 
-    /// Stops accepting connections, waits for the accept loop to end, then stops the
-    /// camp's own LiveKit.
+    /// Where the camp's ports on the router stand (ADR-0039).
+    #[must_use]
+    pub fn ports(&self) -> watch::Receiver<ports::PortsState> {
+        self.ports.clone()
+    }
+
+    /// Stops accepting connections, waits for the accept loop to end, closes the ports
+    /// on the router, then stops the camp's own LiveKit.
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
         let _ = self.task.await;
+        // The router's mappings go before the process may: they would outlive it.
+        if let Some(ports) = self.ports_task {
+            let _ = ports.await;
+        }
         if let Some(livekit) = self.livekit {
             livekit.stop().await;
         }
     }
+}
+
+/// The camp's database, TLS identity and first snapshot, from `config.data_dir`. Disk
+/// I/O and key generation run off the async workers.
+async fn open_camp(config: &Config) -> Result<(Store, Identity, oc_proto::CampState), StartError> {
+    let data_dir = config.data_dir.clone();
+    let camp_name = config.camp_name.clone();
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&data_dir).map_err(StartError::Identity)?;
+        let store =
+            Store::open(&data_dir.join("camp.db"), &camp_name).map_err(StartError::Store)?;
+        let identity =
+            Identity::load_or_create(&data_dir.join("tls")).map_err(StartError::Identity)?;
+        let initial = presence::initial(&store).map_err(StartError::Store)?;
+        Ok::<_, StartError>((store, identity, initial))
+    })
+    .await
+    .expect("startup task panicked")
 }
 
 /// Opens the camp in `config.data_dir` and starts serving.
@@ -205,20 +240,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         livekit_authority(&livekit.url)
             .ok_or_else(|| StartError::LiveKitUrl(livekit.url.clone()))?;
     }
-    let data_dir = config.data_dir.clone();
-    let camp_name = config.camp_name.clone();
-    // Disk I/O and key generation: off the async workers.
-    let (store, identity, initial) = tokio::task::spawn_blocking(move || {
-        std::fs::create_dir_all(&data_dir).map_err(StartError::Identity)?;
-        let store =
-            Store::open(&data_dir.join("camp.db"), &camp_name).map_err(StartError::Store)?;
-        let identity =
-            Identity::load_or_create(&data_dir.join("tls")).map_err(StartError::Identity)?;
-        let initial = presence::initial(&store).map_err(StartError::Store)?;
-        Ok::<_, StartError>((store, identity, initial))
-    })
-    .await
-    .expect("startup task panicked")?;
+    let (store, identity, initial) = open_camp(&config).await?;
 
     let tls = identity.server_config().map_err(StartError::Tls)?;
     let listener = TcpListener::bind(config.bind)
@@ -242,6 +264,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         ),
     };
     let camp = store.camp().map_err(StartError::Store)?;
+    let wanted = wanted_ports(local_addr.port(), &config.livekit);
 
     // Last of all: nothing after it can fail for a managed LiveKit (whose address is
     // ours), so a started one is never left behind.
@@ -292,6 +315,13 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         refresh,
         shutdown_rx.clone(),
     ));
+    let (ports, ports_task) = match config.router {
+        Some(gateway) => {
+            let (ports, task) = ports::spawn(gateway, wanted, shutdown_rx.clone());
+            (ports, Some(task))
+        }
+        None => (watch::channel(ports::PortsState::Off).1, None),
+    };
     let task = tokio::spawn(serve::serve(listener, tls, api::router(state), shutdown_rx));
     Ok(Running {
         local_addr,
@@ -303,7 +333,29 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         livekit: supervisor,
         state: state_rx,
         manager,
+        ports,
+        ports_task,
     })
+}
+
+/// The ports friends come in by (ADR-0039): the camp's own, and voice's when the
+/// LiveKit is the camp's (an external one keeps its own ports).
+fn wanted_ports(camp_port: u16, livekit: &LiveKitMode) -> Vec<ports::Port> {
+    let mut wanted = vec![ports::Port {
+        protocol: upnp::Protocol::Tcp,
+        number: camp_port,
+    }];
+    if let LiveKitMode::Managed(managed) = livekit {
+        wanted.push(ports::Port {
+            protocol: upnp::Protocol::Tcp,
+            number: managed.rtc_tcp_port,
+        });
+        wanted.push(ports::Port {
+            protocol: upnp::Protocol::Udp,
+            number: managed.rtc_udp_port,
+        });
+    }
+    wanted
 }
 
 /// This machine's LAN address — the default for links. It is the source address the OS

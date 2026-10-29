@@ -16,7 +16,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use address::{AddressChoice, Reach};
+use address::{AddressChoice, PortsDto, Reach};
+use oc_server::network::{AddressKind, AddressOption};
+use oc_server::ports::PortsState;
+use oc_server::upnp::Gateway;
 use oc_server::{find_livekit, Config, LiveKitMode, ManagedLiveKit, Running};
 use status::{snapshot, Base, ServerStatus};
 use tauri::menu::{Menu, MenuItem};
@@ -26,6 +29,8 @@ use tokio::sync::watch;
 
 /// Event with the whole [`ServerStatus`].
 const STATUS_EVENT: &str = "server://status";
+/// How long the start waits for the home router to answer UPnP (ADR-0039).
+const ROUTER_SEARCH: std::time::Duration = std::time::Duration::from_secs(2);
 /// Name of a camp created by the window; renaming comes later (ADR-0023).
 const NEW_CAMP_NAME: &str = "Мой сервер";
 
@@ -56,15 +61,37 @@ impl Host {
         let _ = app.emit(STATUS_EVENT, status);
     }
 
-    fn config(&self) -> Result<Config, String> {
+    /// Where friends could reach this PC now: the networks by route, and the router's
+    /// public address when it speaks UPnP (ADR-0039).
+    async fn detect() -> (Vec<AddressOption>, Option<Gateway>) {
+        let mut options = oc_server::network::address_options();
+        let router = Gateway::discover(ROUTER_SEARCH).await.ok();
+        if let Some(router) = &router {
+            if let Ok(ip) = router.external_ip().await {
+                options.push(AddressOption {
+                    kind: AddressKind::Router,
+                    ip,
+                });
+            }
+        }
+        (options, router)
+    }
+
+    async fn config(&self) -> Result<Config, String> {
         let binary = find_livekit().ok_or(
             "livekit-server не найден: он должен лежать рядом с OurCamp Server \
              (в разработке — `pnpm livekit:fetch`)",
         )?;
         // Networks come and go (a VPN switched on): detected anew on every start.
         let choice = address::load(&self.data_dir);
-        let options = oc_server::network::address_options();
+        let (options, router) = Self::detect().await;
         let (public_host, note) = address::resolve(&choice, &options);
+        // Ports are opened only for the internet address, and only a public one.
+        let open_ports = note.is_none()
+            && choice
+                == (AddressChoice::Detected {
+                    which: AddressKind::Router.as_str().to_owned(),
+                });
         *self.reach.lock().unwrap_or_else(PoisonError::into_inner) =
             Reach::new(choice, &options, note);
         Ok(Config {
@@ -73,6 +100,7 @@ impl Host {
             public_host,
             public_port: None,
             camp_name: NEW_CAMP_NAME.into(),
+            router: router.filter(|_| open_ports),
             livekit: LiveKitMode::Managed(ManagedLiveKit::new(binary)),
         })
     }
@@ -84,7 +112,7 @@ impl Host {
             return;
         }
         self.publish(&app, ServerStatus::starting());
-        let started = match self.config() {
+        let started = match self.config().await {
             Ok(config) => oc_server::start(config).await.map_err(|e| e.to_string()),
             Err(e) => Err(e),
         };
@@ -93,8 +121,10 @@ impl Host {
                 let base = Base::of(&camp);
                 let state = camp.camp_state();
                 let pid = camp.livekit_pid_changes();
+                let ports = camp.ports();
+                self.set_ports(&ports.borrow());
                 self.publish(&app, snapshot(&base, &state.borrow(), camp.livekit_pid()));
-                tauri::async_runtime::spawn(Arc::clone(&self).follow(app, base, state, pid));
+                tauri::async_runtime::spawn(Arc::clone(&self).follow(app, base, state, pid, ports));
                 *running = Some(camp);
             }
             Err(message) => {
@@ -112,6 +142,7 @@ impl Host {
         base: Base,
         mut state: watch::Receiver<Arc<oc_proto::CampState>>,
         mut pid: Option<watch::Receiver<Option<u32>>>,
+        mut ports: watch::Receiver<PortsState>,
     ) {
         loop {
             let pid_changed = async {
@@ -123,6 +154,10 @@ impl Host {
             let alive = tokio::select! {
                 changed = state.changed() => changed.is_ok(),
                 alive = pid_changed => alive,
+                changed = ports.changed() => {
+                    self.set_ports(&ports.borrow_and_update());
+                    changed.is_ok()
+                }
             };
             if !alive {
                 return;
@@ -131,6 +166,13 @@ impl Host {
             let status = snapshot(&base, &state.borrow_and_update(), livekit_pid);
             self.publish(&app, status);
         }
+    }
+
+    fn set_ports(&self, state: &PortsState) {
+        self.reach
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ports = PortsDto::of(state);
     }
 
     /// Stops the camp and starts it again: a new address goes into links and LiveKit.
@@ -196,14 +238,19 @@ async fn server_set_address(
     clippy::needless_pass_by_value,
     reason = "Tauri injects `State` by value"
 )]
-fn server_refresh_addresses(app: tauri::AppHandle, host: tauri::State<'_, Arc<Host>>) {
-    let options = oc_server::network::address_options();
+async fn server_refresh_addresses(
+    app: tauri::AppHandle,
+    host: tauri::State<'_, Arc<Host>>,
+) -> Result<(), String> {
+    let (options, _) = Host::detect().await;
     {
         let mut reach = host.reach.lock().unwrap_or_else(PoisonError::into_inner);
-        let fresh = Reach::new(reach.choice.clone(), &options, reach.note.clone());
+        let mut fresh = Reach::new(reach.choice.clone(), &options, reach.note.clone());
+        fresh.ports = reach.ports.take();
         *reach = fresh;
     }
     host.publish(&app, host.status());
+    Ok(())
 }
 
 /// Held for the whole run: one window per data directory, as in the client.
