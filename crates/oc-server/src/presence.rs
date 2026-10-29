@@ -7,6 +7,7 @@
 //! development; a 1 s poll of a local API costs nothing at camp scale.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -18,6 +19,41 @@ use crate::store::{Store, StoreResult};
 
 /// How often LiveKit is asked. Joins and leaves show up within this.
 const POLL: Duration = Duration::from_secs(1);
+
+/// Asks the loop for a snapshot now, after the owner changed the camp (ADR-0026), and
+/// lets the owner's commands wait until one with their change is out (ADR-0041).
+pub struct Refresh {
+    wake: Notify,
+    /// Changes asked about so far.
+    asked: AtomicU64,
+    /// How many of them the last published snapshot already holds.
+    published: watch::Sender<u64>,
+}
+
+impl Refresh {
+    pub fn new() -> Self {
+        Self {
+            wake: Notify::new(),
+            asked: AtomicU64::new(0),
+            published: watch::Sender::new(0),
+        }
+    }
+
+    /// After a change in the store: a snapshot now instead of at the next tick.
+    pub fn ask(&self) {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        // `notify_one` keeps a permit if the loop is mid-round: the change is never lost.
+        self.wake.notify_one();
+    }
+
+    /// Waits for a snapshot built after every change asked about so far. Never returns
+    /// if the loop has stopped: callers bound it with a timeout.
+    pub async fn settled(&self) {
+        let wanted = self.asked.load(Ordering::SeqCst);
+        // The sender lives in `self`, so the wait cannot fail on a closed channel.
+        let _ = self.published.subscribe().wait_for(|&n| n >= wanted).await;
+    }
+}
 
 /// The snapshot to start with: members from the database, nobody at any campfire yet.
 /// Published before LiveKit is first asked, so members show up even while it is slow.
@@ -65,12 +101,12 @@ fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreRe
 }
 
 /// Polls until `shutdown` turns true, publishing changes to `out`. `refresh` asks for a
-/// round now (after the owner changed the camp, ADR-0026) instead of at the next tick.
+/// round now instead of at the next tick.
 pub async fn run(
     store: Arc<Mutex<Store>>,
     api: Arc<RoomService>,
     out: watch::Sender<Arc<CampState>>,
-    refresh: Arc<Notify>,
+    refresh: Arc<Refresh>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut tick = tokio::time::interval(POLL);
@@ -82,11 +118,11 @@ pub async fn run(
     loop {
         let refreshed = tokio::select! {
             _ = tick.tick() => false,
-            () = refresh.notified() => true,
+            () = refresh.wake.notified() => true,
             _ = shutdown.changed() => return,
         };
         if refreshed {
-            publish(&store, &rooms, &out).await;
+            publish(&store, &rooms, &out, &refresh).await;
         }
         // A round can take up to `CALL_TIMEOUT` per call; stopping must not wait for it.
         let polled = tokio::select! {
@@ -110,7 +146,7 @@ pub async fn run(
                 HashMap::new()
             }
         });
-        publish(&store, &rooms, &out).await;
+        publish(&store, &rooms, &out, &refresh).await;
     }
 }
 
@@ -119,7 +155,11 @@ async fn publish(
     store: &Arc<Mutex<Store>>,
     rooms: &Arc<HashMap<String, Vec<Participant>>>,
     out: &watch::Sender<Arc<CampState>>,
+    refresh: &Refresh,
 ) {
+    // Read before the store is: every change counted here is in the snapshot built below
+    // (the change is written before it is counted, both under the same store lock).
+    let asked = refresh.asked.load(Ordering::SeqCst);
     let (store, rooms) = (Arc::clone(store), Arc::clone(rooms));
     let built = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(PoisonError::into_inner);
@@ -135,6 +175,13 @@ async fn publish(
                     *current = Arc::new(state);
                 }
                 changed
+            });
+            refresh.published.send_if_modified(|published| {
+                let newer = asked > *published;
+                if newer {
+                    *published = asked;
+                }
+                newer
             });
         }
         Ok(Err(e)) => eprintln!("[oc-server] presence snapshot: {e}"),

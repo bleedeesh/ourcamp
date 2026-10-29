@@ -9,8 +9,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use oc_proto::{AvatarFormat, CampEvent, Channel, ChannelKind, Role};
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::broadcast;
 
+use crate::presence::Refresh;
 use crate::rooms::{RoomError, RoomService};
 use crate::store::{Store, StoreError};
 
@@ -85,7 +86,7 @@ pub(crate) struct Directive {
 pub struct Manager {
     store: Arc<Mutex<Store>>,
     rooms: Arc<RoomService>,
-    refresh: Arc<Notify>,
+    refresh: Arc<Refresh>,
     directives: broadcast::Sender<Directive>,
 }
 
@@ -93,7 +94,7 @@ impl Manager {
     pub(crate) fn new(
         store: Arc<Mutex<Store>>,
         rooms: Arc<RoomService>,
-        refresh: Arc<Notify>,
+        refresh: Arc<Refresh>,
         directives: broadcast::Sender<Directive>,
     ) -> Self {
         Self {
@@ -116,9 +117,14 @@ impl Manager {
         })
         .await
         .expect("store task panicked")?;
-        // `notify_one` keeps a permit if the loop is mid-round: the change is never lost.
-        self.refresh.notify_one();
+        self.refresh.ask();
         Ok(result)
+    }
+
+    /// Waits until the camp's snapshot holds every change made so far (ADR-0041): the
+    /// owner's next command sees it. Unbounded if the camp is stopping — add a timeout.
+    pub async fn settled(&self) {
+        self.refresh.settled().await;
     }
 
     /// Opens the camp to anyone with its address, or back to invites only (ADR-0040).
