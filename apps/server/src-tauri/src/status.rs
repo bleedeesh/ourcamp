@@ -232,6 +232,7 @@ mod tests {
                 }],
             }],
             open: false,
+            chats: std::collections::BTreeMap::new(),
         };
         let status = snapshot(&base(), &state, None);
         let names: Vec<_> = status.members.iter().map(|m| m.name.as_str()).collect();

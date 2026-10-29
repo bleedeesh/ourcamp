@@ -567,6 +567,7 @@ mod tests {
             ],
             presence: Vec::new(),
             open: false,
+            chats: std::collections::BTreeMap::new(),
         }
     }
 

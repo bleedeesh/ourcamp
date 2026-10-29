@@ -1564,3 +1564,188 @@ async fn voice_goes_to_a_domain_camp_checked_by_its_authority() {
     conn.close().await;
     camp.stop().await;
 }
+
+// ---- chats (M5, ADR-0044) ----
+
+/// A camp (its LiveKit down: chats need none) with two members in it.
+async fn camp_with_two() -> (
+    Camp,
+    CampClient,
+    oc_camp_client::Session,
+    oc_camp_client::Session,
+) {
+    let camp = camp_with_upstream(&livekit_down()).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let bob = client
+        .login(&DeviceKey::generate(), "Боб", Some(&camp.join()))
+        .await
+        .unwrap();
+    (camp, client, lena, bob)
+}
+
+fn text(s: &str) -> oc_proto::NewMessage {
+    oc_proto::NewMessage {
+        text: s.into(),
+        photo: None,
+    }
+}
+
+/// The next chat message on an event stream, skipping snapshots.
+async fn next_message(events: &mut oc_camp_client::CampEvents) -> oc_proto::ChatMessage {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.next())
+            .await
+            .expect("a message within 5 s")
+            .expect("stream open")
+            .expect("valid event");
+        if let oc_proto::CampEvent::Message(message) = event {
+            return message;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_message_reaches_everyone_and_stays_in_the_chat() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    let mut bobs = client.events(&bob).await.unwrap();
+
+    let sent = client
+        .post_message(&lena, "c1", &text("Привет, костёр  \n"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (sent.seq, sent.text.as_str()),
+        (1, "Привет, костёр"),
+        "trailing space trimmed"
+    );
+    assert_eq!(
+        (sent.author_id.as_str(), sent.author_name.as_str()),
+        (lena.user_id.as_str(), "Лена")
+    );
+    assert_eq!(next_message(&mut bobs).await, sent, "Боб gets it live");
+
+    let state = state_where(&mut bobs, |s| s.chats.get("c1") == Some(&1)).await;
+    assert_eq!(
+        state.chats.len(),
+        1,
+        "the snapshot names the chat's last message"
+    );
+
+    client
+        .post_message(&bob, "c1", &text("И тебе"))
+        .await
+        .unwrap();
+    let history = client.history(&lena, "c1", None, 50).await.unwrap();
+    let texts: Vec<_> = history.iter().map(|m| (m.seq, m.text.as_str())).collect();
+    assert_eq!(texts, [(1, "Привет, костёр"), (2, "И тебе")]);
+    let older = client.history(&lena, "c1", Some(2), 50).await.unwrap();
+    assert_eq!(older, history[..1]);
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn only_chats_take_messages_and_only_sensible_ones() {
+    let (camp, client, lena, _) = camp_with_two().await;
+    assert_eq!(
+        api_error(client.post_message(&lena, "c0", &text("в голос")).await),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        api_error(client.history(&lena, "c0", None, 50).await),
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        api_error(client.post_message(&lena, "c1", &text("  \n")).await),
+        ErrorCode::BadRequest
+    );
+    let long = "я".repeat(oc_proto::MAX_MESSAGE_CHARS + 1);
+    assert_eq!(
+        api_error(client.post_message(&lena, "c1", &text(&long)).await),
+        ErrorCode::BadRequest
+    );
+    let unknown_photo = oc_proto::NewMessage {
+        text: String::new(),
+        photo: Some(oc_proto::Photo {
+            hash: "nobody-uploaded1".into(),
+            width: 10,
+            height: 10,
+        }),
+    };
+    assert_eq!(
+        api_error(client.post_message(&lena, "c1", &unknown_photo).await),
+        ErrorCode::BadRequest
+    );
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn whoever_may_not_speak_reads_but_does_not_write() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    client
+        .post_message(&lena, "c1", &text("Боб, ты тут?"))
+        .await
+        .unwrap();
+    camp.running
+        .manager()
+        .set_silenced(&bob.user_id, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        api_error(client.post_message(&bob, "c1", &text("да")).await),
+        ErrorCode::Silenced
+    );
+    let png = b"\x89PNG\r\n\x1a\nnot really".to_vec();
+    assert_eq!(
+        api_error(client.upload_photo(&bob, png).await),
+        ErrorCode::Silenced
+    );
+    assert_eq!(
+        client.history(&bob, "c1", None, 50).await.unwrap().len(),
+        1,
+        "still reads"
+    );
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn a_photo_goes_up_first_then_into_a_message() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    let jpeg = [b"\xFF\xD8\xFF\xE0".as_slice(), &[7; 5000]].concat();
+    let hash = client.upload_photo(&lena, jpeg.clone()).await.unwrap();
+    let message = oc_proto::NewMessage {
+        text: "Закат".into(),
+        photo: Some(oc_proto::Photo {
+            hash: hash.clone(),
+            width: 1600,
+            height: 900,
+        }),
+    };
+    let sent = client.post_message(&lena, "c1", &message).await.unwrap();
+    assert_eq!(sent.photo, message.photo);
+    assert_eq!(
+        client.photo(&bob, &hash).await.unwrap(),
+        jpeg,
+        "the same bytes for Боб"
+    );
+
+    let too_big = [
+        b"\xFF\xD8\xFF\xE0".as_slice(),
+        &vec![0; oc_proto::MAX_PHOTO_BYTES],
+    ]
+    .concat();
+    assert!(
+        client.upload_photo(&lena, too_big).await.is_err(),
+        "over the limit"
+    );
+    let gif = b"GIF89a....".to_vec();
+    assert!(matches!(
+        client.upload_photo(&lena, gif).await,
+        Err(ClientError::Protocol(_))
+    ));
+    camp.stop().await;
+}

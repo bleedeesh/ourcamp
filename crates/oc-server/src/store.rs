@@ -12,6 +12,9 @@ use oc_invite::{InviteKind, Token, CLAIM_TOKEN_BYTES, JOIN_TOKEN_BYTES};
 pub use oc_proto::{Channel, ChannelKind, Role};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
+mod chat;
+pub use chat::{Author, Posted};
+
 /// Channels of the very first schema (v1). New camps get [`NEW_CAMP_CHANNELS`] instead;
 /// this stays as v1 created them, for migrations to recognise.
 const DEFAULT_CHANNELS: [&str; 3] = ["Лобби", "Катка", "Отошёл (AFK)"];
@@ -256,6 +259,9 @@ impl Store {
             )?;
             tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
+        }
+        if version < 7 {
+            self.migrate_v7()?;
         }
         if version == 0 {
             seed_new_camp(&self.conn)?;
