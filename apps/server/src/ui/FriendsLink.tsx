@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { copyText } from "@ourcamp/ui/clipboard.ts";
+import { Select } from "@ourcamp/ui/Select.tsx";
 
 import { addressEntries, addressHint, choiceFromValue, choiceValue, type AddressChoice, type Reach } from "../address.ts";
 import type { ServerApi } from "../api.ts";
@@ -65,23 +66,18 @@ export function FriendsLink({ link, reach, api }: { link: string; reach: Reach; 
       <span className="link__hint">{copied !== "idle" && copied !== "copied" ? copied : "Отправьте её тем, кого зовёте на сервер."}</span>
 
       <div className="address">
-        <label className="address__label" htmlFor="friends-address">
+        <span id="friends-address-label" className="address__label">
           Адрес в ссылке
-        </label>
-        <select
+        </span>
+        <Select
           id="friends-address"
-          className="address__select"
+          labelledBy="friends-address-label"
           value={value}
+          options={addressEntries(reach)}
           // Networks come and go (a VPN switched on): look again when the list opens.
-          onFocus={() => void api.refreshAddresses()}
-          onChange={(e) => pick(e.target.value)}
-        >
-          {addressEntries(reach).map((entry) => (
-            <option key={entry.value} value={entry.value}>
-              {entry.label}
-            </option>
-          ))}
-        </select>
+          onOpen={() => void api.refreshAddresses()}
+          onChange={pick}
+        />
         {editingHost && (
           <form className="address__custom" onSubmit={saveHost}>
             <input

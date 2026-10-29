@@ -483,18 +483,8 @@
 }
 
 .member__role {
-  height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-s);
-  background: var(--bg-0);
-  color: var(--text-2);
-  font-size: 13px;
-}
-
-.member__role:focus {
-  outline: none;
-  border-color: var(--accent);
+  width: 132px;
+  flex-shrink: 0;
 }
 
 .member__tools {
@@ -785,20 +775,6 @@
   color: var(--text-2);
 }
 
-.address__select {
-  height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-s);
-  background: var(--bg-0);
-  color: var(--text);
-  font-size: 14px;
-}
-
-.address__select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
 
 .address__custom {
   display: flex;

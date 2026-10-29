@@ -15,11 +15,19 @@ const reach = (over: Partial<Reach> = {}): Reach => ({
 
 test("the list offers automatic, each network found, and one's own", () => {
   assert.deepEqual(
-    addressEntries(reach()).map((e) => e.label),
-    ["Автоматически — 192.168.1.2", "Локальная сеть — 192.168.1.2", "Radmin VPN — 26.12.34.56", "Свой адрес (домен или IP)…"],
+    addressEntries(reach()).map((e) => [e.label, e.detail]),
+    [
+      ["Автоматически", "192.168.1.2"],
+      ["Локальная сеть", "192.168.1.2"],
+      ["Radmin VPN", "26.12.34.56"],
+      ["Свой адрес: домен или IP", undefined],
+    ],
   );
   const gone = addressEntries(reach({ choice: { kind: "detected", which: "hamachi" } }));
-  assert.ok(gone.some((e) => e.label === "Hamachi — не найден"), "a kept choice that is gone stays visible");
+  assert.ok(
+    gone.some((e) => e.label === "Hamachi" && e.detail === "не найден"),
+    "a kept choice that is gone stays visible",
+  );
 });
 
 test("each choice says what friends need", () => {

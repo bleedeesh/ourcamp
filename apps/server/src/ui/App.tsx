@@ -16,6 +16,7 @@ import {
   type ServerStatus,
 } from "../status.ts";
 import { CampName, Channels, useAction, type Dragging } from "./CampSettings.tsx";
+import { Select } from "@ourcamp/ui/Select.tsx";
 import { FriendsLink } from "./FriendsLink.tsx";
 import { MemberAvatar } from "./MemberAvatar.tsx";
 import { MemberMenu, type MenuAt } from "./MemberMenu.tsx";
@@ -44,6 +45,8 @@ function TitleBar() {
     </header>
   );
 }
+
+const ROLES = (["member", "moderator", "admin"] as const).map((role) => ({ value: role, label: ROLE_LABEL[role] }));
 
 /**
  * A member and the owner's hand on them: role (ADR-0026), silence and kick (ADR-0028).
@@ -131,18 +134,15 @@ function MemberRow({ member, api, drag, grab, openMenu }: { member: Member; api:
           {member.campfire === null ? "не в голосе" : `в канале «${member.campfire}»`}
         </span>
       </span>
-      <select
-        className="member__role"
-        aria-label={`Роль: ${member.name}`}
-        value={member.role}
-        onChange={(e) => void run(() => api.setRole(member.userId, e.target.value as Role))}
-      >
-        {(["member", "moderator", "admin"] as const).map((role) => (
-          <option key={role} value={role}>
-            {ROLE_LABEL[role]}
-          </option>
-        ))}
-      </select>
+      <span className="member__role">
+        <Select<Role>
+          size="compact"
+          label={`Роль: ${member.name}`}
+          value={member.role}
+          options={ROLES}
+          onChange={(role) => void run(() => api.setRole(member.userId, role))}
+        />
+      </span>
       <span className="member__tools">
         <button
           type="button"

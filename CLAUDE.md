@@ -59,7 +59,7 @@
 - `apps/server` — окно сервера лагеря (Tauri, ADR-0023, `pnpm server:window`): `oc-server` в процессе,
   снимок `ServerStatus` (`src-tauri/src/status.rs`) → событие `server://status`; трей, крестик прячет окно.
   UI — `src/ui/App.tsx`, тексты в `src/status.ts` (тесты). Вёрстка в браузере — `server-ui` (порт 5175).
-- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`, `useDragMove.tsx` (перетаскивание людей по каналам, ADR-0029),
+- `packages/ui` — общее для двух окон: токены темы, `base.css`, `Campfire.tsx`, `Icon.tsx` (Lucide), `clipboard.ts`, `useDragMove.tsx` (перетаскивание людей по каналам, ADR-0029), `Select.tsx` (свой список вместо `<select>`, ADR-0038),
   `tauri-events.ts` (исходниками, компилирует Vite приложения).
 - `apps/desktop/src` — `CampsController` (`domain/camps.ts`: пустое состояние, вход по ссылке,
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав

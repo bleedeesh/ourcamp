@@ -78,15 +78,22 @@ export function choiceFromValue(value: string, host: string): AddressChoice {
   return { kind: "auto" };
 }
 
-/** The <select>'s entries: automatic, each detected network (and a kept one that is gone), custom. */
-export function addressEntries(reach: Reach): Array<{ value: string; label: string }> {
+/** One entry of the list: the address's name, its IP muted on the right. */
+export interface AddressEntry {
+  value: string;
+  label: string;
+  detail?: string;
+}
+
+/** The list's entries: automatic, each detected network (and a kept one that is gone), custom. */
+export function addressEntries(reach: Reach): AddressEntry[] {
   const [main] = reach.options;
-  const entries = [{ value: "auto", label: main ? `Автоматически — ${main.ip}` : "Автоматически" }];
-  for (const o of reach.options) entries.push({ value: `detected:${o.kind}`, label: `${KIND_TITLE[o.kind]} — ${o.ip}` });
+  const entries: AddressEntry[] = [main ? { value: "auto", label: "Автоматически", detail: main.ip } : { value: "auto", label: "Автоматически" }];
+  for (const o of reach.options) entries.push({ value: `detected:${o.kind}`, label: KIND_TITLE[o.kind], detail: o.ip });
   const { choice } = reach;
   if (choice.kind === "detected" && !reach.options.some((o) => o.kind === choice.which)) {
-    entries.push({ value: choiceValue(choice), label: `${KIND_TITLE[choice.which] ?? choice.which} — не найден` });
+    entries.push({ value: choiceValue(choice), label: KIND_TITLE[choice.which] ?? choice.which, detail: "не найден" });
   }
-  entries.push({ value: "custom", label: "Свой адрес (домен или IP)…" });
+  entries.push({ value: "custom", label: "Свой адрес: домен или IP" });
   return entries;
 }
