@@ -101,6 +101,8 @@ impl Host {
             public_port: None,
             camp_name: NEW_CAMP_NAME.into(),
             router: router.filter(|_| open_ports),
+            // A domain with a certificate is for hosting, headless (ADR-0042).
+            certificate: None,
             livekit: LiveKitMode::Managed(ManagedLiveKit::new(binary)),
         })
     }

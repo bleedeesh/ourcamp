@@ -12,6 +12,7 @@
 //! ```
 
 mod api;
+pub mod certificate;
 pub mod control;
 mod livekit;
 mod manage;
@@ -31,11 +32,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use oc_invite::{Address, Fingerprint, Host, Invite, InviteKind, Token};
+use oc_invite::{Address, Fingerprint, Host, Invite, InviteKind};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use certificate::DomainCertificate;
+pub use certificate::{CertificateError, CertificateFiles};
 use livekit::Supervisor;
 pub use livekit::{
     find_binary as find_livekit, ManagedLiveKit, DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
@@ -63,6 +66,9 @@ pub struct Config {
     pub livekit: LiveKitMode,
     /// The home router to open the camp's ports on (ADR-0039); `None`: leave it alone.
     pub router: Option<upnp::Gateway>,
+    /// A certificate from an authority for `public_host`, a domain (ADR-0042): links then
+    /// carry no fingerprint. `None`: only the camp's own self-signed certificate.
+    pub certificate: Option<CertificateFiles>,
 }
 
 /// The two LiveKit modes of ADR-0016.
@@ -126,6 +132,10 @@ pub enum StartError {
     LiveKitUrl(String),
     /// Managed LiveKit did not start; the text says why (with the end of its log).
     LiveKit(String),
+    /// The certificate for the domain cannot be served.
+    Certificate(CertificateError),
+    /// A certificate was given, but friends are to come by an IP address.
+    CertificateNeedsDomain(Host),
 }
 
 impl fmt::Display for StartError {
@@ -137,6 +147,12 @@ impl fmt::Display for StartError {
             Self::Bind(addr, e) => write!(f, "cannot listen on {addr}: {e}"),
             Self::LiveKitUrl(url) => write!(f, "LiveKit address must be ws://host:port, got {url}"),
             Self::LiveKit(why) => write!(f, "{why}"),
+            Self::Certificate(e) => write!(f, "certificate: {e}"),
+            Self::CertificateNeedsDomain(host) => write!(
+                f,
+                "a certificate is for a domain, but friends would come by {host}; set the \
+                 domain with --host"
+            ),
         }
     }
 }
@@ -165,6 +181,8 @@ pub struct Running {
     ports_task: Option<JoinHandle<()>>,
     /// The owner's command line (ADR-0041); stops with the camp.
     control: Option<JoinHandle<()>>,
+    /// Rereads the domain's certificate after a renewal (ADR-0042).
+    certificate_task: Option<JoinHandle<()>>,
 }
 
 impl Running {
@@ -212,28 +230,82 @@ impl Running {
         if let Some(control) = self.control {
             let _ = control.await;
         }
+        if let Some(certificate) = self.certificate_task {
+            let _ = certificate.await;
+        }
         if let Some(livekit) = self.livekit {
             livekit.stop().await;
         }
     }
 }
 
-/// The camp's database, TLS identity and first snapshot, from `config.data_dir`. Disk
-/// I/O and key generation run off the async workers.
-async fn open_camp(config: &Config) -> Result<(Store, Identity, oc_proto::CampState), StartError> {
+/// What `open_camp` reads from disk.
+struct Opened {
+    store: Store,
+    identity: Identity,
+    initial: oc_proto::CampState,
+    /// The authority's certificate for the domain, when one is given.
+    domain: Option<Arc<DomainCertificate>>,
+}
+
+/// The camp's database, TLS identity, certificate for the domain and first snapshot.
+/// Disk I/O and key generation run off the async workers.
+async fn open_camp(config: &Config) -> Result<Opened, StartError> {
     let data_dir = config.data_dir.clone();
     let camp_name = config.camp_name.clone();
+    let certificate = config.certificate.clone();
+    let host = config.public_host.clone();
     tokio::task::spawn_blocking(move || {
+        // The certificate first: a mistake in it is the owner's to fix before anything
+        // is created.
+        let domain = match (certificate, &host) {
+            (None, _) => None,
+            (Some(files), Host::Domain(domain)) => Some(Arc::new(
+                DomainCertificate::open(files, domain).map_err(StartError::Certificate)?,
+            )),
+            (Some(_), _) => return Err(StartError::CertificateNeedsDomain(host)),
+        };
         std::fs::create_dir_all(&data_dir).map_err(StartError::Identity)?;
         let store =
             Store::open(&data_dir.join("camp.db"), &camp_name).map_err(StartError::Store)?;
         let identity =
             Identity::load_or_create(&data_dir.join("tls")).map_err(StartError::Identity)?;
         let initial = presence::initial(&store).map_err(StartError::Store)?;
-        Ok::<_, StartError>((store, identity, initial))
+        Ok(Opened {
+            store,
+            identity,
+            initial,
+            domain,
+        })
     })
     .await
     .expect("startup task panicked")
+}
+
+/// The links to hand out: to the domain without a fingerprint when it has an
+/// authority's certificate (ADR-0042), else pinned.
+fn links_for(
+    config: &Config,
+    port: u16,
+    store: &Store,
+    pinned: bool,
+    fp: Fingerprint,
+) -> Result<Links, StartError> {
+    let fingerprint = pinned.then_some(fp);
+    Ok(Links {
+        join: Invite {
+            host: config.public_host.clone(),
+            port,
+            kind: InviteKind::Join,
+            token: store.join_token().map_err(StartError::Store)?,
+            fingerprint,
+        },
+        open: Address {
+            host: config.public_host.clone(),
+            port,
+            fingerprint,
+        },
+    })
 }
 
 /// Opens the camp in `config.data_dir` and starts serving.
@@ -248,9 +320,16 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         livekit_authority(&livekit.url)
             .ok_or_else(|| StartError::LiveKitUrl(livekit.url.clone()))?;
     }
-    let (store, identity, initial) = open_camp(&config).await?;
+    let Opened {
+        store,
+        identity,
+        initial,
+        domain,
+    } = open_camp(&config).await?;
 
-    let tls = identity.server_config().map_err(StartError::Tls)?;
+    let tls = identity
+        .server_config(domain.clone())
+        .map_err(StartError::Tls)?;
     let listener = TcpListener::bind(config.bind)
         .await
         .map_err(|e| StartError::Bind(config.bind, e))?;
@@ -258,24 +337,18 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         .local_addr()
         .map_err(|e| StartError::Bind(config.bind, e))?;
 
-    let link = |kind, token: Token| Invite {
-        host: config.public_host.clone(),
-        port: config.public_port.unwrap_or(local_addr.port()),
-        kind,
-        token,
-        fingerprint: identity.fingerprint,
-    };
-    let links = Links {
-        join: link(
-            InviteKind::Join,
-            store.join_token().map_err(StartError::Store)?,
-        ),
-        open: Address {
-            host: config.public_host.clone(),
-            port: config.public_port.unwrap_or(local_addr.port()),
-            fingerprint: identity.fingerprint,
-        },
-    };
+    let port = config.public_port.unwrap_or(local_addr.port());
+    let links = links_for(
+        &config,
+        port,
+        &store,
+        domain.is_none(),
+        identity.fingerprint,
+    )?;
+    // What a client signs when it checked the domain's certificate (ADR-0042).
+    let named = domain
+        .is_some()
+        .then(|| (config.public_host.to_string(), port));
     let camp = store.camp().map_err(StartError::Store)?;
     let wanted = wanted_ports(local_addr.port(), &config.livekit);
 
@@ -314,6 +387,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     let state = api::AppState::new(
         store,
         identity.fingerprint,
+        named,
         livekit,
         &livekit_authority,
         events_rx,
@@ -330,6 +404,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     ));
     let (ports, ports_task) = open_ports(config.router, wanted, &shutdown_rx);
     let control = start_control(&config.data_dir, &manager, &state_rx, &links, &shutdown_rx).await;
+    let certificate_task = domain.map(|d| certificate::spawn_reload(d, shutdown_rx.clone()));
     let task = tokio::spawn(serve::serve(listener, tls, api::router(state), shutdown_rx));
     Ok(Running {
         local_addr,
@@ -344,6 +419,7 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
         ports,
         ports_task,
         control,
+        certificate_task,
     })
 }
 

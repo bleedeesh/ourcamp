@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use oc_camp_client::{CampClient, DeviceKey};
+use oc_camp_client::{CampClient, DeviceKey, Trust};
 use oc_invite::Host;
 use oc_server::{find_livekit, start, Config, LiveKitMode, ManagedLiveKit, Running};
 use support::{data_dir, raw};
@@ -38,6 +38,7 @@ fn config(data_dir: PathBuf, (tcp, udp): (u16, u16)) -> Config {
         bind: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         public_host: Host::Ipv4(Ipv4Addr::LOCALHOST),
         public_port: None,
+        certificate: None,
         camp_name: "Свой LiveKit".into(),
         router: None,
         livekit: LiveKitMode::Managed(ManagedLiveKit {
@@ -52,7 +53,7 @@ fn client(running: &Running) -> CampClient {
     CampClient::at(
         &Host::Ipv4(Ipv4Addr::LOCALHOST),
         running.local_addr.port(),
-        running.fingerprint,
+        Trust::Pin(running.fingerprint),
     )
 }
 

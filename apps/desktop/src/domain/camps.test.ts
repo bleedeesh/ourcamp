@@ -155,11 +155,31 @@ test("links are checked only once they could be complete; junk is explained", as
   const { api, camps } = setup();
   await camps.setLink("ourcamp://192.0.2.15/jo");
   assert.equal(camps.store.get().check.state, "idle", "still typing");
+  for (const partial of [
+    "ourcamp://192.0.2.15",
+    "ourcamp://ourcamp.k",
+    "ourcamp://ourcamp.kz/join/7k2q9m4x",
+    "ourcamp://localhost",
+  ]) {
+    await camps.setLink(partial);
+    assert.equal(camps.store.get().check.state, "idle", partial);
+  }
   assert.equal(api.calls.length, 0);
   await camps.setLink("https://example.com");
   const check = camps.store.get().check;
   assert.equal(check.state, "error");
   assert.match(check.state === "error" ? check.message : "", /ourcamp:\/\//);
+});
+
+test("a domain's link needs no fingerprint", async () => {
+  const { api, camps } = setup();
+  for (const link of ["ourcamp://OurCamp.kz", "ourcamp://ourcamp.kz:7781/join/7k2q9m4x8v1c3b5n/"]) {
+    const pending = camps.setLink(link);
+    assert.equal(camps.store.get().check.state, "checking", link);
+    api.pending.get(link)?.resolve({ name: "OurCamp KZ", channels: 2, kind: "open", usable: true });
+    await pending;
+  }
+  assert.equal(api.calls.length, 2);
 });
 
 test("a slow answer about an old link does not overwrite the current one", async () => {

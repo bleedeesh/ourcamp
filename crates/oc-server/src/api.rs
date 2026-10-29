@@ -15,9 +15,10 @@ use axum::{Json, Router};
 use livekit_token::{AccessToken, VideoGrants};
 use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
-    login_message, user_id, verify, AvatarFormat, CampEvent, CampInfo, CampState, Challenge,
-    CurrentInvite, ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest, LoginResponse,
-    MoveMember, Role, RoomToken, SetSilenced, API_VERSION, MAX_AVATAR_BYTES, PUBLIC_KEY_LEN,
+    login_message, user_id, verify, AvatarFormat, CampEvent, CampInfo, CampKey, CampState,
+    Challenge, CurrentInvite, ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest,
+    LoginResponse, MoveMember, Role, RoomToken, SetSilenced, API_VERSION, MAX_AVATAR_BYTES,
+    PUBLIC_KEY_LEN,
 };
 
 use tokio::sync::{broadcast, watch};
@@ -44,6 +45,9 @@ pub struct AppState {
     store: Arc<Mutex<Store>>,
     nonces: Arc<Mutex<HashMap<String, Instant>>>,
     fingerprint: Fingerprint,
+    /// The domain and port of a camp with an authority's certificate (ADR-0042): logins
+    /// may be signed for them instead of the fingerprint.
+    named: Option<(String, u16)>,
     livekit: Arc<LiveKit>,
     /// `host:port` of LiveKit, validated at startup (`ws://` only: it is on loopback).
     livekit_authority: Arc<str>,
@@ -64,6 +68,7 @@ impl AppState {
     pub fn new(
         store: Arc<Mutex<Store>>,
         fingerprint: Fingerprint,
+        named: Option<(String, u16)>,
         livekit: LiveKit,
         livekit_authority: &str,
         events: watch::Receiver<Arc<CampState>>,
@@ -80,6 +85,7 @@ impl AppState {
             store,
             nonces: Arc::default(),
             fingerprint,
+            named,
             livekit: Arc::new(livekit),
         }
     }
@@ -257,11 +263,13 @@ async fn login(
     if !state.take_nonce(&req.nonce) {
         return Err(ApiError(ErrorCode::NonceInvalid));
     }
-    if !verify(
-        &public_key,
-        &login_message(&state.fingerprint, &req.nonce),
-        &signature,
-    ) {
+    // Signed for what the client checked: the pinned certificate, or the domain.
+    let signed_for = |camp| verify(&public_key, &login_message(camp, &req.nonce), &signature);
+    let named = state
+        .named
+        .as_ref()
+        .is_some_and(|(host, port)| signed_for(CampKey::Named { host, port: *port }));
+    if !named && !signed_for(CampKey::Pinned(&state.fingerprint)) {
         return Err(ApiError(ErrorCode::BadSignature));
     }
 

@@ -1,7 +1,7 @@
 [package]
 name = "oc-tls"
 version = "0.1.0"
-description = "OurCamp TLS: trust exactly the camp certificate whose fingerprint is in the invite link."
+description = "OurCamp TLS: trust exactly the camp certificate whose fingerprint is in the invite link, or an authority for a domain."
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,6 +13,9 @@ oc-invite = { path = "../oc-invite" }
 # is what the rest of the tree (LiveKit, Tauri) already links.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 ring = "0.17"
+# The computer's own trust store, for camps on a domain (ADR-0042); already in the tree
+# through the LiveKit SDK.
+rustls-native-certs = "0.8"
 
 [dev-dependencies]
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }

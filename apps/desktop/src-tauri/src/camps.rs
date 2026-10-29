@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use oc_camp_client::{CampClient, ClientError, DeviceKey, Session};
+use oc_camp_client::{CampClient, CertificateProblem, ClientError, DeviceKey, Session, Trust};
 use oc_invite::{Fingerprint, Host, InviteError, Link, Token};
 use oc_proto::{
     avatar_hash, AvatarFormat, CampEvent, CampState, Channel, ErrorCode, InviteKindDto, Role,
@@ -47,8 +47,12 @@ struct Saved {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedCamp {
-    /// The certificate fingerprint: unique per camp and stable across addresses.
+    /// The certificate fingerprint: unique per camp and stable across addresses. For a
+    /// camp checked by an authority (`by_name`), its `host:port` (ADR-0042).
     id: String,
+    /// A domain with an authority's certificate, not a pin (ADR-0042).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    by_name: bool,
     host: String,
     port: u16,
     name: String,
@@ -69,11 +73,16 @@ impl SavedCamp {
             .host
             .parse()
             .map_err(|_| format!("Сохранённый адрес сервера повреждён: {}", self.host))?;
-        let fingerprint: Fingerprint = self
-            .id
-            .parse()
-            .map_err(|_| "Сохранённый отпечаток сервера повреждён".to_owned())?;
-        Ok(CampClient::at(&host, self.port, fingerprint))
+        let trust = if self.by_name {
+            Trust::of(None)
+        } else {
+            let fingerprint: Fingerprint = self
+                .id
+                .parse()
+                .map_err(|_| "Сохранённый отпечаток сервера повреждён".to_owned())?;
+            Trust::Pin(fingerprint)
+        };
+        Ok(CampClient::at(&host, self.port, trust))
     }
 
     fn session(&self) -> Session {
@@ -85,7 +94,7 @@ impl SavedCamp {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CampSummary {
-    /// Stable id (certificate fingerprint).
+    /// Stable id (certificate fingerprint, or `host:port` of a domain camp).
     pub id: String,
     /// Display name.
     pub name: String,
@@ -327,9 +336,10 @@ impl Camps {
                 other => describe(other),
             })?;
         let info = client.camp().await.map_err(describe)?;
-        let id = link.fingerprint().to_string();
+        let id = camp_id(&link);
         let camp = SavedCamp {
             id: id.clone(),
+            by_name: link.fingerprint().is_none(),
             host: link.host().to_string(),
             port: link.port(),
             name: info.name,
@@ -867,7 +877,16 @@ fn write_atomically(path: &Path, saved: &Saved) -> io::Result<()> {
 
 /// A client for what a link points at.
 fn client_for(link: &Link) -> CampClient {
-    CampClient::at(link.host(), link.port(), link.fingerprint())
+    CampClient::at(link.host(), link.port(), Trust::of(link.fingerprint()))
+}
+
+/// The camp a link is to: its pin, stable across addresses; a domain camp's name and
+/// port (its certificate changes with every renewal, ADR-0042).
+fn camp_id(link: &Link) -> String {
+    link.fingerprint().map_or_else(
+        || format!("{}:{}", link.host(), link.port()).to_ascii_lowercase(),
+        |fp| fp.to_string(),
+    )
 }
 
 fn parse_link(link: &str) -> Result<Link, CampError> {
@@ -881,11 +900,34 @@ fn parse_link(link: &str) -> Result<Link, CampError> {
                 "Ссылка повреждена — попросите прислать её заново"
             }
             InviteError::MissingFingerprint | InviteError::InvalidFingerprint => {
-                "В ссылке нет отпечатка сервера — попросите прислать её заново"
+                "В ссылке нет отпечатка сервера (он нужен для IP-адреса) — попросите прислать её заново"
             }
         }
         .to_owned()
     })
+}
+
+/// What a person can do about the camp's certificate.
+fn certificate_problem(problem: CertificateProblem) -> CampError {
+    match problem {
+        CertificateProblem::NotPinned => {
+            "Сертификат сервера не совпадает со ссылкой: это может быть подмена, или сервер \
+             переустановлен — попросите новую ссылку"
+        }
+        CertificateProblem::Expired => {
+            "У сертификата сервера истёк срок — владельцу нужно его обновить"
+        }
+        CertificateProblem::WrongName => {
+            "Сертификат сервера выдан для другого адреса: это может быть подмена, или сервер \
+             настроен с ошибкой"
+        }
+        CertificateProblem::UnknownIssuer => {
+            "Сертификат сервера не подтверждён удостоверяющим центром: это может быть подмена — \
+             или попросите ссылку с отпечатком"
+        }
+        CertificateProblem::Other => "Сертификат сервера не прошёл проверку",
+    }
+    .into()
 }
 
 /// A client error as a sentence for the UI.
@@ -902,12 +944,10 @@ fn moderation_error(e: ClientError) -> CampError {
 }
 
 fn describe(e: ClientError) -> CampError {
+    if let Some(problem) = e.certificate_problem() {
+        return certificate_problem(problem);
+    }
     match e {
-        ClientError::Io(e) if e.to_string().contains("certificate") => {
-            "Сертификат сервера не совпадает со ссылкой: это может быть подмена, или сервер \
-             переустановлен — попросите новую ссылку"
-                .into()
-        }
         ClientError::Io(e) => format!("Сервер недоступен: {e}"),
         ClientError::Api(code) => match code {
             ErrorCode::InviteRequired => "Для первого входа нужна ссылка-приглашение",
@@ -953,6 +993,38 @@ mod tests {
     }
 
     #[test]
+    fn a_domain_camp_is_known_by_its_name_and_a_pinned_one_by_its_pin() {
+        let domain: Link = "ourcamp://OurCamp.kz/join/7k2q9m4x8v1c3b5n"
+            .parse()
+            .unwrap();
+        assert_eq!(camp_id(&domain), "ourcamp.kz:7780");
+        let fp = "A".repeat(43);
+        let pinned: Link = format!("ourcamp://192.0.2.15:7781?fp={fp}")
+            .parse()
+            .unwrap();
+        assert_eq!(camp_id(&pinned), fp, "the same camp at any address");
+
+        // A camp saved before ADR-0042 has no `byName`: it is pinned, as it was.
+        let old: SavedCamp = serde_json::from_value(serde_json::json!({
+            "id": fp, "host": "192.0.2.15", "port": 7780, "name": "Кооп",
+            "userId": "u", "role": "member", "session": "s",
+        }))
+        .unwrap();
+        assert!(!old.by_name);
+        assert!(old.client().is_ok());
+        let saved = serde_json::to_value(&old).unwrap();
+        assert!(saved.get("byName").is_none(), "nothing new written for it");
+
+        let by_name = SavedCamp {
+            id: camp_id(&domain),
+            by_name: true,
+            host: "ourcamp.kz".into(),
+            ..old
+        };
+        assert!(by_name.client().is_ok(), "no pin to parse");
+    }
+
+    #[test]
     fn a_damaged_camp_list_is_set_aside_not_fatal() {
         let dir = temp_dir("damaged");
         fs::create_dir_all(&dir).unwrap();
@@ -977,6 +1049,7 @@ mod tests {
             public_port: None,
             camp_name: "Вечерний кооп".into(),
             router: None,
+            certificate: None,
             livekit: oc_server::LiveKit {
                 url: livekit,
                 api_key: "devkey".into(),

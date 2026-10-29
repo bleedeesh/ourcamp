@@ -10,12 +10,15 @@ use std::sync::Arc;
 
 use oc_invite::Fingerprint;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
+
+use crate::certificate::{DomainCertificate, Resolver};
 
 const CERT_FILE: &str = "cert.der";
 const KEY_FILE: &str = "key.der";
 /// Subject name. Clients pin the fingerprint and ignore names (ADR-0014).
-const SUBJECT: &str = "ourcamp";
+const SUBJECT: &str = oc_tls::PINNED_NAME;
 
 /// Certificate, key and the fingerprint links carry.
 pub struct Identity {
@@ -69,18 +72,24 @@ impl Identity {
         }
     }
 
-    /// TLS server configuration for this identity.
+    /// TLS server configuration: this identity, and the authority's certificate for
+    /// clients that ask for the domain by name (ADR-0042).
     ///
     /// # Errors
     /// If the key does not match the certificate (a corrupted identity directory).
-    pub fn server_config(&self) -> Result<Arc<ServerConfig>, rustls::Error> {
+    pub(crate) fn server_config(
+        &self,
+        domain: Option<Arc<DomainCertificate>>,
+    ) -> Result<Arc<ServerConfig>, rustls::Error> {
+        let own = CertifiedKey::from_der(
+            vec![self.cert.clone()],
+            PrivateKeyDer::Pkcs8(self.key.clone_key()),
+            &oc_tls::provider(),
+        )?;
         let mut config = ServerConfig::builder_with_provider(oc_tls::provider())
             .with_safe_default_protocol_versions()?
             .with_no_client_auth()
-            .with_single_cert(
-                vec![self.cert.clone()],
-                PrivateKeyDer::Pkcs8(self.key.clone_key()),
-            )?;
+            .with_cert_resolver(Arc::new(Resolver::new(Arc::new(own), domain)));
         // HTTP/2 for API calls, HTTP/1.1 for the WebSocket upgrades (signalling proxy).
         config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Arc::new(config))
@@ -129,7 +138,7 @@ mod tests {
             first.fingerprint, second.fingerprint,
             "links survive restarts"
         );
-        assert!(second.server_config().is_ok());
+        assert!(second.server_config(None).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 

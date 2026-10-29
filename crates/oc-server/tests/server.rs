@@ -5,7 +5,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
-use oc_camp_client::{CampClient, ClientError, DeviceKey};
+use oc_camp_client::{CampClient, ClientError, DeviceKey, Trust};
 use oc_invite::{Fingerprint, Host, Invite, InviteKind};
 use oc_proto::{ChannelKind, ErrorCode, InviteKindDto, Role, API_VERSION};
 use oc_server::{start, Config, LiveKit, LiveKitMode, Running};
@@ -27,6 +27,7 @@ fn config(data_dir: PathBuf) -> Config {
         public_port: None,
         camp_name: "Вечерний кооп".into(),
         router: None,
+        certificate: None,
         livekit: livekit(LIVEKIT_URL),
     }
 }
@@ -60,7 +61,7 @@ impl Camp {
         CampClient::at(
             &Host::Ipv4(Ipv4Addr::LOCALHOST),
             self.running.local_addr.port(),
-            self.running.fingerprint,
+            Trust::Pin(self.running.fingerprint),
         )
     }
 
@@ -100,12 +101,14 @@ async fn a_client_pinning_another_certificate_cannot_connect() {
     let impostor = CampClient::at(
         &Host::Ipv4(Ipv4Addr::LOCALHOST),
         camp.running.local_addr.port(),
-        Fingerprint([7; 32]),
+        Trust::Pin(Fingerprint([7; 32])),
     );
-    match impostor.camp().await {
-        Err(ClientError::Io(e)) => assert!(e.to_string().contains("certificate"), "{e}"),
-        other => panic!("expected a certificate error, got {other:?}"),
-    }
+    let refused = impostor.camp().await.unwrap_err();
+    assert_eq!(
+        refused.certificate_problem(),
+        Some(oc_camp_client::CertificateProblem::NotPinned),
+        "{refused:?}"
+    );
     camp.stop().await;
 }
 
@@ -116,7 +119,7 @@ async fn links_carry_the_public_address_and_the_real_fingerprint() {
     assert_eq!(join.host, Host::Domain("camp.example".into()));
     assert_eq!(join.port, camp.running.local_addr.port());
     assert_eq!(join.kind, InviteKind::Join);
-    assert_eq!(join.fingerprint, camp.running.fingerprint);
+    assert_eq!(join.fingerprint, Some(camp.running.fingerprint));
     camp.stop().await;
 }
 
@@ -205,7 +208,10 @@ async fn hand_login(
     signed_for: Fingerprint,
 ) -> (u16, Value) {
     let (addr, pin) = (camp.running.local_addr, camp.running.fingerprint);
-    let signature = key.sign(&oc_proto::login_message(&signed_for, nonce));
+    let signature = key.sign(&oc_proto::login_message(
+        oc_proto::CampKey::Pinned(&signed_for),
+        nonce,
+    ));
     let body = json!({
         "publicKey": oc_proto::encode_bytes(key.public_key().as_ref()),
         "name": "Атакующий",
@@ -412,7 +418,7 @@ async fn the_transport_refuses_a_camp_pinned_to_another_certificate() {
     let upstream = fake_livekit().await;
     let camp = camp_with_upstream(&upstream).await;
     let authority = format!("127.0.0.1:{}", camp.running.local_addr.port());
-    oc_camp_client::transport::pin(&authority, Fingerprint([7; 32]));
+    oc_camp_client::transport::trust(&authority, Trust::Pin(Fingerprint([7; 32])));
     let err = signal(format!("wss://{authority}/rtc"))
         .await
         .err()
@@ -473,7 +479,7 @@ async fn members_can_copy_the_friends_link_and_it_works() {
     let link = client.current_invite(&session).await.unwrap();
     assert_eq!(link.kind, InviteKind::Join);
     assert_eq!(link.token.as_str(), camp.join());
-    assert_eq!(link.fingerprint, camp.running.fingerprint);
+    assert_eq!(link.fingerprint, Some(camp.running.fingerprint));
 
     // A new friend joins with exactly that link.
     let friend = CampClient::new(&link);
@@ -1403,4 +1409,158 @@ async fn the_owner_commands_the_running_camp_from_its_data_directory() {
         Err(CallError::NotRunning)
     ));
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---- a domain with a certificate from an authority (ADR-0042) ----
+
+/// A LiveKit address nothing listens on: presence fails at once instead of timing out.
+fn livekit_down() -> String {
+    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    format!("ws://{}", free.local_addr().unwrap())
+}
+
+/// Listens on `[::1]`: Windows resolves `localhost` there first and takes ~2 s to give up
+/// on a refused address before it tries `127.0.0.1`.
+fn on_localhost(dir: PathBuf) -> Config {
+    let mut cfg = config(dir);
+    cfg.bind = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 0));
+    cfg
+}
+
+/// A camp at `localhost` (it resolves without DNS) with a certificate a made-up
+/// authority issued for it; the client trusts that authority.
+async fn camp_on_a_domain(upstream: &str) -> (Camp, Trust) {
+    let dir = data_dir();
+    let (roots, files) = support::issue_certificate(&dir.join("letsencrypt"), "localhost");
+    let mut cfg = on_localhost(dir.clone());
+    cfg.public_host = Host::Domain("localhost".into());
+    cfg.certificate = Some(files);
+    cfg.livekit = livekit(upstream);
+    let camp = Camp {
+        running: start(cfg).await.unwrap(),
+        dir,
+    };
+    (camp, Trust::Authorities(roots))
+}
+
+#[tokio::test]
+async fn on_a_domain_the_link_has_no_fingerprint_and_friends_come_by_the_name() {
+    let (camp, trust) = camp_on_a_domain(&livekit_down()).await;
+    let port = camp.running.local_addr.port();
+    let link = camp.running.links.join.to_string();
+    assert_eq!(
+        link,
+        format!("ourcamp://localhost:{port}/join/{}", camp.join())
+    );
+    assert_eq!(
+        camp.running.links.open.to_string(),
+        format!("ourcamp://localhost:{port}")
+    );
+
+    let host = Host::Domain("localhost".into());
+    let client = CampClient::at(&host, port, trust);
+    assert_eq!(client.camp().await.unwrap().name, "Вечерний кооп");
+    let key = DeviceKey::generate();
+    let session = client
+        .login(&key, "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    assert_eq!(session.user_id, key.user_id());
+    let mut events = client.events(&session).await.unwrap();
+    state_where(&mut events, |s| s.members.len() == 1).await;
+    let shared = client.current_invite(&session).await.unwrap();
+    assert_eq!(
+        shared.fingerprint, None,
+        "members share the link without a pin"
+    );
+
+    // Old links with the pin keep working: the camp answers them with its own certificate.
+    let pinned = CampClient::at(&host, port, Trust::Pin(camp.running.fingerprint));
+    let again = pinned.login(&key, "Лена", None).await.unwrap();
+    assert_eq!(again.user_id, key.user_id());
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn without_the_authority_a_domain_camp_is_refused() {
+    let (camp, _) = camp_on_a_domain(&livekit_down()).await;
+    let port = camp.running.local_addr.port();
+    // This computer's roots do not include the made-up authority.
+    let stranger = CampClient::at(&Host::Domain("localhost".into()), port, Trust::of(None));
+    let refused = stranger.camp().await.unwrap_err();
+    assert_eq!(
+        refused.certificate_problem(),
+        Some(oc_camp_client::CertificateProblem::UnknownIssuer),
+        "{refused:?}"
+    );
+
+    // And a camp with only its own certificate is no domain camp.
+    let dir = data_dir();
+    let plain = Camp {
+        running: start(on_localhost(dir.clone())).await.unwrap(),
+        dir,
+    };
+    let (roots, _) = support::issue_certificate(&plain.dir.join("ca"), "localhost");
+    let by_name = CampClient::at(
+        &Host::Domain("localhost".into()),
+        plain.running.local_addr.port(),
+        Trust::Authorities(roots),
+    );
+    let refused = by_name.camp().await.unwrap_err();
+    assert!(refused.certificate_problem().is_some(), "{refused:?}");
+    plain.stop().await;
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn a_login_signed_for_another_port_of_the_domain_is_rejected() {
+    let (camp, _) = camp_on_a_domain(&livekit_down()).await;
+    let port = camp.running.local_addr.port();
+    let key = ring_key();
+    let signed = |nonce: String, port: u16| {
+        let signature = key.sign(&oc_proto::login_message(
+            oc_proto::CampKey::Named {
+                host: "localhost",
+                port,
+            },
+            &nonce,
+        ));
+        json!({
+            "publicKey": oc_proto::encode_bytes(key.public_key().as_ref()),
+            "name": "Лена",
+            "nonce": nonce,
+            "signature": oc_proto::encode_bytes(signature.as_ref()),
+            "invite": camp.join(),
+        })
+    };
+    let (addr, pin) = (camp.running.local_addr, camp.running.fingerprint);
+    let send = |body: Value| async move {
+        raw(addr, pin, "POST", "/api/v1/auth/login", Some(&body))
+            .await
+            .unwrap()
+    };
+    let (status, body) = send(signed(nonce(&camp).await, port + 1)).await;
+    assert_eq!((status, &body["error"]), (401, &json!("bad_signature")));
+    let (status, _) = send(signed(nonce(&camp).await, port)).await;
+    assert_eq!(status, 200, "signed for this camp's name");
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn voice_goes_to_a_domain_camp_checked_by_its_authority() {
+    let upstream = fake_livekit().await;
+    let (camp, trust) = camp_on_a_domain(&upstream).await;
+    let client = CampClient::at(
+        &Host::Domain("localhost".into()),
+        camp.running.local_addr.port(),
+        trust,
+    );
+    let voice = client.voice_url(); // registers the camp's trust for the transport
+    assert!(voice.starts_with("wss://localhost:"), "{voice}");
+    let conn = signal(format!("{voice}/rtc/v1?access_token=t"))
+        .await
+        .unwrap();
+    assert!(conn.recv().await.unwrap().unwrap().starts_with(b"/rtc/v1"));
+    conn.close().await;
+    camp.stop().await;
 }
