@@ -1,0 +1,23 @@
+#!/bin/sh
+# The owner's commands to the running server (ADR-0041), as the server's own user:
+#   sudo ourcamp status
+#   sudo ourcamp role Лена admin
+# Installed as /usr/local/bin/ourcamp by install.sh.
+set -eu
+
+case "${1:-}" in
+  "" | -h | --help)
+    exec /opt/ourcamp/oc-server --help
+    ;;
+  -*)
+    # Flags would start a second server next to the service.
+    echo "ourcamp: настройки сервера — в /etc/ourcamp/server.env, затем" >&2
+    echo "  sudo systemctl restart ourcamp-server" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$(id -u)" -eq 0 ]; then
+  exec runuser -u ourcamp -- /opt/ourcamp/oc-server --data /var/lib/ourcamp "$@"
+fi
+exec sudo -u ourcamp /opt/ourcamp/oc-server --data /var/lib/ourcamp "$@"
