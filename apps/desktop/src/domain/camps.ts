@@ -1,4 +1,14 @@
-import type { CampApi, CampDirective, CampLive, CampPreview, CampSummary, OpenCamp } from "../engine/camp-api.ts";
+import type {
+  CampApi,
+  CampDirective,
+  CampLive,
+  CampPreview,
+  CampSummary,
+  ChannelInfo,
+  ChatUpdate,
+  OpenCamp,
+} from "../engine/camp-api.ts";
+import { advance, unreadCount, type SeqByChat } from "./chat.ts";
 import { createStore, type Store } from "../lib/store.ts";
 import { avatarColor, campShort, campfiresOf } from "./roster.ts";
 import type { Camp } from "./types.ts";
@@ -35,6 +45,8 @@ export interface CampsState {
   readonly notice: string | null;
   /** Your avatar as this device keeps it (ADR-0035): offered in the join form. */
   readonly avatar: Uint8Array | null;
+  /** Unread messages in the open camp's chats (ADR-0044), for the "Чат" button. */
+  readonly unread: number;
   readonly error: string | null;
 }
 
@@ -84,6 +96,15 @@ export function campFromOpen(open: OpenCamp): Camp {
   };
 }
 
+/** The open camp's chats: its channels, each chat's last message, what is read here. */
+interface OpenChats {
+  readonly channels: readonly ChannelInfo[];
+  readonly latest: SeqByChat;
+  readonly read: SeqByChat;
+  /** Your own messages count as read. */
+  readonly selfId: string;
+}
+
 export interface CampsOptions {
   /** Puts text on the clipboard (the webview's in the app, a fake in tests). */
   readonly copy: (text: string) => Promise<void>;
@@ -106,6 +127,13 @@ export class CampsController {
   #checkSeq = 0;
   #unsubscribeLive: (() => void) | null = null;
   #unsubscribeDirective: (() => void) | null = null;
+  #unsubscribeChat: (() => void) | null = null;
+  #chats: OpenChats = {
+    channels: [],
+    latest: {},
+    read: {},
+    selfId: "",
+  };
 
   constructor(api: CampApi, voice: VoiceController, options: CampsOptions) {
     this.#api = api;
@@ -127,6 +155,7 @@ export class CampsController {
       joinError: null,
       notice: null,
       avatar: null,
+      unread: 0,
       error: null,
     });
   }
@@ -164,6 +193,7 @@ export class CampsController {
   async start(): Promise<void> {
     this.#unsubscribeLive ??= this.#api.onLive((live) => this.#onLive(live));
     this.#unsubscribeDirective ??= this.#api.onDirective((d) => void this.#onDirective(d));
+    this.#unsubscribeChat ??= this.#api.onChat((u) => this.#onChat(u));
     void this.#api.profileAvatar().then(
       (avatar) => this.store.patch({ avatar }),
       () => {},
@@ -355,12 +385,41 @@ export class CampsController {
     this.store.patch({ offline: !live.online });
     if (!live.state) return;
     this.#voice.applyCampState(live.state);
+    // A message event may have come before the snapshot that counts it: never back.
+    let latest = this.#chats.latest;
+    for (const [chat, seq] of Object.entries(live.state.chats ?? {})) latest = advance(latest, chat, seq);
+    this.#setChats({ ...this.#chats, channels: live.state.channels, latest });
     // A rename shows in the switcher too, not only in the header.
     const { name } = live.state;
     const camps = this.store.get().camps;
     if (camps.some((c) => c.id === live.campId && c.name !== name)) {
       this.store.patch({ camps: camps.map((c) => (c.id === live.campId ? { ...c, name } : c)) });
     }
+  }
+
+  /** A message or a read mark in the open camp's chats, from any window (ADR-0044). */
+  #onChat(update: ChatUpdate): void {
+    const { currentId } = this.store.get();
+    if (update.campId !== currentId) return;
+    if (update.type === "read") {
+      this.#setChats({ ...this.#chats, read: advance(this.#chats.read, update.channelId, update.seq) });
+      return;
+    }
+    const { channelId, seq, authorId } = update.message;
+    const own = authorId === this.#chats.selfId;
+    // What you wrote yourself is read, on this device and in every window.
+    if (own) void this.#api.markRead(currentId, channelId, seq).catch(() => {});
+    this.#setChats({
+      ...this.#chats,
+      latest: advance(this.#chats.latest, channelId, seq),
+      read: own ? advance(this.#chats.read, channelId, seq) : this.#chats.read,
+    });
+  }
+
+  #setChats(chats: OpenChats): void {
+    this.#chats = chats;
+    const unread = unreadCount(chats.channels, chats.latest, chats.read);
+    if (unread !== this.store.get().unread) this.store.patch({ unread });
   }
 
   /** A moderator moved or kicked us (ADR-0028). */
@@ -413,6 +472,8 @@ export class CampsController {
 
   async #show(opened: OpenCamp): Promise<void> {
     await this.#voice.openCamp(this.#toCamp(opened), opened.self.userId);
+    // Each chat's last message comes with the first snapshot.
+    this.#setChats({ channels: opened.channels, latest: {}, read: opened.read, selfId: opened.self.userId });
     this.store.patch({
       view: "camp",
       currentId: opened.id,

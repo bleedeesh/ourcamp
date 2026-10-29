@@ -251,6 +251,76 @@ pub async fn camp_avatar(
         .map(|b| oc_proto::encode_bytes(&b))
 }
 
+/// A page of a chat, oldest first (ADR-0044).
+#[tauri::command]
+pub async fn chat_history(
+    state: State<'_, CampsState>,
+    id: String,
+    channel_id: String,
+    before: Option<u64>,
+    limit: u32,
+) -> Result<Vec<oc_proto::ChatMessage>, String> {
+    camps(&state)?
+        .history(&id, &channel_id, before, limit)
+        .await
+}
+
+/// Writes in a chat; `photo` (base64url, as the window encoded it) goes up first.
+#[tauri::command]
+pub async fn chat_send(
+    state: State<'_, CampsState>,
+    id: String,
+    channel_id: String,
+    text: String,
+    photo: Option<OutgoingPhotoDto>,
+) -> Result<oc_proto::ChatMessage, String> {
+    let photo = photo
+        .map(|p| {
+            oc_proto::decode_bytes(&p.bytes)
+                .map(|bytes| crate::camps::OutgoingPhoto {
+                    bytes,
+                    width: p.width,
+                    height: p.height,
+                })
+                .ok_or_else(|| "Повреждённое фото".to_owned())
+        })
+        .transpose()?;
+    camps(&state)?.send(&id, &channel_id, text, photo).await
+}
+
+/// A photo of the open camp's chats as it crosses IPC: base64url bytes and its size.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutgoingPhotoDto {
+    bytes: String,
+    width: u32,
+    height: u32,
+}
+
+/// A photo by its hash, base64url (from the cache or the camp).
+#[tauri::command]
+pub async fn chat_photo(
+    state: State<'_, CampsState>,
+    id: String,
+    hash: String,
+) -> Result<String, String> {
+    camps(&state)?
+        .photo(&id, &hash)
+        .await
+        .map(|b| oc_proto::encode_bytes(&b))
+}
+
+/// This device has read a chat up to `seq`; every window hears it.
+#[tauri::command]
+pub fn chat_mark_read(
+    state: State<'_, CampsState>,
+    id: String,
+    channel_id: String,
+    seq: u64,
+) -> Result<(), String> {
+    camps(&state)?.mark_read(&id, &channel_id, seq)
+}
+
 /// The camp's friends link, to copy.
 #[tauri::command]
 pub async fn camp_invite(state: State<'_, CampsState>, id: String) -> Result<String, String> {

@@ -1,5 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CampApi, CampDirective, CampList, CampLive, CampPreview, OpenCamp } from "./camp-api.ts";
+import type {
+  CampApi,
+  CampDirective,
+  CampList,
+  CampLive,
+  CampPreview,
+  ChatMessage,
+  ChatUpdate,
+  OpenCamp,
+  OutgoingPhoto,
+} from "./camp-api.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 import { decodeBase64Url, encodeBase64Url } from "../domain/avatar.ts";
 
@@ -7,6 +17,8 @@ import { decodeBase64Url, encodeBase64Url } from "../domain/avatar.ts";
 const CAMP_STATE_EVENT = "camp://state";
 /** Event emitted by `src-tauri/src/lib.rs` (`CAMP_DIRECTIVE_EVENT`). */
 const CAMP_DIRECTIVE_EVENT = "camp://directive";
+/** Event emitted by `src-tauri/src/lib.rs` (`CAMP_CHAT_EVENT`). */
+const CAMP_CHAT_EVENT = "camp://chat";
 
 /** Camp commands of `src-tauri/src/commands.rs`. */
 export class TauriCampApi implements CampApi {
@@ -65,5 +77,27 @@ export class TauriCampApi implements CampApi {
 
   onDirective(listener: (directive: CampDirective) => void): () => void {
     return subscribe<CampDirective>(CAMP_DIRECTIVE_EVENT, listener);
+  }
+
+  history(id: string, channelId: string, before: number | null, limit: number): Promise<ChatMessage[]> {
+    return invoke("chat_history", { id, channelId, before, limit });
+  }
+
+  send(id: string, channelId: string, text: string, photo: OutgoingPhoto | null): Promise<ChatMessage> {
+    const encoded =
+      photo === null ? null : { bytes: encodeBase64Url(photo.bytes), width: photo.width, height: photo.height };
+    return invoke("chat_send", { id, channelId, text, photo: encoded });
+  }
+
+  async photo(id: string, hash: string): Promise<Uint8Array> {
+    return decodeBase64Url(await invoke<string>("chat_photo", { id, hash }));
+  }
+
+  markRead(id: string, channelId: string, seq: number): Promise<void> {
+    return invoke("chat_mark_read", { id, channelId, seq });
+  }
+
+  onChat(listener: (update: ChatUpdate) => void): () => void {
+    return subscribe<ChatUpdate>(CAMP_CHAT_EVENT, listener);
   }
 }

@@ -12,7 +12,7 @@ export interface CampSummary {
 export interface ChannelInfo {
   readonly id: string;
   readonly name: string;
-  /** Campfires are voice; chats (M5) are text and not in the campfire tree. */
+  /** Campfires are voice; chats (ADR-0044) are text and not in the campfire tree. */
   readonly kind: "voice" | "text";
   readonly afk: boolean;
 }
@@ -47,7 +47,43 @@ export interface OpenCamp {
   readonly self: { readonly userId: UserId; readonly name: string; readonly role: Role };
   /** The camp server was unreachable; name and channels are the last known ones. */
   readonly offline: boolean;
+  /** Chat id → the last message read on this device (ADR-0044). */
+  readonly read: Readonly<Record<string, number>>;
 }
+
+/** A photo in a message, mirrors `oc_proto::Photo`. */
+export interface ChatPhoto {
+  readonly hash: string;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** One message of a chat, mirrors `oc_proto::ChatMessage` (ADR-0044). */
+export interface ChatMessage {
+  readonly channelId: string;
+  /** 1, 2, 3… within the chat. */
+  readonly seq: number;
+  readonly authorId: UserId;
+  /** The author's name when they wrote it (they may have left since). */
+  readonly authorName: string;
+  /** Unix time, milliseconds. */
+  readonly sentAt: number;
+  /** Empty only with a photo. */
+  readonly text: string;
+  readonly photo?: ChatPhoto;
+}
+
+/** A photo to send, encoded by the window (at most 1600 px on its long side). */
+export interface OutgoingPhoto {
+  readonly bytes: Uint8Array;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** What changed in the open camp's chats, mirrors `camps::ChatUpdate`; every window hears it. */
+export type ChatUpdate =
+  | { readonly type: "message"; readonly campId: string; readonly message: ChatMessage }
+  | { readonly type: "read"; readonly campId: string; readonly channelId: string; readonly seq: number };
 
 /**
  * Camps this device belongs to (ADR-0020). In the desktop app this is Rust
@@ -82,6 +118,16 @@ export interface CampApi {
   onLive(listener: (live: CampLive) => void): () => void;
   /** What the open camp asks of you alone (ADR-0028); returns an unsubscribe. */
   onDirective(listener: (directive: CampDirective) => void): () => void;
+  /** Up to `limit` messages of a chat before `before` (up to the latest when `null`), oldest first. */
+  history(id: string, channelId: string, before: number | null, limit: number): Promise<ChatMessage[]>;
+  /** Writes in a chat; the message also arrives through `onChat`, like everyone else's. */
+  send(id: string, channelId: string, text: string, photo: OutgoingPhoto | null): Promise<ChatMessage>;
+  /** A photo by its hash (kept by the app). */
+  photo(id: string, hash: string): Promise<Uint8Array>;
+  /** This device has read a chat up to `seq`; never moves back. */
+  markRead(id: string, channelId: string, seq: number): Promise<void>;
+  /** Messages and read marks of the open camp's chats (ADR-0044); returns an unsubscribe. */
+  onChat(listener: (update: ChatUpdate) => void): () => void;
 }
 
 /**
@@ -110,6 +156,8 @@ export interface CampState {
     readonly channelId: string;
     readonly members: ReadonlyArray<{ readonly userId: UserId; readonly micMuted: boolean }>;
   }>;
+  /** Chat id → its last message, for chats with any (ADR-0044); absent: none at all. */
+  readonly chats?: Readonly<Record<string, number>>;
 }
 
 /** A live update about the open camp. */
