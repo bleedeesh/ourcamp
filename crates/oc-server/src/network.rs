@@ -21,6 +21,9 @@ pub enum AddressKind {
     Hamachi,
     /// Tailscale: 100.64.0.0/10.
     Tailscale,
+    /// The internet through the home router: its public address, ports opened over
+    /// UPnP (ADR-0039). Found by asking the router, not by a route.
+    Router,
 }
 
 impl AddressKind {
@@ -33,6 +36,7 @@ impl AddressKind {
             Self::Radmin => "radmin",
             Self::Hamachi => "hamachi",
             Self::Tailscale => "tailscale",
+            Self::Router => "router",
         }
     }
 
@@ -45,6 +49,7 @@ impl AddressKind {
             Self::Radmin,
             Self::Hamachi,
             Self::Tailscale,
+            Self::Router,
         ]
         .into_iter()
         .find(|k| k.as_str() == name)
@@ -98,13 +103,25 @@ fn in_network(ip: Ipv4Addr, network: Ipv4Addr, prefix: u8) -> bool {
     u32::from(ip) & mask == u32::from(network) & mask
 }
 
+/// Whether friends on the internet can reach `ip`: not a private, carrier-grade NAT
+/// (a "grey" address: the provider shares one public address between customers),
+/// link-local or loopback one.
+#[must_use]
+pub fn is_public(ip: Ipv4Addr) -> bool {
+    !(ip.is_private()
+        || in_network(ip, Ipv4Addr::new(100, 64, 0, 0), 10)
+        || ip.is_link_local()
+        || ip.is_loopback()
+        || ip.is_unspecified())
+}
+
 /// The kind of the default route's address: private ranges are a local network.
 fn default_kind(ip: Ipv4Addr) -> AddressKind {
     // 100.64/10 is carrier-grade NAT: on a card it is a local address, not a public one.
-    if ip.is_private() || in_network(ip, Ipv4Addr::new(100, 64, 0, 0), 10) {
-        AddressKind::Lan
-    } else {
+    if is_public(ip) {
         AddressKind::Public
+    } else {
+        AddressKind::Lan
     }
 }
 
@@ -207,6 +224,18 @@ mod tests {
     }
 
     #[test]
+    fn grey_addresses_are_no_way_in() {
+        assert!(is_public(Ipv4Addr::new(85, 143, 20, 11)));
+        assert!(
+            !is_public(Ipv4Addr::new(100, 91, 68, 10)),
+            "carrier-grade NAT"
+        );
+        assert!(!is_public(Ipv4Addr::new(192, 168, 1, 2)));
+        assert!(!is_public(Ipv4Addr::new(10, 0, 0, 1)));
+        assert!(!is_public(Ipv4Addr::new(169, 254, 1, 1)));
+    }
+
+    #[test]
     fn no_network_no_options() {
         assert_eq!(options_from(None, &[None, None, None]), []);
         assert_eq!(
@@ -223,6 +252,7 @@ mod tests {
             AddressKind::Radmin,
             AddressKind::Hamachi,
             AddressKind::Tailscale,
+            AddressKind::Router,
         ] {
             assert_eq!(AddressKind::parse(kind.as_str()), Some(kind));
         }

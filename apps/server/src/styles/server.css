@@ -790,3 +790,8 @@
   font-size: 12px;
   color: var(--admin);
 }
+
+.address__ports {
+  font-size: 12px;
+  color: var(--online);
+}

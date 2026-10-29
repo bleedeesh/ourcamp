@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use oc_invite::{Host, DEFAULT_PORT};
 use oc_server::network::{self, AddressKind};
+use oc_server::upnp::Gateway;
 use oc_server::{
     find_livekit, lan_address, start, Config, LiveKit, LiveKitMode, ManagedLiveKit,
     DEFAULT_RTC_TCP_PORT, DEFAULT_RTC_UDP_PORT,
@@ -25,7 +26,9 @@ OurCamp Server (headless)
   --bind ADDR             listen address                        [0.0.0.0:7780]
   --host HOST             address friends use, put into links   [this PC's LAN IPv4]
                           a domain or an IP, or a network found here:
-                          lan, public, radmin, hamachi, tailscale (ADR-0037)
+                          lan, public, radmin, hamachi, tailscale (ADR-0037),
+                          router: the router's public address, ports opened
+                          on it over UPnP and closed on exit (ADR-0039)
   --port PORT             port put into links                   [the bound port]
   --name NAME             name of a new camp                    [Мой сервер]
 
@@ -73,13 +76,30 @@ impl HostArg {
     }
 
     /// The address for links and voice; a network must be there now.
-    fn resolve(self) -> Result<Host, String> {
+    /// The address for links and voice, and the router to open ports on (`router`).
+    async fn resolve(self) -> Result<(Host, Option<Gateway>), String> {
         match self {
-            Self::Address(host) => Ok(host),
+            Self::Address(host) => Ok((host, None)),
+            Self::Network(AddressKind::Router) => {
+                let gateway = Gateway::discover(Duration::from_secs(3))
+                    .await
+                    .map_err(|e| format!("--host router: {e} (is UPnP on in the router?)"))?;
+                let ip = gateway
+                    .external_ip()
+                    .await
+                    .map_err(|e| format!("--host router: {e}"))?;
+                if !network::is_public(ip) {
+                    return Err(format!(
+                        "--host router: the router's address {ip} is grey (carrier-grade \
+                         NAT): no way in from the internet; use a VPN or a hosting server"
+                    ));
+                }
+                Ok((Host::Ipv4(ip), Some(gateway)))
+            }
             Self::Network(kind) => network::address_options()
                 .into_iter()
                 .find(|o| o.kind == kind)
-                .map(|o| Host::Ipv4(o.ip))
+                .map(|o| (Host::Ipv4(o.ip), None))
                 .ok_or_else(|| {
                     format!(
                         "--host {}: no such network on this PC (is the VPN on?)",
@@ -244,8 +264,13 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let public_host = match args.host.map(HostArg::resolve).transpose() {
-        Ok(host) => host.unwrap_or_else(lan_address),
+    let resolved = match args.host {
+        Some(host) => host.resolve().await.map(Some),
+        None => Ok(None),
+    };
+    let (public_host, router) = match resolved {
+        Ok(Some(found)) => found,
+        Ok(None) => (lan_address(), None),
         Err(e) => {
             eprintln!("oc-server: {e}");
             return ExitCode::FAILURE;
@@ -258,6 +283,7 @@ async fn main() -> ExitCode {
         public_host,
         public_port: args.port,
         camp_name: args.name,
+        router,
         livekit,
     };
 
@@ -387,6 +413,14 @@ mod tests {
         assert!(parse(&["--help"]).unwrap().is_none());
     }
 
+    fn tokio_test_block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
     #[test]
     fn a_network_name_takes_this_pcs_address_there() {
         let args = parse(&["--host", "radmin"]).unwrap().unwrap();
@@ -396,10 +430,11 @@ mod tests {
             .iter()
             .any(|o| o.kind == AddressKind::Hamachi)
         {
-            assert!(HostArg::Network(AddressKind::Hamachi)
-                .resolve()
-                .unwrap_err()
-                .contains("is the VPN on?"));
+            assert!(
+                tokio_test_block_on(HostArg::Network(AddressKind::Hamachi).resolve())
+                    .unwrap_err()
+                    .contains("is the VPN on?")
+            );
         }
     }
 }

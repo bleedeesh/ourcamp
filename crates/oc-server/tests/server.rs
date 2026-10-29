@@ -26,6 +26,7 @@ fn config(data_dir: PathBuf) -> Config {
         public_host: Host::Domain("camp.example".into()),
         public_port: None,
         camp_name: "Вечерний кооп".into(),
+        router: None,
         livekit: livekit(LIVEKIT_URL),
     }
 }

@@ -492,6 +492,7 @@ mod tests {
             public_host: oc_invite::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST),
             public_port: None,
             camp_name: name.into(),
+            router: None,
             livekit: oc_server::LiveKit {
                 url: "ws://127.0.0.1:7880".into(),
                 api_key: "devkey".into(),

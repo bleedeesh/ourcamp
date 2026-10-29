@@ -1,2 +1,2 @@
 # Product and protocol names that are not code identifiers.
-doc-valid-idents = ["OurCamp", "WebRTC", "LiveKit", "TeamSpeak", "macOS", "..", "dBFS"]
+doc-valid-idents = ["OurCamp", "WebRTC", "LiveKit", "TeamSpeak", "macOS", "..", "dBFS", "UPnP"]
