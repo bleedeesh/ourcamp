@@ -3,7 +3,7 @@
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use oc_proto::{
@@ -11,9 +11,42 @@ use oc_proto::{
     MAX_MESSAGE_CHARS, MAX_PHOTO_BYTES, MAX_PHOTO_SIDE,
 };
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use super::{manage_error, session_member, ApiError, AppState};
-use crate::store::{Author, Posted};
+use crate::store::{Author, Deleted, Posted};
+
+/// Messages a member may send in one burst, then…
+const WRITE_BURST: f64 = 10.0;
+/// …this many per second: faster than anyone types, slower than a script.
+const WRITES_PER_SECOND: f64 = 1.0;
+
+/// How fast each member may write (ADR-0048): a bucket of tokens per member, in memory.
+/// A photo and its message cost one each. A restart forgets it, which is harmless.
+#[derive(Debug, Default)]
+pub(super) struct WriteLimit {
+    buckets: Mutex<HashMap<String, (f64, Instant)>>,
+}
+
+impl WriteLimit {
+    /// Takes one token of `user_id`'s bucket; `false`: none left.
+    fn allow(&self, user_id: &str, now: Instant) -> bool {
+        let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
+        let (tokens, at) = buckets
+            .entry(user_id.to_owned())
+            .or_insert((WRITE_BURST, now));
+        let earned = now.saturating_duration_since(*at).as_secs_f64() * WRITES_PER_SECOND;
+        *tokens = (*tokens + earned).min(WRITE_BURST);
+        *at = now;
+        if *tokens < 1.0 {
+            return false;
+        }
+        *tokens -= 1.0;
+        true
+    }
+}
 
 /// How many messages a history request returns unless it asks.
 const DEFAULT_HISTORY: u32 = 50;
@@ -73,6 +106,9 @@ pub(super) async fn post_message(
     if member.silenced {
         return Err(ApiError(ErrorCode::Silenced));
     }
+    if !state.write_limit.allow(&member.user_id, Instant::now()) {
+        return Err(ApiError(ErrorCode::TooFast));
+    }
     let author = Author {
         user_id: &member.user_id,
         name: &member.name,
@@ -89,6 +125,26 @@ pub(super) async fn post_message(
     }
 }
 
+/// `DELETE /api/v1/channels/{id}/messages/{seq}`: removes a message — your own, or that of
+/// someone of a lower rank (ADR-0048). Forbidden to speak still removes their own.
+pub(super) async fn delete_message(
+    State(state): State<AppState>,
+    Path((channel_id, seq)): Path<(String, u64)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let member = session_member(&state, &headers).await?;
+    match state
+        .manager
+        .delete_message(&channel_id, seq, &member.user_id, member.role)
+        .await
+        .map_err(manage_error)?
+    {
+        Deleted::Done | Deleted::AlreadyGone => Ok(StatusCode::NO_CONTENT),
+        Deleted::NotFound => Err(ApiError(ErrorCode::NotFound)),
+        Deleted::Forbidden => Err(ApiError(ErrorCode::Forbidden)),
+    }
+}
+
 /// `POST /api/v1/photos`: the photo itself as the body, before the message that shows
 /// it. WebP, PNG or JPEG by its signature, at most [`MAX_PHOTO_BYTES`]; the camp never
 /// decodes it, the apps' webviews do.
@@ -100,6 +156,9 @@ pub(super) async fn put_photo(
     let member = session_member(&state, &headers).await?;
     if member.silenced {
         return Err(ApiError(ErrorCode::Silenced));
+    }
+    if !state.write_limit.allow(&member.user_id, Instant::now()) {
+        return Err(ApiError(ErrorCode::TooFast));
     }
     let format = (body.len() <= MAX_PHOTO_BYTES)
         .then(|| PhotoFormat::sniff(&body))
@@ -150,6 +209,25 @@ mod tests {
                 height,
             }),
         }
+    }
+
+    #[test]
+    fn writing_has_a_burst_then_a_pace_per_member() {
+        let limit = WriteLimit::default();
+        let start = Instant::now();
+        for _ in 0..10 {
+            assert!(limit.allow("lena", start));
+        }
+        assert!(!limit.allow("lena", start), "the burst is spent");
+        assert!(limit.allow("bob", start), "each member has their own");
+        let later = start + std::time::Duration::from_secs(2);
+        assert!(limit.allow("lena", later));
+        assert!(limit.allow("lena", later));
+        assert!(!limit.allow("lena", later), "two seconds earned two");
+        let rested = later + std::time::Duration::from_secs(3600);
+        assert!(limit.allow("lena", rested));
+        let spent = (0..20).filter(|_| limit.allow("lena", rested)).count();
+        assert_eq!(spent, 9, "rest fills the bucket, no further");
     }
 
     #[test]

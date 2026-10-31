@@ -30,7 +30,9 @@ const msg = (channelId: string, seq: number, authorId = "lena"): ChatMessage => 
 });
 
 /** A camp server in memory: chats with messages 1…n, history like the real one. */
-class FakeChatApi implements Pick<CampApi, "chatContext" | "history" | "send" | "markRead" | "onLive" | "onChat" | "avatar" | "photo"> {
+class FakeChatApi
+  implements Pick<CampApi, "chatContext" | "history" | "send" | "deleteMessage" | "markRead" | "onLive" | "onChat" | "avatar" | "photo">
+{
   calls: string[] = [];
   chats = new Map<string, ChatMessage[]>([
     ["t1", Array.from({ length: 120 }, (_, i) => msg("t1", i + 1))],
@@ -39,6 +41,7 @@ class FakeChatApi implements Pick<CampApi, "chatContext" | "history" | "send" | 
   campId = "vk";
   read: Record<string, number> = { t1: 118 };
   silenced = false;
+  role: "member" | "moderator" | "admin" = "member";
   failSend: string | null = null;
 
   state(): CampState {
@@ -46,7 +49,7 @@ class FakeChatApi implements Pick<CampApi, "chatContext" | "history" | "send" | 
       name: "Вечерний кооп",
       channels: CHANNELS,
       members: [
-        { userId: "me", name: "Дима", role: "member", silenced: this.silenced },
+        { userId: "me", name: "Дима", role: this.role, silenced: this.silenced },
         { userId: "lena", name: "Лена", role: "member", silenced: false, avatar: "AAAAAAAAAAAAAAAA" },
       ],
       presence: [],
@@ -76,6 +79,19 @@ class FakeChatApi implements Pick<CampApi, "chatContext" | "history" | "send" | 
     this.calls.push(`send:${chatId}:${text}:${photo ? "photo" : "-"}`);
     if (this.failSend) return Promise.reject(new Error(this.failSend));
     return Promise.resolve(this.add(chatId, "me"));
+  }
+
+  failDelete: string | null = null;
+  deleteMessage(_id: string, chatId: string, seq: number): Promise<void> {
+    if (this.failDelete) return Promise.reject(new Error(this.failDelete));
+    this.erase(chatId, seq);
+    return Promise.resolve();
+  }
+
+  /** Removed on the "server". */
+  erase(chatId: string, seq: number) {
+    const all = this.chats.get(chatId) ?? [];
+    this.chats.set(chatId, all.map((m) => (m.seq === seq ? { ...m, text: "", deleted: true } : m)));
   }
 
   markRead(_id: string, chatId: string, seq: number): Promise<void> {
@@ -280,4 +296,42 @@ test("an empty chat catches up after a missed event; a message during the first 
   await started;
   await tick();
   assert.equal(seqs(racing, "t1").at(-1), 121, "fetched after the page came");
+});
+
+test("a message goes when its author or a higher rank removes it, here or elsewhere", async () => {
+  const { api, chat } = await setup();
+  const held = (seq: number) => chat.store.get().threads["t1"]?.messages.find((m) => m.seq === seq);
+  const mine = { ...msg("t1", 200, "me") };
+  assert.equal(chat.canDelete(mine), true, "your own");
+  assert.equal(chat.canDelete(held(120)!), false, "someone else's, as a member");
+  api.role = "moderator";
+  api.emitLive({ campId: "vk", online: true, state: api.state() });
+  assert.equal(chat.canDelete(held(120)!), true, "a moderator, over a member");
+  assert.equal(chat.canDelete({ ...msg("t1", 5, "gone") }), true, "someone who left counts as a member");
+
+  await chat.deleteMessage("t1", 120);
+  assert.equal(held(120)?.deleted, true);
+  assert.equal(held(120)?.text, "");
+  assert.equal(chat.canDelete(held(120)!), false, "nothing left to remove");
+
+  api.emitChat({ type: "deleted", campId: "vk", channelId: "t1", seq: 119 });
+  assert.equal(held(119)?.deleted, true, "removed by someone else");
+  api.emitChat({ type: "deleted", campId: "other", channelId: "t1", seq: 118 });
+  assert.equal(held(118)?.deleted, undefined, "another camp's");
+
+  api.failDelete = "Этого сообщения уже нет";
+  await chat.deleteMessage("t1", 118);
+  assert.match(chat.store.get().error ?? "", /уже нет/);
+  assert.equal(held(118)?.deleted, undefined, "still there");
+});
+
+test("back online, removals made meanwhile are read again", async () => {
+  const { api, chat } = await setup();
+  api.emitLive({ campId: "vk", online: false, state: null });
+  api.erase("t1", 120);
+  api.emitLive({ campId: "vk", online: true, state: api.state() });
+  await tick();
+  const last = chat.store.get().threads["t1"]?.messages.at(-1);
+  assert.equal(last?.deleted, true);
+  assert.equal(chat.store.get().offline, false);
 });

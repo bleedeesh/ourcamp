@@ -61,6 +61,8 @@ pub struct AppState {
     directives: broadcast::Sender<Directive>,
     /// Moderation asked by members with the rights (ADR-0029).
     manager: Manager,
+    /// How fast each member may write (ADR-0048).
+    write_limit: Arc<chat::WriteLimit>,
 }
 
 impl AppState {
@@ -84,6 +86,7 @@ impl AppState {
             shutdown,
             directives,
             manager,
+            write_limit: Arc::default(),
             store,
             nonces: Arc::default(),
             fingerprint,
@@ -173,6 +176,7 @@ impl IntoResponse for ApiError {
             | ErrorCode::Silenced => StatusCode::FORBIDDEN,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::NotInVoice => StatusCode::CONFLICT,
+            ErrorCode::TooFast => StatusCode::TOO_MANY_REQUESTS,
             ErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(ErrorBody { error: self.0 })).into_response()
@@ -212,6 +216,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/photos",
             post(chat::put_photo).layer(DefaultBodyLimit::max(oc_proto::MAX_PHOTO_BYTES + 1)),
+        )
+        .route(
+            "/api/v1/channels/{id}/messages/{seq}",
+            delete(chat::delete_message),
         )
         .route("/api/v1/photos/{hash}", get(chat::photo))
         .route("/api/v1/events", get(events))

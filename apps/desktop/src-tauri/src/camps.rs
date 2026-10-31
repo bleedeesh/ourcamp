@@ -841,6 +841,13 @@ impl Camps {
                                     channel_id,
                                 });
                             }
+                            Ok(CampEvent::MessageDeleted { channel_id, seq }) => {
+                                self.chat_update(ChatUpdate::Deleted {
+                                    camp_id: id.clone(),
+                                    channel_id,
+                                    seq,
+                                });
+                            }
                             Ok(CampEvent::Message(message)) => {
                                 self.chat_update(ChatUpdate::Message {
                                     camp_id: id.clone(),
@@ -999,6 +1006,7 @@ fn describe(e: ClientError) -> CampError {
             ErrorCode::NotFound => "Такого канала на сервере нет",
             ErrorCode::NotInVoice => "Участник уже вышел из голосового канала",
             ErrorCode::Silenced => "Вам запрещено говорить и писать на этом сервере",
+            ErrorCode::TooFast => "Слишком быстро — подождите пару секунд",
             ErrorCode::BadRequest => "Сервер не принял данные — проверьте имя (до 32 символов)",
             ErrorCode::Internal => "Ошибка на сервере",
         }

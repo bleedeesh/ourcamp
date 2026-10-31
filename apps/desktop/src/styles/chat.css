@@ -265,6 +265,60 @@
   color: var(--text-faint);
 }
 
+/* Removing a message (ADR-0048): shown on hover or keyboard focus, confirmed in place. */
+.message__delete {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: var(--surface);
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+}
+
+.message:hover .message__delete,
+.message__delete:focus-visible {
+  opacity: 1;
+}
+
+.message__delete:hover {
+  color: #ff8a98;
+}
+
+.message__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.message__confirm button {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-s);
+  font: inherit;
+  font-weight: 600;
+}
+
+.message__confirm-yes {
+  background: var(--danger-soft);
+  color: #ff8a98;
+}
+
+.message__confirm-no {
+  background: var(--surface);
+  color: var(--text-2);
+}
+
 /* ---------- Composer ---------- */
 
 .composer {

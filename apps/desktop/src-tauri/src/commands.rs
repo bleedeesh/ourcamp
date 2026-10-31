@@ -297,6 +297,17 @@ pub struct OutgoingPhotoDto {
     height: u32,
 }
 
+/// Removes a message: your own, or that of someone of a lower rank (ADR-0048).
+#[tauri::command]
+pub async fn chat_delete(
+    state: State<'_, CampsState>,
+    id: String,
+    channel_id: String,
+    seq: u64,
+) -> Result<(), String> {
+    camps(&state)?.delete_message(&id, &channel_id, seq).await
+}
+
 /// A photo by its hash, base64url (from the cache or the camp).
 #[tauri::command]
 pub async fn chat_photo(

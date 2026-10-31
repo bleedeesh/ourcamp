@@ -11,8 +11,8 @@ import type {
 import { createStore, type Store } from "../lib/store.ts";
 import { advance, type SeqByChat } from "./chat.ts";
 import { gapBefore, mergeMessages } from "./chat-feed.ts";
-import { avatarColor } from "./roster.ts";
-import type { UserId } from "./types.ts";
+import { avatarColor, governs } from "./roster.ts";
+import type { Role, UserId } from "./types.ts";
 import type { KeyValueStorage } from "./volume.ts";
 
 /** Messages per history request: a screenful and then some. */
@@ -40,6 +40,7 @@ export interface ChatMember {
   readonly color: string;
   /** Avatar hash (ADR-0035), `null` without one. */
   readonly avatar: string | null;
+  readonly role: Role;
 }
 
 export interface ChatWindowState {
@@ -169,6 +170,27 @@ export class ChatController {
     this.store.patch({ draft, error: null });
   }
 
+  /** Whether you may remove this message: your own, or a lower rank's (`Role::governs`). */
+  canDelete(target: ChatMessage): boolean {
+    const { selfId, members } = this.store.get();
+    if (target.deleted) return false;
+    if (target.authorId === selfId) return true;
+    const self = members[selfId];
+    // Someone who left counts as an ordinary member, as on the camp.
+    return self !== undefined && governs(self.role, members[target.authorId]?.role ?? "member");
+  }
+
+  /** Removes a message for everyone; a refusal is said in the composer. */
+  async deleteMessage(chatId: string, seq: number): Promise<void> {
+    const { campId } = this.store.get();
+    try {
+      await this.#api.deleteMessage(campId, chatId, seq);
+      this.#markDeleted(chatId, seq);
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
+  }
+
   /** A problem worth saying in the composer (a photo that would not encode). */
   fail(reason: string): void {
     this.store.patch({ error: reason });
@@ -262,7 +284,9 @@ export class ChatController {
       threads: {},
       latest: {},
       read: camp.read,
-      members: { [camp.self.userId]: { name: camp.self.name, color: avatarColor(camp.self.userId), avatar: null } },
+      members: {
+        [camp.self.userId]: { name: camp.self.name, color: avatarColor(camp.self.userId), avatar: null, role: camp.self.role },
+      },
       draft: "",
       photo: null,
       error: null,
@@ -285,7 +309,12 @@ export class ChatController {
       this.store.patch({ offline: !live.online });
       return;
     }
+    const wasOffline = this.store.get().offline;
     this.#applyState(live.state, live.online);
+    // Removals made meanwhile have no number to notice them by: read the chats again.
+    if (wasOffline && live.online) {
+      for (const chatId of Object.keys(this.store.get().threads)) void this.#refresh(chatId);
+    }
     // Back online, or a message event missed: fetch what the snapshot says is there.
     const { threads, latest } = this.store.get();
     for (const [chatId, thread] of Object.entries(threads)) {
@@ -300,7 +329,9 @@ export class ChatController {
     const { selfId, activeId, latest } = this.store.get();
     const chats = state.channels.filter((c) => c.kind === "text");
     const members: Record<UserId, ChatMember> = {};
-    for (const m of state.members) members[m.userId] = { name: m.name, color: avatarColor(m.userId), avatar: m.avatar ?? null };
+    for (const m of state.members) {
+      members[m.userId] = { name: m.name, color: avatarColor(m.userId), avatar: m.avatar ?? null, role: m.role };
+    }
     let next = latest;
     for (const [chat, seq] of Object.entries(state.chats ?? {})) next = advance(next, chat, seq);
     const self = state.members.find((m) => m.userId === selfId);
@@ -326,6 +357,10 @@ export class ChatController {
       this.store.patch({ read: advance(this.store.get().read, update.channelId, update.seq) });
       return;
     }
+    if (update.type === "deleted") {
+      this.#markDeleted(update.channelId, update.seq);
+      return;
+    }
     this.#receive(update.message);
   }
 
@@ -341,6 +376,35 @@ export class ChatController {
       this.#setThread(channelId, { ...thread, messages: mergeMessages(thread.messages, [incoming]) });
     } else {
       void this.#fill(channelId, seq);
+    }
+  }
+
+  #markDeleted(chatId: string, seq: number): void {
+    const thread = this.store.get().threads[chatId];
+    if (!thread?.messages.some((m) => m.seq === seq)) return;
+    const messages = thread.messages.map((m) => {
+      if (m.seq !== seq) return m;
+      const { photo: _photo, ...rest } = m;
+      return { ...rest, text: "", deleted: true };
+    });
+    this.#setThread(chatId, { ...thread, messages });
+  }
+
+  /** The chat's latest page again, over what is held. */
+  async #refresh(chatId: string): Promise<void> {
+    const { campId } = this.store.get();
+    const generation = this.#generation;
+    try {
+      const page = await this.#api.history(campId, chatId, null, PAGE);
+      if (generation !== this.#generation) return;
+      const thread = this.#thread(chatId);
+      const first = page[0]?.seq ?? 0;
+      const last = thread.messages.at(-1)?.seq ?? 0;
+      // Joined to what is held, or standing alone when too much was missed.
+      const messages = first <= last + 1 ? mergeMessages(thread.messages, page) : page;
+      this.#setThread(chatId, { ...thread, messages });
+    } catch {
+      // The next snapshot or message tries again.
     }
   }
 

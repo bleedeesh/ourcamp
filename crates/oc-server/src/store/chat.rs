@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use oc_proto::{ChatMessage, Photo, PhotoFormat};
 use rusqlite::{params, OptionalExtension, Row, TransactionBehavior};
 
-use super::{Store, StoreResult};
+use super::{Role, Store, StoreResult};
 
 /// How long an uploaded photo waits for the message that names it.
 const ORPHAN_AFTER_MS: i64 = 60 * 60 * 1000;
@@ -25,6 +25,19 @@ pub enum Posted {
     NoPhoto,
 }
 
+/// What [`Store::delete_message`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Deleted {
+    /// Removed just now.
+    Done,
+    /// Removed before: nothing to tell anyone.
+    AlreadyGone,
+    /// No such message.
+    NotFound,
+    /// Neither the author, nor of a higher rank than the author.
+    Forbidden,
+}
+
 /// Who writes: the author's id and their name at the time.
 #[derive(Debug, Clone, Copy)]
 pub struct Author<'a> {
@@ -35,10 +48,21 @@ pub struct Author<'a> {
 }
 
 impl Store {
+    /// The chats' part of the schema, from `version` on.
+    pub(super) fn migrate_chats(&mut self, version: i64) -> StoreResult<()> {
+        if version < 7 {
+            self.migrate_v7()?;
+        }
+        if version < 8 {
+            self.migrate_v8()?;
+        }
+        Ok(())
+    }
+
     /// Chats (schema v7). Messages are numbered within their chat and go with it; they
     /// outlive their author (no key on members), whose name they keep. Photos are kept
     /// by hash, for as long as a message names them.
-    pub(super) fn migrate_v7(&mut self) -> StoreResult<()> {
+    fn migrate_v7(&mut self) -> StoreResult<()> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
             "CREATE TABLE photos (
@@ -64,6 +88,67 @@ impl Store {
         tx.pragma_update(None, "user_version", 7)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Removed messages (schema v8, ADR-0048): the row stays so its number is never used
+    /// again and unread counts stay exact; what it said is erased.
+    fn migrate_v8(&mut self) -> StoreResult<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch("ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;")?;
+        tx.pragma_update(None, "user_version", 8)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Removes a message, if `actor` may: its author, or someone of a higher rank than the
+    /// author ([`Role::governs`]). Someone who left counts as an ordinary member. The text
+    /// and the photo are erased for real; the photo goes at the next sweep of orphans.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn delete_message(
+        &mut self,
+        channel_id: &str,
+        seq: u64,
+        actor_id: &str,
+        actor_role: Role,
+    ) -> StoreResult<Deleted> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let seq = to_sql(seq);
+        let found: Option<(String, bool)> = tx
+            .query_row(
+                "SELECT author_id, deleted FROM messages WHERE channel_id = ?1 AND seq = ?2",
+                params![channel_id, seq],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let Some((author_id, deleted)) = found else {
+            return Ok(Deleted::NotFound);
+        };
+        let author_role = tx
+            .query_row(
+                "SELECT role FROM members WHERE user_id = ?1",
+                [&author_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map_or(Role::Member, |role| super::role_from(&role));
+        if author_id != actor_id && !actor_role.governs(author_role) {
+            return Ok(Deleted::Forbidden);
+        }
+        if deleted {
+            return Ok(Deleted::AlreadyGone);
+        }
+        tx.execute(
+            "UPDATE messages SET deleted = 1, text = '', photo_hash = NULL,
+                                 photo_width = NULL, photo_height = NULL
+             WHERE channel_id = ?1 AND seq = ?2",
+            params![channel_id, seq],
+        )?;
+        tx.commit()?;
+        Ok(Deleted::Done)
     }
 
     /// Keeps a message in a chat as its next one. `text` and `photo` were checked by the
@@ -119,6 +204,7 @@ impl Store {
             sent_at: now_ms(),
             text: text.to_owned(),
             photo: photo.cloned(),
+            deleted: false,
         };
         tx.execute(
             "INSERT INTO messages (channel_id, seq, author_id, author_name, sent_at, text,
@@ -166,7 +252,7 @@ impl Store {
         // The newest `limit` below `before`, then turned oldest first.
         let mut stmt = self.conn.prepare(
             "SELECT channel_id, seq, author_id, author_name, sent_at, text,
-                    photo_hash, photo_width, photo_height
+                    photo_hash, photo_width, photo_height, deleted
              FROM messages
              WHERE channel_id = ?1 AND seq < ?2
              ORDER BY seq DESC LIMIT ?3",
@@ -249,6 +335,7 @@ fn message(r: &Row<'_>) -> rusqlite::Result<ChatMessage> {
             }),
             None => None,
         },
+        deleted: r.get(9)?,
     })
 }
 
@@ -417,5 +504,92 @@ mod tests {
 
         store.delete_channel("c1").unwrap();
         assert!(store.latest_messages().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_author_or_a_higher_rank_removes_a_message_and_its_number_stays_taken() {
+        let mut store = camp();
+        let hash = store
+            .put_photo(PhotoFormat::Png, b"\x89PNG\r\n\x1a\nx")
+            .unwrap();
+        let photo = Photo {
+            hash: hash.clone(),
+            width: 1,
+            height: 1,
+        };
+        store
+            .post_message("c1", LENA, "первое", Some(&photo))
+            .unwrap();
+        post(&mut store, "c1", "второе");
+
+        let del = |s: &mut Store, seq, who, role| s.delete_message("c1", seq, who, role).unwrap();
+        assert_eq!(
+            del(&mut store, 1, "bob", Role::Member),
+            Deleted::Forbidden,
+            "someone else's"
+        );
+        assert_eq!(
+            del(&mut store, 1, "lena", Role::Member),
+            Deleted::Done,
+            "the author"
+        );
+        assert_eq!(
+            del(&mut store, 1, "lena", Role::Member),
+            Deleted::AlreadyGone
+        );
+        assert_eq!(del(&mut store, 9, "lena", Role::Member), Deleted::NotFound);
+        assert_eq!(
+            del(&mut store, 2, "mod", Role::Moderator),
+            Deleted::Done,
+            "lena left or never joined: a member"
+        );
+
+        let kept = store.history("c1", None, 50).unwrap().unwrap();
+        assert_eq!(kept.len(), 2, "both rows stay");
+        assert!(kept[0].deleted);
+        assert_eq!(
+            (kept[0].text.as_str(), kept[0].photo.as_ref()),
+            ("", None),
+            "erased"
+        );
+        assert_eq!(post(&mut store, "c1", "третье").seq, 3, "numbers go on");
+
+        store
+            .conn
+            .execute("UPDATE photos SET uploaded_at = 0", [])
+            .unwrap();
+        store
+            .put_photo(PhotoFormat::Png, b"\x89PNG\r\n\x1a\ny")
+            .unwrap();
+        assert_eq!(
+            store.photo(&hash).unwrap(),
+            None,
+            "its photo goes with the next sweep"
+        );
+    }
+
+    #[test]
+    fn rank_is_the_authors_rank_now() {
+        let mut store = camp();
+        let device = Device {
+            user_id: "lena",
+            public_key: &[7; 32],
+            name: "Лена",
+        };
+        let token = store.join_token().unwrap();
+        store.login(device, Some(token.as_str())).unwrap().unwrap();
+        store.set_role("lena", Role::Moderator).unwrap();
+        post(&mut store, "c1", "от модератора");
+        assert_eq!(
+            store
+                .delete_message("c1", 1, "mod", Role::Moderator)
+                .unwrap(),
+            Deleted::Forbidden,
+            "a moderator does not touch a moderator's"
+        );
+        assert_eq!(
+            store.delete_message("c1", 1, "adm", Role::Admin).unwrap(),
+            Deleted::Done
+        );
     }
 }

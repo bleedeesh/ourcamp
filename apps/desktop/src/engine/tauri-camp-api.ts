@@ -90,6 +90,10 @@ export class TauriCampApi implements CampApi {
     return invoke("chat_send", { id, channelId, text, photo: encoded });
   }
 
+  deleteMessage(id: string, channelId: string, seq: number): Promise<void> {
+    return invoke("chat_delete", { id, channelId, seq });
+  }
+
   async photo(id: string, hash: string): Promise<Uint8Array> {
     return decodeBase64Url(await invoke<string>("chat_photo", { id, hash }));
   }

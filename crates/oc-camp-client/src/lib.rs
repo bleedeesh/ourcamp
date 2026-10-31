@@ -386,6 +386,24 @@ impl CampClient {
             .await
     }
 
+    /// Removes a message: your own, or that of someone of a lower rank (ADR-0048).
+    ///
+    /// # Errors
+    /// [`ErrorCode::Forbidden`], [`ErrorCode::NotFound`], [`ErrorCode::Unauthorized`].
+    pub async fn delete_message(
+        &self,
+        session: &Session,
+        channel_id: &str,
+        seq: u64,
+    ) -> Result<(), ClientError> {
+        self.http
+            .delete_authorized(
+                &format!("/api/v1/channels/{channel_id}/messages/{seq}"),
+                &session.token,
+            )
+            .await
+    }
+
     /// Uploads a photo for the message that will show it; its hash names it there.
     ///
     /// # Errors

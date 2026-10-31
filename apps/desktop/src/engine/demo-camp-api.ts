@@ -175,6 +175,16 @@ export class DemoCampApi implements CampApi {
     return message;
   }
 
+  deleteMessage(_id: string, channelId: string, seq: number): Promise<void> {
+    const all = this.#messages.get(channelId) ?? [];
+    this.#messages.set(
+      channelId,
+      all.map((m) => (m.seq === seq ? { ...withoutPhoto(m), text: "", deleted: true } : m)),
+    );
+    this.#chat?.({ type: "deleted", campId: DEMO_ID, channelId, seq });
+    return Promise.resolve();
+  }
+
   /** Photos sent in the demo, kept for this page's life. */
   readonly #photos = new Map<string, Uint8Array>();
 
@@ -264,6 +274,11 @@ export class DemoCampApi implements CampApi {
       read: this.#read,
     };
   }
+}
+
+function withoutPhoto(message: ChatMessage): ChatMessage {
+  const { photo: _photo, ...rest } = message;
+  return rest;
 }
 
 function delay(ms: number): Promise<void> {

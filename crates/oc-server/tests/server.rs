@@ -1750,6 +1750,85 @@ async fn a_photo_goes_up_first_then_into_a_message() {
     camp.stop().await;
 }
 
+#[tokio::test]
+async fn a_message_goes_for_everyone_when_its_author_or_a_higher_rank_removes_it() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    let mut bobs = client.events(&bob).await.unwrap();
+    let first = client
+        .post_message(&lena, "c1", &text("Лишнее"))
+        .await
+        .unwrap();
+    next_message(&mut bobs).await;
+
+    assert_eq!(
+        api_error(client.delete_message(&bob, "c1", first.seq).await),
+        ErrorCode::Forbidden,
+        "not Боб's"
+    );
+    assert_eq!(
+        api_error(client.delete_message(&bob, "c1", 99).await),
+        ErrorCode::NotFound
+    );
+
+    client.delete_message(&lena, "c1", first.seq).await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let event = tokio::time::timeout_at(deadline, bobs.next())
+            .await
+            .expect("the removal within 5 s")
+            .expect("stream open")
+            .expect("valid event");
+        if let oc_proto::CampEvent::MessageDeleted { channel_id, seq } = event {
+            assert_eq!((channel_id.as_str(), seq), ("c1", first.seq));
+            break;
+        }
+    }
+    client.delete_message(&lena, "c1", first.seq).await.unwrap();
+
+    let second = client.post_message(&bob, "c1", &text("Боб")).await.unwrap();
+    assert_eq!(second.seq, 2, "the number stays taken");
+    let history = client.history(&bob, "c1", None, 50).await.unwrap();
+    assert!(history[0].deleted);
+    assert_eq!(history[0].text, "", "erased on the server too");
+
+    camp.running
+        .manager()
+        .set_role(&lena.user_id, Role::Moderator)
+        .await
+        .unwrap();
+    client
+        .delete_message(&lena, "c1", second.seq)
+        .await
+        .unwrap();
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn writing_too_fast_is_refused_until_a_moment_later() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    let mut refused = None;
+    for i in 0..30 {
+        if let Err(e) = client
+            .post_message(&lena, "c1", &text(&format!("№{i}")))
+            .await
+        {
+            refused = Some((i, e));
+            break;
+        }
+    }
+    let (at, error) = refused.expect("a script is stopped");
+    assert!(at >= 10, "a burst goes through, stopped at {at}");
+    assert!(
+        matches!(error, ClientError::Api(ErrorCode::TooFast)),
+        "{error:?}"
+    );
+    client
+        .post_message(&bob, "c1", &text("Я тут"))
+        .await
+        .unwrap();
+    camp.stop().await;
+}
+
 // ---- what the server window watches ----
 
 /// The window follows `camp_state` and `ports` until they close, which it takes for the

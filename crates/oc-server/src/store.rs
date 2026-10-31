@@ -13,7 +13,7 @@ pub use oc_proto::{Channel, ChannelKind, Role};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 mod chat;
-pub use chat::{Author, Posted};
+pub use chat::{Author, Deleted, Posted};
 
 /// Channels of the very first schema (v1). New camps get [`NEW_CAMP_CHANNELS`] instead;
 /// this stays as v1 created them, for migrations to recognise.
@@ -260,9 +260,7 @@ impl Store {
             tx.pragma_update(None, "user_version", 6)?;
             tx.commit()?;
         }
-        if version < 7 {
-            self.migrate_v7()?;
-        }
+        self.migrate_chats(version)?;
         if version == 0 {
             seed_new_camp(&self.conn)?;
         }

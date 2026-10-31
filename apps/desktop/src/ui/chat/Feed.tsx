@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { layoutFeed, timeLabel, type FeedItem } from "../../domain/chat-feed.ts";
 import type { ChatMember } from "../../domain/chat-window.ts";
@@ -113,7 +113,7 @@ export function Feed({ onView }: { onView: (url: string) => void }) {
         {thread?.loading && (messages?.length ?? 0) > 0 && <p className="feed__note">Загружаем…</p>}
         {thread?.complete && (messages?.length ?? 0) > 0 && <p className="feed__note">Начало чата</p>}
         {thread?.error && <p className="feed__note feed__note--error">{thread.error}</p>}
-        {thread && !thread.loading && !thread.error && messages?.length === 0 && (
+        {thread && !thread.loading && !thread.error && items.length === 0 && (
           <p className="feed__quiet">Здесь пока тихо — напишите первым</p>
         )}
         {items.map((item) => (
@@ -168,8 +168,17 @@ function MessageRow({
     avatar: member?.avatar ?? null,
   };
   const time = timeLabel(message.sentAt);
+  const chat = useChatController();
+  const mayDelete = useChat(() => chat.canDelete(message));
+  const [asking, setAsking] = useState(false);
+  // Selected text keeps the browser's menu (to copy it, ADR-0034); otherwise, ask.
+  const rightClick = (e: MouseEvent) => {
+    if (!mayDelete || String(window.getSelection() ?? "") !== "") return;
+    e.preventDefault();
+    setAsking(true);
+  };
   return (
-    <article className="message" data-head={head || undefined}>
+    <article className="message" data-head={head || undefined} onContextMenu={rightClick}>
       {head ? (
         <Avatar member={person} size={30} speaking={false} />
       ) : (
@@ -188,7 +197,30 @@ function MessageRow({
         )}
         {message.text !== "" && <p className="message__text">{message.text}</p>}
         {message.photo && <MessagePhoto photo={message.photo} onView={onView} />}
+        {asking && (
+          <div className="message__confirm" role="group" aria-label="Удалить сообщение">
+            <span>Удалить для всех?</span>
+            <button
+              type="button"
+              className="message__confirm-yes"
+              onClick={() => {
+                setAsking(false);
+                void chat.deleteMessage(message.channelId, message.seq);
+              }}
+            >
+              Удалить
+            </button>
+            <button type="button" className="message__confirm-no" onClick={() => setAsking(false)}>
+              Отмена
+            </button>
+          </div>
+        )}
       </div>
+      {mayDelete && !asking && (
+        <button type="button" className="message__delete" aria-label="Удалить сообщение" title="Удалить" onClick={() => setAsking(true)}>
+          <Icon name="trash" size={14} />
+        </button>
+      )}
     </article>
   );
 }

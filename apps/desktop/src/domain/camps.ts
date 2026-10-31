@@ -401,6 +401,8 @@ export class CampsController {
   #onChat(update: ChatUpdate): void {
     const { currentId } = this.store.get();
     if (update.campId !== currentId) return;
+    // A removed message keeps its number: the counts stay as they are.
+    if (update.type === "deleted") return;
     if (update.type === "read") {
       this.#setChats({ ...this.#chats, read: advance(this.#chats.read, update.channelId, update.seq) });
       return;

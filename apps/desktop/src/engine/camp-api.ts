@@ -71,6 +71,8 @@ export interface ChatMessage {
   /** Empty only with a photo. */
   readonly text: string;
   readonly photo?: ChatPhoto;
+  /** Removed (ADR-0048): nothing left to show, the number stays taken. */
+  readonly deleted?: boolean;
 }
 
 /** A photo to send, encoded by the window (at most 1600 px on its long side). */
@@ -90,6 +92,7 @@ export interface ChatContext {
 /** What changed in the open camp's chats, mirrors `camps::ChatUpdate`; every window hears it. */
 export type ChatUpdate =
   | { readonly type: "message"; readonly campId: string; readonly message: ChatMessage }
+  | { readonly type: "deleted"; readonly campId: string; readonly channelId: string; readonly seq: number }
   | { readonly type: "read"; readonly campId: string; readonly channelId: string; readonly seq: number };
 
 /**
@@ -129,6 +132,8 @@ export interface CampApi {
   history(id: string, channelId: string, before: number | null, limit: number): Promise<ChatMessage[]>;
   /** Writes in a chat; the message also arrives through `onChat`, like everyone else's. */
   send(id: string, channelId: string, text: string, photo: OutgoingPhoto | null): Promise<ChatMessage>;
+  /** Removes a message: your own, or that of someone of a lower rank (ADR-0048). */
+  deleteMessage(id: string, channelId: string, seq: number): Promise<void>;
   /** A photo by its hash (kept by the app). */
   photo(id: string, hash: string): Promise<Uint8Array>;
   /** This device has read a chat up to `seq`; never moves back. */
