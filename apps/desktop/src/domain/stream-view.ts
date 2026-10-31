@@ -1,3 +1,7 @@
+import type { CampState } from "../engine/camp-api.ts";
+import { avatarColor } from "./roster.ts";
+import type { AvatarPerson, UserId } from "./types.ts";
+
 /** The numbers of the viewer's panel, as Rust reports them (ADR-0053). */
 export interface ViewStatus {
   /** Pictures are arriving. */
@@ -17,6 +21,15 @@ export interface StreamView {
   readonly userId: string;
   readonly name: string;
   readonly status: ViewStatus;
+}
+
+/**
+ * The person on the panel as the camp's snapshot has them: their avatar, and their name as
+ * it is now. Without a snapshot, or if they are not in it, the name the window opened with.
+ */
+export function streamerOf(state: CampState | null, userId: UserId, name: string): AvatarPerson {
+  const info = state?.members.find((m) => m.userId === userId);
+  return { id: userId, name: info?.name ?? name, color: avatarColor(userId), avatar: info?.avatar ?? null };
 }
 
 /** "1080p · 60 fps"; empty until there is a picture to speak of. */

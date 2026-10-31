@@ -1,13 +1,5 @@
+import type { AvatarPerson } from "../domain/types.ts";
 import { useAvatarUrl } from "./avatar-url.ts";
-
-/** Who an avatar shows: a camp member in the tree, or an author in the chat. */
-export interface AvatarPerson {
-  readonly id: string;
-  readonly name: string;
-  readonly color: string;
-  /** Avatar hash (ADR-0035); `null`: the initial on their colour. */
-  readonly avatar: string | null;
-}
 
 /** A round avatar: the member's picture, or their initial on their colour. */
 export function Avatar({ member, size, speaking }: { member: AvatarPerson; size: number; speaking: boolean }) {

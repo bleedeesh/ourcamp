@@ -9,7 +9,9 @@ import {
   viewersText,
   waitingText,
   type ViewStatus,
+  streamerOf,
 } from "./stream-view.ts";
+import type { CampState } from "../engine/camp-api.ts";
 
 const live: ViewStatus = { live: true, height: 1080, fps: 60, viewers: 3, sound: true };
 const off: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false };
@@ -63,4 +65,26 @@ test("the rectangle comes out in the window's pixels, without gaps at a fraction
   assert.deepEqual(physicalRect({ left: 0, top: 36, width: 960, height: 520 }, 1.25), { x: 0, y: 45, width: 1200, height: 650 });
   // 36.5 × 1.5 = 54.75 → 55; the bottom edge 556.5 × 1.5 = 834.75 → 835.
   assert.deepEqual(physicalRect({ left: 0, top: 36.5, width: 100, height: 520 }, 1.5), { x: 0, y: 55, width: 150, height: 780 });
+});
+
+test("the streamer on the panel comes from the camp's snapshot", () => {
+  const state = {
+    name: "Лагерь",
+    channels: [],
+    members: [
+      { userId: "lena", name: "Елена", role: "member", silenced: false, avatar: "abc" },
+      { userId: "max", name: "Макс", role: "member", silenced: false },
+    ],
+    presence: [],
+  } as const satisfies CampState;
+  const lena = streamerOf(state, "lena", "Лена");
+  assert.equal(lena.name, "Елена", "the name as it is now");
+  assert.equal(lena.avatar, "abc");
+  assert.equal(streamerOf(state, "max", "Макс").avatar, null);
+  assert.deepEqual(
+    [streamerOf(null, "lena", "Лена").name, streamerOf(null, "lena", "Лена").avatar],
+    ["Лена", null],
+    "no snapshot yet",
+  );
+  assert.equal(streamerOf(state, "gone", "Ушёл").name, "Ушёл");
 });

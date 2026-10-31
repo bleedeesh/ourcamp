@@ -43,3 +43,12 @@ export interface Camp {
   readonly channels: readonly Channel[];
   readonly members: Readonly<Record<UserId, Member>>;
 }
+
+/** Who an avatar shows: a camp member in the tree, an author in the chat, a streamer on the panel. */
+export interface AvatarPerson {
+  readonly id: string;
+  readonly name: string;
+  readonly color: string;
+  /** Avatar hash (ADR-0035); `null`: the initial on their colour. */
+  readonly avatar: string | null;
+}
