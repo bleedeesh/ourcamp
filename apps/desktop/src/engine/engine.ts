@@ -46,6 +46,13 @@ export interface JoinRequest {
   readonly members: ReadonlyArray<{ userId: UserId; volume: number; muted: boolean; micMuted: boolean }>;
 }
 
+/** How your own stream is going, mirrors `stream::OwnStream` (ADR-0054). */
+export interface OwnStream {
+  readonly live: boolean;
+  /** Why it stopped when you did not stop it: a sentence for the user. */
+  readonly ended: string | null;
+}
+
 /**
  * Boundary between the React UI and the native media engine.
  *
@@ -64,6 +71,8 @@ export interface VoiceEngine {
   setDeafened(deafened: boolean): Promise<void>;
   /** Opens someone's stream in the viewer's window (ADR-0053). You must be in their channel. */
   watchStream(userId: UserId, name: string): Promise<void>;
+  /** Stops your stream. It starts from its own window (ADR-0054). */
+  stopStream(): Promise<void>;
   /** Subscribes to level updates; returns an unsubscribe function. */
   onLevels(listener: (levels: readonly MemberLevel[]) => void): () => void;
   /** Subscribes to channel membership updates; returns an unsubscribe function. */
@@ -75,4 +84,6 @@ export interface VoiceEngine {
   onDisconnected(listener: (reason: string) => void): () => void;
   /** Connection quality and ping, on change, while in a channel. Returns an unsubscribe function. */
   onLink(listener: (link: LinkStatus) => void): () => void;
+  /** Your own stream started or stopped, by whatever cause. Returns an unsubscribe function. */
+  onStream(listener: (stream: OwnStream) => void): () => void;
 }

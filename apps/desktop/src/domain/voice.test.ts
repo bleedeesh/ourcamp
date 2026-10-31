@@ -282,3 +282,41 @@ test("the connection report shows while in a channel and goes with it", async ()
   await voice.leave();
   assert.equal(voice.store.get().link, null);
 });
+
+test("the stream button follows the engine, and a stream that ended by itself says why", () => {
+  const { engine, voice } = setup();
+  voice.start();
+  assert.equal(voice.store.get().streaming, false);
+  engine.reportStream({ live: true, ended: null });
+  assert.equal(voice.store.get().streaming, true);
+  assert.equal(voice.store.get().error, null);
+  engine.reportStream({ live: false, ended: "Окно закрыто" });
+  assert.equal(voice.store.get().streaming, false);
+  assert.equal(voice.store.get().error, "Окно закрыто");
+});
+
+test("stopping the stream asks the engine and waits for its report", async () => {
+  const { engine, voice } = setup();
+  voice.start();
+  engine.reportStream({ live: true, ended: null });
+  await voice.stopStream();
+  assert.ok(engine.calls.includes("stopStream"));
+  assert.equal(voice.store.get().streaming, true, "only the report turns the button back");
+});
+
+test("being forbidden to speak stops your stream; a snapshot without it does not", async () => {
+  const { engine, voice } = setup();
+  voice.start();
+  engine.reportStream({ live: true, ended: null });
+  const state = (silenced: boolean) => ({
+    name: "Лагерь",
+    channels: [],
+    presence: [],
+    members: [{ userId: "me", name: "Я", role: "member" as const, silenced }],
+  });
+  voice.applyCampState(state(false));
+  assert.ok(!engine.calls.includes("stopStream"));
+  voice.applyCampState(state(true));
+  await Promise.resolve();
+  assert.ok(engine.calls.includes("stopStream"));
+});

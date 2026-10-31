@@ -26,6 +26,8 @@ export interface VoiceState {
   readonly volumeMenu: VolumeMenu | null;
   /** Connection quality and ping in the channel (ADR-0030); null until measured. */
   readonly link: LinkStatus | null;
+  /** Your own stream is on air, as the engine says (ADR-0054). */
+  readonly streaming: boolean;
   /** Last engine error, shown to the user. */
   readonly error: string | null;
 }
@@ -48,6 +50,7 @@ export class VoiceController {
   #unsubscribeParticipants: (() => void) | null = null;
   #unsubscribeDisconnected: (() => void) | null = null;
   #unsubscribeLink: (() => void) | null = null;
+  #unsubscribeStream: (() => void) | null = null;
   /** Members whose saved volume the engine already has for the current channel. */
   #volumesSent = new Set<UserId>();
 
@@ -64,6 +67,7 @@ export class VoiceController {
       prefs: {},
       volumeMenu: null,
       link: null,
+      streaming: false,
       error: null,
     });
   }
@@ -77,6 +81,9 @@ export class VoiceController {
       // A report racing a leave must not bring the line back.
       if (this.store.get().channelId !== null) this.store.patch({ link });
     });
+    this.#unsubscribeStream ??= this.#engine.onStream(({ live, ended }) => {
+      this.store.patch(ended === null ? { streaming: live } : { streaming: live, error: ended });
+    });
   }
 
   dispose(): void {
@@ -88,6 +95,8 @@ export class VoiceController {
     this.#unsubscribeDisconnected = null;
     this.#unsubscribeLink?.();
     this.#unsubscribeLink = null;
+    this.#unsubscribeStream?.();
+    this.#unsubscribeStream = null;
   }
 
   /** Switches to another camp: leaves the current campfire first. */
@@ -245,6 +254,9 @@ export class VoiceController {
   applyCampState(state: CampState): void {
     const { camp, channelId, selfId } = this.store.get();
     this.store.patch({ camp: applyCampState(camp, state, channelId, selfId) });
+    // Forbidden to speak takes the right to publish, and LiveKit takes the track (ADR-0028):
+    // the capture must not go on for nobody.
+    if (this.store.get().streaming && this.silenced()) void this.stopStream();
   }
 
   /** The server ended our session: we are no longer at the campfire; say why. */
@@ -296,6 +308,11 @@ export class VoiceController {
     await this.join(channelId);
     if (this.store.get().channelId !== channelId) return;
     await this.#run(() => this.#engine.watchStream(userId, member.name));
+  }
+
+  /** Stops your stream; the button follows the engine's report, not this call. */
+  async stopStream(): Promise<void> {
+    await this.#run(() => this.#engine.stopStream());
   }
 
   async #run(action: () => Promise<void>, rollback?: () => void): Promise<void> {

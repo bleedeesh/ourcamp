@@ -1,5 +1,5 @@
 // Fakes shared by the domain tests (not itself a test file).
-import type { JoinRequest, LinkStatus, MemberLevel, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
+import type { JoinRequest, LinkStatus, MemberLevel, OwnStream, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
 import type { KeyValueStorage } from "./volume.ts";
 
 export class MemoryStorage implements KeyValueStorage {
@@ -41,6 +41,17 @@ export class FakeEngine implements VoiceEngine {
   }
   watchStream(id: string) {
     return this.#record(`watch:${id}`);
+  }
+  stopStream() {
+    return this.#record("stopStream");
+  }
+  #stream: ((s: OwnStream) => void) | null = null;
+  onStream(listener: (s: OwnStream) => void) {
+    this.#stream = listener;
+    return () => (this.#stream = null);
+  }
+  reportStream(stream: OwnStream) {
+    this.#stream?.(stream);
   }
   setDeafened(d: boolean) {
     return this.#record(`deaf:${d}`);

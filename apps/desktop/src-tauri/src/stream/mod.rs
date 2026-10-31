@@ -48,10 +48,56 @@ pub struct StreamSource {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct StreamQuality {
-    /// 720 or 1080: the height the picture is brought down to.
+    /// 720, 1080 or 1440: the height the picture is brought down to.
     pub height: u32,
     /// 30 or 60.
     pub fps: u32,
+}
+
+/// Bits per second for a quality (ADR-0049, 1440p: ADR-0054).
+#[must_use]
+pub const fn bitrate(quality: StreamQuality) -> u32 {
+    let high_rate = quality.fps >= 60;
+    match (quality.height, high_rate) {
+        (1440.., true) => 10_000_000,
+        (1440.., false) => 7_000_000,
+        (1080.., true) => 6_000_000,
+        (1080.., false) | (_, true) => 4_000_000,
+        (_, false) => 2_500_000,
+    }
+}
+
+/// A quality to offer, with what it costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QualityOption {
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate: u32,
+}
+
+/// What the window "Начать стрим" offers: the table has one home, here.
+#[must_use]
+pub fn quality_options() -> Vec<QualityOption> {
+    [720, 1080, 1440]
+        .into_iter()
+        .flat_map(|height| {
+            [30, 60].map(|fps| QualityOption {
+                height,
+                fps,
+                bitrate: bitrate(StreamQuality { height, fps }),
+            })
+        })
+        .collect()
+}
+
+/// How your own stream is going, for the button in the main window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnStream {
+    pub live: bool,
+    /// Why it stopped when you did not stop it: a sentence for the user.
+    pub ended: Option<String>,
 }
 
 #[cfg(not(windows))]
@@ -78,8 +124,8 @@ mod other {
     use std::sync::Arc;
 
     use livekit::Room;
-
     use tauri::WebviewWindow;
+    use tokio::sync::oneshot;
 
     use super::{SourceKind, StreamQuality, StreamSource, ViewStatus};
 
@@ -101,6 +147,11 @@ mod other {
             _quality: StreamQuality,
         ) -> impl Future<Output = Result<Self, String>> {
             std::future::ready(Err(LATER.to_owned()))
+        }
+
+        pub fn ended(&mut self) -> oneshot::Receiver<()> {
+            let Self = self;
+            oneshot::channel().1
         }
 
         #[allow(clippy::unused_async, reason = "the same signature as on Windows")]

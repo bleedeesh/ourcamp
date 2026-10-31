@@ -10,9 +10,13 @@ pub const CHAT: &str = "chat";
 pub const MAIN: &str = "main";
 /// The viewer's window label. Must match `capabilities/default.json`.
 pub const STREAM: &str = "stream";
+/// The label of the window "Начать стрим". Must match `capabilities/default.json`.
+pub const STREAM_START: &str = "stream-start";
 
 /// Logical size of a new chat window, as in the mockup.
 const CHAT_SIZE: (f64, f64) = (420.0, 660.0);
+/// Logical size of the window "Начать стрим", as in the mockup.
+const STREAM_START_SIZE: (f64, f64) = (520.0, 640.0);
 /// Gap between the main window and the chat beside it, in logical pixels.
 const GAP: f64 = 12.0;
 
@@ -34,9 +38,36 @@ pub fn open_chat(app: &AppHandle) -> tauri::Result<()> {
         .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xff))
         .visible(false)
         .build()?;
-    place_beside_main(app, &chat);
+    place_beside_main(app, &chat, CHAT_SIZE.0);
     chat.show()?;
     chat.set_focus()
+}
+
+/// Shows the window "Начать стрим" (ADR-0054), opening it beside the main window.
+///
+/// # Errors
+/// If the webview cannot be created.
+pub fn open_stream_start(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(STREAM_START) {
+        window.unminimize()?;
+        window.show()?;
+        return window.set_focus();
+    }
+    let window = WebviewWindowBuilder::new(
+        app,
+        STREAM_START,
+        WebviewUrl::App("stream-start.html".into()),
+    )
+    .title("Начать стрим — OurCamp")
+    .inner_size(STREAM_START_SIZE.0, STREAM_START_SIZE.1)
+    .min_inner_size(420.0, 480.0)
+    .decorations(false)
+    .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xff))
+    .visible(false)
+    .build()?;
+    place_beside_main(app, &window, STREAM_START_SIZE.0);
+    window.show()?;
+    window.set_focus()
 }
 
 /// Opens the viewer's window (ADR-0053). The page is ordinary; the picture lies over it.
@@ -57,7 +88,7 @@ pub fn open_stream(app: &AppHandle, name: &str) -> tauri::Result<tauri::WebviewW
 
 /// To the right of the main window when the screen has room, else where the system puts
 /// it. Placement is a nicety: any failure leaves the default.
-fn place_beside_main(app: &AppHandle, chat: &tauri::WebviewWindow) {
+fn place_beside_main(app: &AppHandle, window: &tauri::WebviewWindow, width: f64) {
     let Some(main) = app.get_webview_window(MAIN) else {
         return;
     };
@@ -75,11 +106,11 @@ fn place_beside_main(app: &AppHandle, chat: &tauri::WebviewWindow) {
         .flatten()
         .is_some_and(|monitor| {
             let right = f64::from(monitor.position().x) + f64::from(monitor.size().width);
-            x + CHAT_SIZE.0 * scale <= right
+            x + width * scale <= right
         });
     if fits {
         // Pixels are whole; the rounding is the intent.
         #[allow(clippy::cast_possible_truncation)]
-        let _ = chat.set_position(PhysicalPosition::new(x.round() as i32, position.y));
+        let _ = window.set_position(PhysicalPosition::new(x.round() as i32, position.y));
     }
 }

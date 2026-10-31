@@ -15,6 +15,8 @@ pub const PARTICIPANTS_EVENT: &str = "voice://participants";
 pub const DISCONNECTED_EVENT: &str = "voice://disconnected";
 /// Must match `LINK_EVENT` in `src/engine/tauri-engine.ts` (ADR-0030).
 pub const LINK_EVENT: &str = "voice://link";
+/// Must match `STREAM_EVENT` in `src/engine/tauri-engine.ts` (ADR-0054).
+pub const STREAM_EVENT: &str = "voice://stream";
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +79,12 @@ pub fn forward(app: AppHandle, engine: &Engine) {
     engine.set_link_listener(Arc::new(move |link| {
         if let Err(e) = for_link.emit(LINK_EVENT, LinkDto::from(link)) {
             eprintln!("[ourcamp] link event: {e}");
+        }
+    }));
+    let for_stream = app.clone();
+    engine.set_stream_listener(Arc::new(move |own| {
+        if let Err(e) = for_stream.emit(STREAM_EVENT, own) {
+            eprintln!("[ourcamp] stream event: {e}");
         }
     }));
     engine.set_participants_listener(Arc::new(move |participants| {
