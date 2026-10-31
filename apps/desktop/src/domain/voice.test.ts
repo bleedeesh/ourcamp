@@ -287,10 +287,10 @@ test("the stream button follows the engine, and a stream that ended by itself sa
   const { engine, voice } = setup();
   voice.start();
   assert.equal(voice.store.get().streaming, false);
-  engine.reportStream({ live: true, ended: null });
+  engine.reportStream({ live: true, note: null });
   assert.equal(voice.store.get().streaming, true);
   assert.equal(voice.store.get().error, null);
-  engine.reportStream({ live: false, ended: "Окно закрыто" });
+  engine.reportStream({ live: false, note: "Окно закрыто" });
   assert.equal(voice.store.get().streaming, false);
   assert.equal(voice.store.get().error, "Окно закрыто");
 });
@@ -298,7 +298,7 @@ test("the stream button follows the engine, and a stream that ended by itself sa
 test("stopping the stream asks the engine and waits for its report", async () => {
   const { engine, voice } = setup();
   voice.start();
-  engine.reportStream({ live: true, ended: null });
+  engine.reportStream({ live: true, note: null });
   await voice.stopStream();
   assert.ok(engine.calls.includes("stopStream"));
   assert.equal(voice.store.get().streaming, true, "only the report turns the button back");
@@ -307,7 +307,7 @@ test("stopping the stream asks the engine and waits for its report", async () =>
 test("being forbidden to speak stops your stream; a snapshot without it does not", async () => {
   const { engine, voice } = setup();
   voice.start();
-  engine.reportStream({ live: true, ended: null });
+  engine.reportStream({ live: true, note: null });
   const state = (silenced: boolean) => ({
     name: "Лагерь",
     channels: [],

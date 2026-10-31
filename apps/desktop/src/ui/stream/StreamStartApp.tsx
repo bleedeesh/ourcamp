@@ -12,6 +12,7 @@ import {
   columnOf,
   EMPTY_CHANNEL,
   heavyText,
+  soundHint,
   keepChoice,
   sourceTiles,
   uploadText,
@@ -110,17 +111,22 @@ export function StreamStartApp() {
   const [chosen, setChosen] = useState<string | null>(null);
   const [height, setHeight] = useState(1080);
   const [fps, setFps] = useState(60);
+  const [sound, setSound] = useState(true);
+  const [soundWorks, setSoundWorks] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isTauri()) void invoke<QualityOption[]>("stream_qualities").then(setQualities);
+    if (!isTauri()) return;
+    void invoke<QualityOption[]>("stream_qualities").then(setQualities);
+    void invoke<boolean>("stream_sound_available").then(setSoundWorks);
   }, []);
 
   const tiles = useMemo(() => sourceTiles(sources ?? []), [sources]);
   const selected = keepChoice(tiles, chosen);
   const bitrate = bitrateOf(qualities, height, fps);
   const heavy = heavyText(height);
+  const pickedKind = tiles.find((t) => t.key === selected)?.source.kind ?? "screen";
 
   const start = async () => {
     const tile = tiles.find((t) => t.key === selected);
@@ -129,7 +135,12 @@ export function StreamStartApp() {
     setError(null);
     try {
       if (isTauri()) {
-        await invoke("stream_start", { kind: tile.source.kind, id: tile.source.id, quality: { height, fps } });
+        await invoke("stream_start", {
+          kind: tile.source.kind,
+          id: tile.source.id,
+          quality: { height, fps },
+          sound: sound && soundWorks,
+        });
       }
       closeWindow();
     } catch (e) {
@@ -207,9 +218,8 @@ export function StreamStartApp() {
         {bitrate > 0 && <p className="start-app__note">{uploadText(bitrate, channel.others)}</p>}
         {heavy !== null && <p className="start-app__note">{heavy}</p>}
 
-        {/* The sound of a stream arrives in M6 step 5. */}
-        <label className="start-sound" title="Звук стрима появится позже">
-          <input type="checkbox" disabled />
+        <label className="start-sound" data-off={!soundWorks || undefined} title={soundWorks ? soundHint(pickedKind) : "Нужна Windows 10 версии 2004 или новее"}>
+          <input type="checkbox" checked={sound && soundWorks} disabled={!soundWorks} onChange={(e) => setSound(e.target.checked)} />
           Транслировать звук
         </label>
 

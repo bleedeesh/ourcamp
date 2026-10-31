@@ -26,7 +26,7 @@ use tauri::async_runtime::JoinHandle;
 const VOICE_BITRATE: u64 = 64_000;
 /// Decoded frames (10 ms each) buffered between libwebrtc and our copy task. `NetEq` is
 /// the real jitter buffer; this only absorbs task scheduling hiccups.
-const REMOTE_QUEUE_FRAMES: usize = 20;
+pub(crate) const REMOTE_QUEUE_FRAMES: usize = 20;
 /// How often the panel's connection quality and ping are refreshed (ADR-0030).
 const LINK_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -286,7 +286,7 @@ fn listen_if_microphone(publication: &RemoteTrackPublication) {
 
 /// Aborts a task when dropped. Tokio's `JoinHandle` only detaches on drop, which
 /// would leave a voice task running after its room is gone.
-struct AbortOnDrop(JoinHandle<()>);
+pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -431,8 +431,8 @@ fn disconnect_message(reason: livekit::DisconnectReason) -> &'static str {
     }
 }
 
-/// Copies one remote voice into its mixer source until the track ends.
-async fn play(mut stream: NativeAudioStream, mut input: SourceInput) {
+/// Copies one remote voice, or a stream's sound, into its mixer source until the track ends.
+pub(crate) async fn play(mut stream: NativeAudioStream, mut input: SourceInput) {
     let mut buf: Vec<f32> = Vec::new();
     while let Some(frame) = stream.next().await {
         // Frames are 10 ms; the buffer grows once and is reused.

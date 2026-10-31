@@ -8,6 +8,7 @@ import {
   heavyText,
   keepChoice,
   mbitText,
+  soundHint,
   sourceTiles,
   uploadText,
   type QualityOption,
@@ -101,6 +102,11 @@ test("the upload warning counts everyone who may watch", () => {
   assert.match(uploadText(2_500_000, 1), /При 1 зрителе это до 2,5 Мбит\/с/);
   assert.match(uploadText(2_500_000, 11), /При 11 зрителях/);
   assert.match(uploadText(2_500_000, 21), /При 21 зрителе/);
+});
+
+test("the hint says whose sound goes out", () => {
+  assert.match(soundHint("screen"), /кроме голосов/);
+  assert.match(soundHint("window"), /этого приложения/);
 });
 
 test("only 1440p warns about the load", () => {

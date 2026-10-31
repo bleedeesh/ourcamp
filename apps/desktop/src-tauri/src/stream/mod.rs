@@ -12,10 +12,14 @@ mod mf;
 mod pipeline;
 
 #[cfg(windows)]
+mod sound;
+#[cfg(windows)]
 mod view;
 
 #[cfg(windows)]
 pub use pipeline::{list_sources, ScreenStream};
+#[cfg(windows)]
+pub use sound::available as sound_available;
 #[cfg(windows)]
 pub use view::Viewer;
 
@@ -96,12 +100,12 @@ pub fn quality_options() -> Vec<QualityOption> {
 #[serde(rename_all = "camelCase")]
 pub struct OwnStream {
     pub live: bool,
-    /// Why it stopped when you did not stop it: a sentence for the user.
-    pub ended: Option<String>,
+    /// What you should know and did not ask: why it stopped, or that it goes without sound.
+    pub note: Option<String>,
 }
 
 #[cfg(not(windows))]
-pub use other::{list_sources, ScreenStream, Viewer};
+pub use other::{list_sources, sound_available, ScreenStream, Viewer};
 
 /// What the panel of the viewer's window shows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -115,6 +119,8 @@ pub struct ViewStatus {
     pub fps: u32,
     /// How many are watching, you included.
     pub viewers: u32,
+    /// The stream comes with sound.
+    pub sound: bool,
 }
 
 /// Until step 6 of M6: everything but Windows says so and streams nothing.
@@ -128,6 +134,7 @@ mod other {
     use tokio::sync::oneshot;
 
     use super::{SourceKind, StreamQuality, StreamSource, ViewStatus};
+    use crate::audio::engine::StreamOutlet;
 
     const LATER: &str = "Стримы на этой системе появятся позже (M6, шаг 6)";
 
@@ -138,6 +145,11 @@ mod other {
         Vec::new()
     }
 
+    #[must_use]
+    pub fn sound_available() -> bool {
+        false
+    }
+
     // Awaited like the `async fn`s on Windows; here there is nothing to wait for.
     impl ScreenStream {
         pub fn start(
@@ -145,6 +157,7 @@ mod other {
             _kind: SourceKind,
             _id: u64,
             _quality: StreamQuality,
+            _sound: bool,
         ) -> impl Future<Output = Result<Self, String>> {
             std::future::ready(Err(LATER.to_owned()))
         }
@@ -152,6 +165,11 @@ mod other {
         pub fn ended(&mut self) -> oneshot::Receiver<()> {
             let Self = self;
             oneshot::channel().1
+        }
+
+        pub fn sound_problem(&self) -> Option<String> {
+            let Self = self;
+            None
         }
 
         #[allow(clippy::unused_async, reason = "the same signature as on Windows")]
@@ -167,6 +185,7 @@ mod other {
             _user_id: String,
             _name: String,
             _window: WebviewWindow,
+            _outlet: StreamOutlet,
         ) -> impl Future<Output = Result<Self, String>> {
             std::future::ready(Err(LATER.to_owned()))
         }

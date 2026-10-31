@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use livekit::prelude::*;
+use livekit::webrtc::audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions};
 use livekit::webrtc::prelude::I420Buffer;
 use livekit::webrtc::video_frame::VideoBuffer;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
@@ -22,6 +23,8 @@ use raw_window_handle::{
 use tauri::{Emitter, WebviewWindow};
 
 use super::ViewStatus;
+use crate::audio::engine::StreamOutlet;
+use crate::voice::room::{play, AbortOnDrop, REMOTE_QUEUE_FRAMES};
 use render::Painter;
 use surface::{Input, VideoSurface};
 
@@ -80,6 +83,7 @@ impl Viewer {
         user_id: String,
         name: String,
         window: WebviewWindow,
+        outlet: StreamOutlet,
     ) -> Result<Self, String> {
         let surface = make_surface(&window).await?;
         let shared = Arc::new(Shared::default());
@@ -108,6 +112,8 @@ impl Viewer {
                 frames: None,
                 shown: false,
                 count: 0,
+                outlet,
+                sound: None,
             },
             stopped,
         ));
@@ -364,16 +370,62 @@ struct Follow {
     shown: bool,
     /// Pictures since the last tick.
     count: u32,
+    outlet: StreamOutlet,
+    /// The sound playing, for as long as it stays in here.
+    sound: Option<AbortOnDrop>,
 }
 
 impl Follow {
-    fn screen_publication(&self) -> Option<RemoteTrackPublication> {
+    fn publication(&self, source: TrackSource) -> Option<RemoteTrackPublication> {
         self.room
             .remote_participants()
             .get(&self.identity)?
             .track_publications()
             .into_values()
-            .find(|p| p.source() == TrackSource::Screenshare)
+            .find(|p| p.source() == source)
+    }
+
+    fn screen_publication(&self) -> Option<RemoteTrackPublication> {
+        self.publication(TrackSource::Screenshare)
+    }
+
+    fn sound_publication(&self) -> Option<RemoteTrackPublication> {
+        self.publication(TrackSource::ScreenshareAudio)
+    }
+
+    fn is_sound(
+        &self,
+        participant: &RemoteParticipant,
+        publication: &RemoteTrackPublication,
+    ) -> bool {
+        participant.identity() == self.identity
+            && publication.source() == TrackSource::ScreenshareAudio
+    }
+
+    fn play_sound(&mut self, track: &RemoteAudioTrack) {
+        self.sound = None;
+        let Some(input) = self.outlet.open() else {
+            return;
+        };
+        let stream = NativeAudioStream::with_options(
+            track.rtc_track(),
+            i32::try_from(self.outlet.rate).expect("sample rate fits in i32"),
+            2,
+            NativeAudioStreamOptions {
+                queue_size_frames: Some(REMOTE_QUEUE_FRAMES),
+            },
+        );
+        self.sound = Some(AbortOnDrop(tauri::async_runtime::spawn(play(
+            stream, input,
+        ))));
+        self.report(|s| s.sound = true);
+    }
+
+    fn sound_ended(&mut self) {
+        if self.sound.take().is_some() {
+            self.outlet.close();
+            self.report(|s| s.sound = false);
+        }
     }
 
     /// Everyone with the attribute for this stream, and you.
@@ -444,7 +496,25 @@ impl Follow {
             RoomEvent::TrackPublished {
                 publication,
                 participant,
-            } if self.is_screen(&participant, &publication) => publication.set_subscribed(true),
+            } if self.is_screen(&participant, &publication)
+                || self.is_sound(&participant, &publication) =>
+            {
+                publication.set_subscribed(true);
+            }
+            RoomEvent::TrackSubscribed {
+                track: RemoteTrack::Audio(track),
+                publication,
+                participant,
+            } if self.is_sound(&participant, &publication) => self.play_sound(&track),
+            RoomEvent::TrackUnsubscribed {
+                publication,
+                participant,
+                ..
+            }
+            | RoomEvent::TrackUnpublished {
+                publication,
+                participant,
+            } if self.is_sound(&participant, &publication) => self.sound_ended(),
             RoomEvent::TrackSubscribed {
                 track: RemoteTrack::Video(track),
                 publication,
@@ -464,6 +534,7 @@ impl Follow {
             RoomEvent::ParticipantDisconnected(participant) => {
                 if participant.identity() == self.identity {
                     self.ended();
+                    self.sound_ended();
                 }
                 self.recount();
             }
@@ -502,6 +573,12 @@ async fn follow(mut this: Follow, mut stopped: tokio::sync::oneshot::Receiver<()
             this.frames = Some(NativeVideoStream::new(track.rtc_track()));
         }
     }
+    if let Some(publication) = this.sound_publication() {
+        publication.set_subscribed(true);
+        if let Some(RemoteTrack::Audio(track)) = publication.track() {
+            this.play_sound(&track);
+        }
+    }
     say_watching(&this.room, this.identity.to_string()).await;
     this.recount();
 
@@ -527,5 +604,9 @@ async fn follow(mut this: Follow, mut stopped: tokio::sync::oneshot::Receiver<()
     if let Some(publication) = this.screen_publication() {
         publication.set_subscribed(false);
     }
+    if let Some(publication) = this.sound_publication() {
+        publication.set_subscribed(false);
+    }
+    this.sound_ended();
     say_watching(&this.room, String::new()).await;
 }
