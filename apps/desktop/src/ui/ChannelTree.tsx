@@ -129,7 +129,31 @@ function MemberRow({ userId, channelId, drag, grab }: { userId: UserId; channelI
         {!isSelf && (localMuted || volume !== DEFAULT_VOLUME) && (
           <span className="member__volume">{localMuted ? <Icon name="speakerOff" size={14} label="Заглушен для вас" /> : `${volume}%`}</span>
         )}
-        {member.streaming && <span className="live-badge">LIVE</span>}
+        {member.streaming &&
+          (isSelf ? (
+            <span className="live-badge">LIVE</span>
+          ) : (
+            // Not a <button>: the row itself is one, and buttons do not nest.
+            <span
+              className="live-badge live-badge--watch"
+              role="button"
+              tabIndex={0}
+              aria-label={`Смотреть стрим: ${member.name}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                void voice.watchStream(userId, channelId);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                e.stopPropagation();
+                void voice.watchStream(userId, channelId);
+              }}
+            >
+              LIVE
+            </span>
+          ))}
         {member.silenced ? (
           <Icon name="mic" off size={15} label="Говорить запрещено" className="member__state member__state--silenced" />
         ) : deafened ? (

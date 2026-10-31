@@ -932,6 +932,108 @@ pub(crate) mod tests {
         });
     }
 
+    /// Someone watching does not lose the picture while others come and go: every change
+    /// of the room renegotiates the connection that carries it.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_stream_keeps_going_while_people_come_and_go() {
+        use livekit::webrtc::video_stream::native::NativeVideoStream;
+
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("churn").await;
+            let ears = Arc::new(Ears::default());
+            let viewer = listener(params, &ears).await;
+
+            let (client, session) = another_member(&camp, "Стример").await;
+            let access = way_in(&client, &session).await;
+            let (streamer, _) = Room::connect(&access.url, &access.token, RoomOptions::default())
+                .await
+                .unwrap();
+            let streamer_id = streamer.local_participant().identity().to_string();
+            let (screen, frames) = black_screen();
+            streamer
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Video(screen),
+                    TrackPublishOptions {
+                        source: TrackSource::Screenshare,
+                        ..TrackPublishOptions::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let deadline = Duration::from_secs(10);
+            let asked = tokio::time::timeout(deadline, async {
+                loop {
+                    if let Some(publication) = screen_of(&viewer, &streamer_id) {
+                        return publication;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the stream is announced");
+            asked.set_subscribed(true);
+            let track = tokio::time::timeout(deadline, async {
+                loop {
+                    if let Some(track) = asked.track() {
+                        return track;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the stream comes when asked for");
+            let RemoteTrack::Video(video) = track else {
+                panic!("a screen is a video track");
+            };
+
+            // The longest wait between two pictures, while the room changes.
+            let mut decoded = NativeVideoStream::new(video.rtc_track());
+            tokio::time::timeout(Duration::from_secs(15), decoded.next())
+                .await
+                .expect("the first picture")
+                .expect("the stream is open");
+            let watch = tauri::async_runtime::spawn(async move {
+                let mut longest = Duration::ZERO;
+                let mut last = tokio::time::Instant::now();
+                let mut count = 0_u32;
+                let end = last + Duration::from_secs(12);
+                while let Ok(Some(_)) = tokio::time::timeout_at(end, decoded.next()).await {
+                    count += 1;
+                    longest = longest.max(last.elapsed());
+                    last = tokio::time::Instant::now();
+                }
+                (
+                    count,
+                    longest.max(last.elapsed().min(Duration::from_secs(12))),
+                )
+            });
+            for round in 0..6 {
+                let (client, session) = another_member(&camp, &format!("Гость {round}")).await;
+                let guest = connect(way_in(&client, &session).await).await;
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                guest.close().await;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            let (count, longest) = watch.await.unwrap();
+            eprintln!("{count} pictures, the longest wait {longest:?}");
+            // One black picture over and over: libwebrtc sends a static screen about 3 a second.
+            assert!(count > 20, "pictures for all of 12 s, got {count}");
+            assert!(
+                longest < Duration::from_secs(2),
+                "the picture stopped for {longest:?}"
+            );
+
+            drop(frames);
+            viewer.close().await;
+            streamer.close().await.unwrap();
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
     /// A silenced member publishes nothing and yet hears: subscribing does not depend on
     /// having a track of one's own (ADR-0028, 0049).
     #[test]
@@ -954,6 +1056,64 @@ pub(crate) mod tests {
 
             silent.close().await;
             speaker.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
+    /// The count of viewers rests on everyone saying whose stream they watch (ADR-0053):
+    /// the camp's token allows it, others see it, and being silenced does not take it away.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_member_says_whose_stream_they_watch() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("watching").await;
+            let observer = connect(params).await;
+            let (client, session) = another_member(&camp, "Зритель").await;
+            let member = connect(way_in(&client, &session).await).await;
+
+            let says = |value: &'static str| {
+                let room = observer.room();
+                let identity = ParticipantIdentity::from(session.user_id.clone());
+                async move {
+                    tokio::time::timeout(Duration::from_secs(10), async {
+                        loop {
+                            let seen = room.remote_participants().get(&identity).is_some_and(|p| {
+                                p.attributes().get("oc.watching").map(String::as_str) == Some(value)
+                            });
+                            if seen {
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await
+                    .expect("others see the attribute");
+                }
+            };
+            let set = |value: &str| {
+                let attributes = HashMap::from([("oc.watching".to_owned(), value.to_owned())]);
+                let room = member.room();
+                async move {
+                    room.local_participant()
+                        .set_attributes(attributes)
+                        .await
+                        .expect("the token allows it");
+                }
+            };
+            set("a").await;
+            says("a").await;
+
+            camp.manager()
+                .set_silenced(&session.user_id, true)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            set("b").await;
+            says("b").await;
+
+            member.close().await;
+            observer.close().await;
             camp.stop().await;
             let _ = std::fs::remove_dir_all(dir);
         });

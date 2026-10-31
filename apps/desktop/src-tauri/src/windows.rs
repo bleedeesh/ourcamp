@@ -8,6 +8,8 @@ use tauri::{AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuild
 pub const CHAT: &str = "chat";
 /// The main window's label (`tauri.conf.json`).
 pub const MAIN: &str = "main";
+/// The viewer's window label. Must match `capabilities/default.json`.
+pub const STREAM: &str = "stream";
 
 /// Logical size of a new chat window, as in the mockup.
 const CHAT_SIZE: (f64, f64) = (420.0, 660.0);
@@ -35,6 +37,22 @@ pub fn open_chat(app: &AppHandle) -> tauri::Result<()> {
     place_beside_main(app, &chat);
     chat.show()?;
     chat.set_focus()
+}
+
+/// Opens the viewer's window (ADR-0053). The page is ordinary; the picture lies over it.
+///
+/// # Errors
+/// If the webview cannot be created.
+pub fn open_stream(app: &AppHandle, name: &str) -> tauri::Result<tauri::WebviewWindow> {
+    let window = WebviewWindowBuilder::new(app, STREAM, WebviewUrl::App("stream.html".into()))
+        .title(format!("Стрим {name} — OurCamp"))
+        .inner_size(960.0, 620.0)
+        .min_inner_size(480.0, 340.0)
+        .decorations(false)
+        .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xff))
+        .build()?;
+    window.set_focus()?;
+    Ok(window)
 }
 
 /// To the right of the main window when the screen has room, else where the system puts

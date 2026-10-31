@@ -32,6 +32,34 @@ const CAMP_DIRECTIVE_EVENT: &str = "camp://directive";
 /// `src/engine/tauri-camp-api.ts`.
 const CAMP_CHAT_EVENT: &str = "camp://chat";
 
+/// The main window's close button hides it into the tray: voice and the camp stay on, like
+/// in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031). The chat window
+/// simply closes (ADR-0046). The picture goes before the window that holds it (`Viewer::close`).
+fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
+    if let WindowEvent::CloseRequested { api, .. } = event {
+        if window.label() == windows::MAIN {
+            api.prevent_close();
+            let _ = window.hide();
+        }
+        if window.label() == windows::STREAM {
+            api.prevent_close();
+            tauri::async_runtime::spawn(close_viewer(window.clone()));
+        }
+    }
+}
+
+/// Closes the viewer, which destroys its window; without a viewer, just the window.
+async fn close_viewer(window: tauri::Window) {
+    let state = window.state::<commands::EngineState>();
+    let closed = match commands::engine(&state) {
+        Ok(engine) => engine.stop_watching().await,
+        Err(_) => false,
+    };
+    if !closed {
+        let _ = window.destroy();
+    }
+}
+
 /// Sends what the camps say to every window: live state, your directives, chats.
 fn forward_camp_events(app: &tauri::AppHandle, camps: &Camps) {
     let to_ui = app.clone();
@@ -119,17 +147,7 @@ pub fn run() {
             tray(app)?;
             Ok(())
         })
-        // The main window's close button hides it into the tray: voice and the camp stay
-        // on, like in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031).
-        // The chat window simply closes (ADR-0046).
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == windows::MAIN {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
-        })
+        .on_window_event(on_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::voice_join_channel,
             commands::voice_leave_channel,
@@ -140,6 +158,9 @@ pub fn run() {
             commands::stream_sources,
             commands::stream_start,
             commands::stream_stop,
+            commands::stream_watch,
+            commands::stream_view,
+            commands::stream_place,
             commands::camp_list,
             commands::camp_preview,
             commands::camp_join,

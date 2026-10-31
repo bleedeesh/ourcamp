@@ -12,7 +12,12 @@ mod mf;
 mod pipeline;
 
 #[cfg(windows)]
+mod view;
+
+#[cfg(windows)]
 pub use pipeline::{list_sources, ScreenStream};
+#[cfg(windows)]
+pub use view::Viewer;
 
 /// What can be streamed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,7 +55,21 @@ pub struct StreamQuality {
 }
 
 #[cfg(not(windows))]
-pub use other::{list_sources, ScreenStream};
+pub use other::{list_sources, ScreenStream, Viewer};
+
+/// What the panel of the viewer's window shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewStatus {
+    /// Pictures are arriving.
+    pub live: bool,
+    /// Height of the picture.
+    pub height: u32,
+    /// Pictures in the last second.
+    pub fps: u32,
+    /// How many are watching, you included.
+    pub viewers: u32,
+}
 
 /// Until step 6 of M6: everything but Windows says so and streams nothing.
 #[cfg(not(windows))]
@@ -60,7 +79,9 @@ mod other {
 
     use livekit::Room;
 
-    use super::{SourceKind, StreamQuality, StreamSource};
+    use tauri::WebviewWindow;
+
+    use super::{SourceKind, StreamQuality, StreamSource, ViewStatus};
 
     const LATER: &str = "Стримы на этой системе появятся позже (M6, шаг 6)";
 
@@ -84,5 +105,51 @@ mod other {
 
         #[allow(clippy::unused_async, reason = "the same signature as on Windows")]
         pub async fn stop(self) {}
+    }
+
+    pub struct Viewer;
+
+    // No viewer is ever made here: `start` says so, and the rest is what Windows has.
+    impl Viewer {
+        pub fn start(
+            _room: Arc<Room>,
+            _user_id: String,
+            _name: String,
+            _window: WebviewWindow,
+        ) -> impl Future<Output = Result<Self, String>> {
+            std::future::ready(Err(LATER.to_owned()))
+        }
+
+        pub fn user_id(&self) -> &'static str {
+            let Self = self;
+            ""
+        }
+
+        pub fn name(&self) -> &'static str {
+            let Self = self;
+            ""
+        }
+
+        pub fn status(&self) -> ViewStatus {
+            let Self = self;
+            ViewStatus::default()
+        }
+
+        pub fn raise(&self) {
+            let Self = self;
+        }
+
+        pub fn announce(&self) {
+            let Self = self;
+        }
+
+        pub fn place(&self, _x: i32, _y: i32, _width: u32, _height: u32) {
+            let Self = self;
+        }
+
+        #[allow(clippy::unused_async, reason = "the same signature as on Windows")]
+        pub async fn close(self) {
+            let Self = self;
+        }
     }
 }

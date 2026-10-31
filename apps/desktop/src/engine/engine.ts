@@ -62,6 +62,8 @@ export interface VoiceEngine {
   setLocalMute(userId: UserId, muted: boolean): Promise<void>;
   setMicMuted(muted: boolean): Promise<void>;
   setDeafened(deafened: boolean): Promise<void>;
+  /** Opens someone's stream in the viewer's window (ADR-0053). You must be in their channel. */
+  watchStream(userId: UserId, name: string): Promise<void>;
   /** Subscribes to level updates; returns an unsubscribe function. */
   onLevels(listener: (levels: readonly MemberLevel[]) => void): () => void;
   /** Subscribes to channel membership updates; returns an unsubscribe function. */

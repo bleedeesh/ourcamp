@@ -11,6 +11,7 @@ import "@fontsource/fredoka/600.css";
 import "@ourcamp/ui/tokens.css";
 import "@ourcamp/ui/base.css";
 import "./styles/app.css";
+import "./styles/stream.css";
 
 import { CampsController, NO_CAMP } from "./domain/camps.ts";
 import { DEMO_CAMP, DEMO_SELF_ID } from "./domain/demo-camp.ts";

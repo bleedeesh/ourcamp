@@ -182,6 +182,33 @@ test("membership updates outside a channel are ignored", async () => {
   assert.deepEqual(voice.store.get().camp.channels[0]?.memberIds, ["lena"], "last known list kept");
 });
 
+test("watching a stream in your channel just opens it", async () => {
+  const { engine, voice } = setup();
+  await voice.join("lobby");
+  engine.calls.length = 0;
+  await voice.watchStream("lena", "lobby");
+  assert.deepEqual(engine.calls, ["watch:lena"]);
+});
+
+test("watching a stream in another channel comes over first", async () => {
+  const { engine, voice } = setup();
+  await voice.join("afk");
+  engine.calls.length = 0;
+  await voice.watchStream("lena", "lobby");
+  assert.equal(voice.store.get().channelId, "lobby");
+  assert.equal(engine.calls.at(-1), "watch:lena");
+  assert.ok(engine.calls.length > 1, "the room changed first");
+});
+
+test("your own stream does not open, and nothing moves you", async () => {
+  const { engine, voice } = setup();
+  await voice.join("lobby");
+  engine.calls.length = 0;
+  await voice.watchStream(voice.store.get().selfId, "afk");
+  assert.deepEqual(engine.calls, []);
+  assert.equal(voice.store.get().channelId, "lobby");
+});
+
 test("volume menu cannot be opened for yourself", () => {
   const { voice } = setup();
   voice.openVolumeMenu({ userId: "me", x: 0, y: 0 });

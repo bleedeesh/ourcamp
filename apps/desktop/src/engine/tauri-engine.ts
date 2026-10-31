@@ -45,6 +45,10 @@ export class TauriEngine implements VoiceEngine {
     return invoke("voice_set_deafened", { deafened });
   }
 
+  watchStream(userId: UserId, name: string): Promise<void> {
+    return invoke("stream_watch", { userId, name });
+  }
+
   onLevels(listener: (levels: readonly MemberLevel[]) => void): () => void {
     return subscribe<MemberLevel[]>(LEVELS_EVENT, listener);
   }

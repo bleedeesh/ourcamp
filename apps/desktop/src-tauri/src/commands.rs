@@ -18,7 +18,7 @@ use crate::camps::{CampList, CampPreview, Camps, OpenCamp};
 /// can report it instead of the app refusing to start.
 pub type EngineState = Result<Engine, String>;
 
-fn engine(state: &State<'_, EngineState>) -> Result<Engine, String> {
+pub(crate) fn engine(state: &State<'_, EngineState>) -> Result<Engine, String> {
     state.inner().clone()
 }
 
@@ -103,6 +103,42 @@ pub async fn stream_start(
 #[tauri::command]
 pub async fn stream_stop(state: State<'_, EngineState>) -> Result<(), String> {
     engine(&state)?.stop_stream().await;
+    Ok(())
+}
+
+/// Opens someone's stream in the viewer's window (ADR-0053). Windows are made in `async`
+/// commands only: from a synchronous one the whole app hangs on Windows.
+#[tauri::command]
+pub async fn stream_watch(
+    app: tauri::AppHandle,
+    state: State<'_, EngineState>,
+    user_id: String,
+    name: String,
+) -> Result<(), String> {
+    engine(&state)?
+        .watch_stream(&app, user_id, name)
+        .await
+        .inspect_err(|e| eprintln!("[ourcamp] stream view: {e}"))
+}
+
+/// Who the viewer's window shows, for its page. `None` until the viewer is up.
+#[tauri::command]
+pub fn stream_view(
+    state: State<'_, EngineState>,
+) -> Result<Option<crate::audio::engine::StreamView>, String> {
+    Ok(engine(&state)?.stream_view())
+}
+
+/// Where the viewer's page laid out the picture, in the window's pixels.
+#[tauri::command]
+pub fn stream_place(
+    state: State<'_, EngineState>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    engine(&state)?.place_stream(x, y, width, height);
     Ok(())
 }
 
