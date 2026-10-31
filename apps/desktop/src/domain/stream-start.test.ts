@@ -106,7 +106,7 @@ test("the upload warning counts everyone who may watch", () => {
 
 test("the hint says whose sound goes out", () => {
   assert.match(soundHint("screen"), /кроме голосов/);
-  assert.match(soundHint("window"), /этого приложения/);
+  assert.match(soundHint("window"), /всего приложения/);
 });
 
 test("only 1440p warns about the load", () => {

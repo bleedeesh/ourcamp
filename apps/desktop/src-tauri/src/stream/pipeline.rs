@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoderBackend, VideoEncoding};
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource};
 use livekit::webrtc::desktop_capturer::{
-    CaptureError, CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
-    DesktopFrame,
+    CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions, DesktopFrame,
 };
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::{
@@ -67,8 +66,9 @@ fn fit(width: u32, height: u32, quality: StreamQuality) -> (u32, u32) {
 
 /// Where frames come from: the screen, or a test's generator.
 trait Frames {
-    /// The next frame at the chosen size; `None` when none is ready yet.
-    fn next(&mut self) -> Option<I420Buffer>;
+    /// The newest frame at the chosen size, waiting for one at most `wait`; `None` when
+    /// none came.
+    fn next(&mut self, wait: Duration) -> Option<I420Buffer>;
     /// The source will never give another frame: its window was closed.
     fn gone(&self) -> bool {
         false
@@ -105,50 +105,107 @@ fn to_i420(frame: &DesktopFrame, quality: StreamQuality) -> Option<I420Buffer> {
     })
 }
 
-/// The screen or window, through the SDK's capturer.
+/// The screen or window, through the SDK's capturer, on a thread of its own: a call to the
+/// capturer can take a whole frame's time on a window, more when a game keeps the video card
+/// busy, and the encoder must not wait through that (ADR-0058).
 struct Desktop {
-    capturer: DesktopCapturer,
     frames: mpsc::Receiver<I420Buffer>,
     gone: Arc<AtomicBool>,
     /// The captured window, when it is one: a source's id on Windows is its handle.
     window: Option<HWND>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Desktop {
     fn open(kind: SourceKind, id: u64, quality: StreamQuality) -> Result<Self, String> {
-        let mut capturer = capturer(kind).ok_or("Захват экрана на этом компьютере недоступен")?;
-        let source: CaptureSource = capturer
-            .get_source_list()
-            .into_iter()
-            .find(|s| s.id() == id)
-            .ok_or("Этого экрана или окна больше нет")?;
         let (sender, frames) = mpsc::channel();
         let gone = Arc::new(AtomicBool::new(false));
-        let gone_now = Arc::clone(&gone);
-        capturer.start_capture(Some(source), move |result| match result {
-            Ok(frame) => {
-                if let Some(buffer) = to_i420(&frame, quality) {
-                    let _ = sender.send(buffer);
-                }
-            }
-            // A failed frame is skipped: the next tick asks again, and the thread
-            // stops by itself when frames stay away at the start.
-            Err(CaptureError::Temporary) => {}
-            Err(CaptureError::Permanent) => gone_now.store(true, Ordering::Relaxed),
-        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let (opened_tx, opened) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("oc-stream-capture".into())
+            .spawn({
+                let (gone, stop) = (Arc::clone(&gone), Arc::clone(&stop));
+                move || capture_thread(kind, id, quality, sender, gone, &stop, &opened_tx)
+            })
+            .map_err(|e| format!("Не удалось начать стрим: {e}"))?;
+        opened
+            .recv()
+            .unwrap_or_else(|_| Err("Захват остановился при запуске".to_owned()))?;
         Ok(Self {
-            capturer,
             frames,
             gone,
             window: (kind == SourceKind::Window).then_some(HWND(id as *mut _)),
+            stop,
+            thread: Some(thread),
         })
     }
 }
 
+impl Drop for Desktop {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Asks the capturer for frames at the chosen pace until told to stop. The frames come back
+/// through the callback, inside the call, and are converted here too.
+fn capture_thread(
+    kind: SourceKind,
+    id: u64,
+    quality: StreamQuality,
+    sender: mpsc::Sender<I420Buffer>,
+    gone: Arc<AtomicBool>,
+    stop: &AtomicBool,
+    opened: &mpsc::Sender<Result<(), String>>,
+) {
+    let Some(mut capturer) = capturer(kind) else {
+        let _ = opened.send(Err("Захват экрана на этом компьютере недоступен".to_owned()));
+        return;
+    };
+    let Some(source) = capturer
+        .get_source_list()
+        .into_iter()
+        .find(|s| s.id() == id)
+    else {
+        let _ = opened.send(Err("Этого экрана или окна больше нет".to_owned()));
+        return;
+    };
+    capturer.start_capture(Some(source), move |result| match result {
+        Ok(frame) => {
+            if let Some(buffer) = to_i420(&frame, quality) {
+                let _ = sender.send(buffer);
+            }
+        }
+        // A failed frame is skipped: the next call asks again, and the stream stops by
+        // itself when frames stay away at the start.
+        Err(CaptureError::Temporary) => {}
+        Err(CaptureError::Permanent) => gone.store(true, Ordering::Relaxed),
+    });
+    let _ = opened.send(Ok(()));
+    let tick = Duration::from_secs_f64(1.0 / f64::from(quality.fps));
+    let mut next = Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        capturer.capture_frame();
+        next += tick;
+        let now = Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        } else {
+            next = now;
+        }
+    }
+}
+
 impl Frames for Desktop {
-    fn next(&mut self) -> Option<I420Buffer> {
-        self.capturer.capture_frame();
-        self.frames.try_recv().ok()
+    /// Only the newest: frames that came while the encoder was busy are already old.
+    fn next(&mut self, wait: Duration) -> Option<I420Buffer> {
+        let first = self.frames.recv_timeout(wait).ok()?;
+        Some(self.frames.try_iter().last().unwrap_or(first))
     }
 
     /// The capturer's word, and the window's own: on a closed window the capturer may only
@@ -420,7 +477,7 @@ fn stream_thread(
     // The size is known from the first frame, and the source is made for that size.
     let started = Instant::now();
     let first = loop {
-        if let Some(frame) = frames.next() {
+        if let Some(frame) = frames.next(tick) {
             break frame;
         }
         if stop.load(Ordering::Relaxed) || started.elapsed() > FIRST_FRAME {
@@ -486,7 +543,7 @@ fn pump(
             eprintln!("[oc-stream] the source is gone");
             return;
         }
-        if let Some(frame) = current.take().or_else(|| frames.next()) {
+        if let Some(frame) = current.take().or_else(|| frames.next(tick)) {
             if (frame.width(), frame.height()) != (encoding.width, encoding.height) {
                 // A window changed size: a new encoder, starting with a key frame.
                 match Encoding::new(frame.width(), frame.height(), quality, choice) {
@@ -597,7 +654,7 @@ mod tests {
     }
 
     impl Frames for Stripes {
-        fn next(&mut self) -> Option<I420Buffer> {
+        fn next(&mut self, _wait: Duration) -> Option<I420Buffer> {
             let mut buffer = I420Buffer::new(self.width, self.height);
             let (stride_y, _, _) = buffer.strides();
             let (y, u, v) = buffer.data_mut();
@@ -620,9 +677,9 @@ mod tests {
     }
 
     impl Frames for Closing {
-        fn next(&mut self) -> Option<I420Buffer> {
+        fn next(&mut self, _wait: Duration) -> Option<I420Buffer> {
             self.left = self.left.saturating_sub(1);
-            self.stripes.next()
+            self.stripes.next(Duration::ZERO)
         }
 
         fn gone(&self) -> bool {

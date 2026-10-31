@@ -95,7 +95,7 @@ export function uploadText(bitsPerSecond: number, others: number): string {
 
 /** Whose sound goes out with a source (ADR-0055). */
 export function soundHint(kind: StreamSource["kind"]): string {
-  return kind === "screen" ? "Звук всего компьютера, кроме голосов в OurCamp" : "Только звук этого приложения";
+  return kind === "screen" ? "Звук всего компьютера, кроме голосов в OurCamp" : "Звук всего приложения: у браузера — всех его окон и вкладок";
 }
 
 /** 1440p is measured on a fast video card only (ADR-0054): the streamer should know. */
