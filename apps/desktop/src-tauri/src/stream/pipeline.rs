@@ -735,21 +735,21 @@ mod tests {
 
     #[test]
     fn quality_sets_the_bitrate() {
-        assert_eq!(bitrate(q(1080, 60)), 6_000_000);
-        assert_eq!(bitrate(q(1080, 30)), 4_000_000);
-        assert_eq!(bitrate(q(720, 60)), 4_000_000);
-        assert_eq!(bitrate(q(720, 30)), 2_500_000);
-        assert_eq!(bitrate(q(1440, 60)), 10_000_000);
-        assert_eq!(bitrate(q(1440, 30)), 7_000_000);
+        assert_eq!(bitrate(q(1080, 60)), 12_000_000);
+        assert_eq!(bitrate(q(1080, 30)), 8_000_000);
+        assert_eq!(bitrate(q(720, 60)), 6_000_000);
+        assert_eq!(bitrate(q(720, 30)), 4_000_000);
+        assert_eq!(bitrate(q(1440, 60)), 20_000_000);
+        assert_eq!(bitrate(q(1440, 30)), 14_000_000);
     }
 
     #[test]
     fn a_small_picture_takes_no_more_than_its_size_asks() {
-        assert_eq!(rate_for(q(1440, 60), 1440), 10_000_000);
-        assert_eq!(rate_for(q(1440, 60), 1080), 6_000_000, "a 1080p screen");
-        assert_eq!(rate_for(q(1440, 30), 600), 2_500_000, "a small window");
-        assert_eq!(rate_for(q(1080, 60), 1000), 6_000_000, "just under 1080");
-        assert_eq!(rate_for(q(720, 60), 720), 4_000_000);
+        assert_eq!(rate_for(q(1440, 60), 1440), 20_000_000);
+        assert_eq!(rate_for(q(1440, 60), 1080), 12_000_000, "a 1080p screen");
+        assert_eq!(rate_for(q(1440, 30), 600), 4_000_000, "a small window");
+        assert_eq!(rate_for(q(1080, 60), 1000), 12_000_000, "just under 1080");
+        assert_eq!(rate_for(q(720, 60), 720), 6_000_000);
     }
 
     /// Moving stripes at a fixed size.

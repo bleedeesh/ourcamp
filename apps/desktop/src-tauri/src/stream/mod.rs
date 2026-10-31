@@ -60,16 +60,17 @@ pub struct StreamQuality {
     pub fps: u32,
 }
 
-/// Bits per second for a quality (ADR-0049, 1440p: ADR-0054).
+/// Bits per second for a quality (ADR-0061).
 #[must_use]
 pub const fn bitrate(quality: StreamQuality) -> u32 {
     let high_rate = quality.fps >= 60;
     match (quality.height, high_rate) {
-        (1440.., true) => 10_000_000,
-        (1440.., false) => 7_000_000,
-        (1080.., true) => 6_000_000,
-        (1080.., false) | (_, true) => 4_000_000,
-        (_, false) => 2_500_000,
+        (1440.., true) => 20_000_000,
+        (1440.., false) => 14_000_000,
+        (1080.., true) => 12_000_000,
+        (1080.., false) => 8_000_000,
+        (_, true) => 6_000_000,
+        (_, false) => 4_000_000,
     }
 }
 
