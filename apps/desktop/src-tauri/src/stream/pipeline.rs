@@ -20,8 +20,12 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::Room;
 use tokio::sync::oneshot;
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+use windows::core::PWSTR;
+use windows::Win32::Foundation::{CloseHandle, HWND};
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
 
 use super::mf::{EncoderChoice, EncoderSettings, H264Encoder};
 use super::sound::StreamSound;
@@ -230,7 +234,45 @@ fn capturer(kind: SourceKind) -> Option<DesktopCapturer> {
     DesktopCapturer::new(options)
 }
 
-/// The screens and windows that can be streamed.
+/// The program file of a process, or `None` if the system will not say.
+fn program_of(process: u32) -> Option<String> {
+    // SAFETY: the handle is checked by `?`, used for this one question and closed here; the
+    // buffer outlives the call, and `size` tells the system how long it is.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process).ok()?;
+        let mut path = [0u16; 1024];
+        let mut size = path.len() as u32;
+        let asked = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(path.as_mut_ptr()),
+            &raw mut size,
+        );
+        let _ = CloseHandle(handle);
+        asked.ok()?;
+        Some(String::from_utf16_lossy(&path[..size as usize]))
+    }
+}
+
+/// The client's or the server window's program: the names cargo gives them (ADR-0059).
+fn is_ourcamp_program(path: &str) -> bool {
+    let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
+    ["ourcamp-desktop.exe", "ourcamp-server-app.exe"]
+        .iter()
+        .any(|name| file.eq_ignore_ascii_case(name))
+}
+
+/// A window of OurCamp, this copy's or another's: libwebrtc leaves out only this process's.
+fn is_ourcamp_window(id: u64) -> bool {
+    let mut process = 0;
+    // SAFETY: any value is safe to pass as a handle; a source's id on Windows is its window's
+    // handle, and `process` outlives the call.
+    unsafe { GetWindowThreadProcessId(HWND(id as *mut _), Some(&raw mut process)) };
+    process != 0 && program_of(process).is_some_and(|path| is_ourcamp_program(&path))
+}
+
+/// The screens and windows that can be streamed. OurCamp's own windows are not among them:
+/// whoever wants to show one shows the whole screen (ADR-0059).
 #[must_use]
 pub fn list_sources() -> Vec<StreamSource> {
     [SourceKind::Screen, SourceKind::Window]
@@ -240,6 +282,7 @@ pub fn list_sources() -> Vec<StreamSource> {
                 .map(|c| c.get_source_list())
                 .unwrap_or_default()
                 .into_iter()
+                .filter(move |s| kind == SourceKind::Screen || !is_ourcamp_window(s.id()))
                 .map(move |s| StreamSource {
                     kind,
                     id: s.id(),
@@ -607,6 +650,30 @@ mod tests {
 
     const fn q(height: u32, fps: u32) -> StreamQuality {
         StreamQuality { height, fps }
+    }
+
+    #[test]
+    fn our_programs_are_known_by_their_files() {
+        assert!(is_ourcamp_program(
+            r"C:\Program Files\OurCamp\ourcamp-desktop.exe"
+        ));
+        assert!(is_ourcamp_program(r"D:\a\OURCAMP-SERVER-APP.EXE"));
+        assert!(is_ourcamp_program("ourcamp-desktop.exe"));
+        assert!(!is_ourcamp_program(r"C:\Games\deadlock.exe"));
+        assert!(!is_ourcamp_program(r"C:\ourcamp-desktop.exe\game.exe"));
+        assert!(!is_ourcamp_program(r"C:\Games\not-ourcamp-desktop.exe"));
+    }
+
+    #[test]
+    fn a_process_tells_its_program() {
+        let own = program_of(std::process::id()).expect("our own program");
+        assert!(own.to_lowercase().ends_with(".exe"), "{own}");
+        assert_eq!(program_of(0), None, "no such process to ask");
+    }
+
+    #[test]
+    fn something_that_is_no_window_is_not_ours() {
+        assert!(!is_ourcamp_window(0));
     }
 
     #[test]
