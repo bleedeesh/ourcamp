@@ -1086,7 +1086,6 @@ mod tests {
     /// A camp server in this process. Its LiveKit is a port nobody listens on: nothing
     /// here connects voice, and results must not depend on a dev LiveKit being up.
     async fn camp(name: &str) -> (oc_server::Running, PathBuf) {
-        let dir = temp_dir(&format!("server-{name}"));
         // Stays bound, without listening: freed, the port could go to another test's camp,
         // and that camp would answer as LiveKit.
         static PORT: std::sync::LazyLock<(tokio::net::TcpSocket, String)> =
@@ -1098,6 +1097,7 @@ mod tests {
                 let address = format!("ws://{}", socket.local_addr().unwrap());
                 (socket, address)
             });
+        let dir = temp_dir(&format!("server-{name}"));
         let livekit = PORT.1.clone();
         let running = oc_server::start(oc_server::Config {
             data_dir: dir.clone(),

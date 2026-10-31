@@ -82,8 +82,7 @@ mod other {
             std::future::ready(Err(LATER.to_owned()))
         }
 
-        pub fn stop(self) -> impl Future<Output = ()> {
-            std::future::ready(())
-        }
+        #[allow(clippy::unused_async, reason = "the same signature as on Windows")]
+        pub async fn stop(self) {}
     }
 }
