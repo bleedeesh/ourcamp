@@ -451,6 +451,34 @@ mod tests {
         })
     }
 
+    /// What the SDK does on every disconnect by the server: removes a sender from a closed
+    /// connection and gets an error from C++. Its text used to be read after being freed, and
+    /// a debug build then aborted the process now and then (ADR-0050). One call in a few hits
+    /// it, so many calls; needs no server.
+    #[test]
+    fn an_error_from_webrtc_is_read_while_alive() {
+        use livekit::webrtc::audio_source::native::NativeAudioSource;
+        use livekit::webrtc::audio_source::AudioSourceOptions;
+        use livekit::webrtc::media_stream_track::MediaStreamTrack;
+        use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
+        use livekit::webrtc::peer_connection_factory::{PeerConnectionFactory, RtcConfiguration};
+
+        let factory = PeerConnectionFactory::default();
+        let connection = factory
+            .create_peer_connection(RtcConfiguration::default())
+            .unwrap();
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let track = factory.create_audio_track("mic", source);
+        let sender = connection
+            .add_track(MediaStreamTrack::Audio(track), &["stream"])
+            .unwrap();
+        connection.close();
+        for _ in 0..1000 {
+            let error = connection.remove_track(sender.clone()).unwrap_err();
+            assert!(error.message.contains("closed"), "{}", error.message);
+        }
+    }
+
     #[test]
     fn ping_is_the_round_trip_of_the_pair_in_use() {
         assert_eq!(
