@@ -155,6 +155,8 @@ pub fn run() {
             commands::voice_set_local_mute,
             commands::voice_set_mic_muted,
             commands::voice_set_deafened,
+            commands::settings_window_open,
+            commands::profile_set_name,
             commands::stream_sources,
             commands::stream_qualities,
             commands::stream_sound_available,

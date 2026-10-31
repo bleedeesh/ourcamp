@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::audio::engine::{Engine, MemberSpec};
 use crate::camps::{CampList, CampPreview, Camps, OpenCamp};
@@ -90,6 +90,12 @@ pub async fn stream_sources() -> Result<Vec<crate::stream::StreamSource>, String
 #[must_use]
 pub fn stream_qualities() -> Vec<crate::stream::QualityOption> {
     crate::stream::quality_options()
+}
+
+/// Opens the settings window (ADR-0057), or brings it forward. `async`, as all that make windows.
+#[tauri::command]
+pub async fn settings_window_open(app: tauri::AppHandle) -> Result<(), String> {
+    crate::windows::open_settings(&app).map_err(|e| format!("Не удалось открыть настройки: {e}"))
 }
 
 /// Opens the window "Начать стрим", or brings it forward. `async`, as all that make windows.
@@ -315,6 +321,21 @@ pub async fn camp_set_silenced(
     camps(&state)?.set_silenced(&id, &user_id, silenced).await
 }
 
+/// The other windows take a changed profile from this (ADR-0057).
+const PROFILE_CHANGED_EVENT: &str = "profile://changed";
+
+/// Sets your name (ADR-0057).
+#[tauri::command]
+pub async fn profile_set_name(
+    app: tauri::AppHandle,
+    state: State<'_, CampsState>,
+    name: String,
+) -> Result<(), String> {
+    camps(&state)?.set_name(&name).await?;
+    let _ = app.emit(PROFILE_CHANGED_EVENT, ());
+    Ok(())
+}
+
 /// Your avatar on this device, base64url (ADR-0035); `None` without one.
 #[tauri::command]
 pub fn profile_avatar(state: State<'_, CampsState>) -> Result<Option<String>, String> {
@@ -324,13 +345,16 @@ pub fn profile_avatar(state: State<'_, CampsState>) -> Result<Option<String>, St
 /// Sets your avatar (base64url of a PNG/WebP), or drops it with `None`.
 #[tauri::command]
 pub async fn profile_set_avatar(
+    app: tauri::AppHandle,
     state: State<'_, CampsState>,
     picture: Option<String>,
 ) -> Result<(), String> {
     let picture = picture
         .map(|p| oc_proto::decode_bytes(&p).ok_or_else(|| "Повреждённая картинка".to_owned()))
         .transpose()?;
-    camps(&state)?.set_avatar(picture).await
+    camps(&state)?.set_avatar(picture).await?;
+    let _ = app.emit(PROFILE_CHANGED_EVENT, ());
+    Ok(())
 }
 
 /// A member's avatar by its hash, base64url (from the cache or the camp).

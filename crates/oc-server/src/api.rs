@@ -19,8 +19,8 @@ use oc_invite::{Fingerprint, InviteKind};
 use oc_proto::{
     login_message, user_id, verify, AvatarFormat, CampEvent, CampInfo, CampKey, CampState,
     Challenge, CurrentInvite, ErrorBody, ErrorCode, InviteInfo, InviteKindDto, LoginRequest,
-    LoginResponse, MoveMember, Role, RoomToken, SetSilenced, API_VERSION, MAX_AVATAR_BYTES,
-    PUBLIC_KEY_LEN,
+    LoginResponse, MoveMember, Role, RoomToken, SetName, SetSilenced, API_VERSION,
+    MAX_AVATAR_BYTES, PUBLIC_KEY_LEN,
 };
 
 use tokio::sync::{broadcast, watch};
@@ -38,8 +38,6 @@ const MAX_NONCES: usize = 4096;
 const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 /// Room token lifetime; LiveKit refreshes it for connected clients.
 const ROOM_TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
-/// Longest display name, in characters.
-const MAX_NAME_CHARS: usize = 32;
 
 /// State shared by request handlers.
 #[derive(Clone)]
@@ -199,6 +197,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/challenge", post(challenge))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/members/me", delete(leave))
+        .route("/api/v1/members/me/name", put(put_name))
         .route(
             "/api/v1/members/me/avatar",
             put(put_avatar).delete(delete_avatar),
@@ -272,13 +271,7 @@ async fn login(
         .and_then(|k| k.try_into().ok())
         .ok_or_else(bad)?;
     let signature = oc_proto::decode_bytes(&req.signature).ok_or_else(bad)?;
-    let name = req.name.trim().to_owned();
-    if name.is_empty()
-        || name.chars().count() > MAX_NAME_CHARS
-        || name.chars().any(char::is_control)
-    {
-        return Err(bad());
-    }
+    let name = oc_proto::clean_name(&req.name).ok_or_else(bad)?;
 
     // Nonce first: whatever happens next, this nonce cannot be tried again.
     if !state.take_nonce(&req.nonce) {
@@ -443,6 +436,24 @@ async fn session_member(
         .with_store(move |s| s.session_member(&hash))
         .await?
         .ok_or(ApiError(ErrorCode::Unauthorized))
+}
+
+/// `PUT /api/v1/members/me/name`: what the member is called from now on (ADR-0057). A name
+/// the camp would refuse at login is `bad_request` here too.
+async fn put_name(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Json<SetName>, JsonRejection>,
+) -> Result<StatusCode, ApiError> {
+    let Json(req) = body?;
+    let member = session_member(&state, &headers).await?;
+    let name = oc_proto::clean_name(&req.name).ok_or(ApiError(ErrorCode::BadRequest))?;
+    state
+        .manager
+        .set_member_name(&member.user_id, name)
+        .await
+        .map_err(manage_error)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `PUT /api/v1/members/me/avatar`: the member's own avatar, the picture itself as the

@@ -29,6 +29,7 @@ export default defineConfig({
         chat: fileURLToPath(new URL("chat.html", import.meta.url)),
         stream: fileURLToPath(new URL("stream.html", import.meta.url)),
         "stream-start": fileURLToPath(new URL("stream-start.html", import.meta.url)),
+        settings: fileURLToPath(new URL("settings.html", import.meta.url)),
       },
     },
   },

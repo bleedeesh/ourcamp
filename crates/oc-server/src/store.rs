@@ -552,6 +552,18 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// Renames `user_id`. `false` when there is no such member.
+    ///
+    /// # Errors
+    /// On database failure.
+    pub fn set_member_name(&self, user_id: &str, name: &str) -> StoreResult<bool> {
+        let changed = self.conn.execute(
+            "UPDATE members SET name = ?2 WHERE user_id = ?1",
+            params![user_id, name],
+        )?;
+        Ok(changed > 0)
+    }
+
     /// Drops `user_id`'s avatar; they show their initial again.
     ///
     /// # Errors

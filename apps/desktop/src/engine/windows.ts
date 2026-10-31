@@ -13,6 +13,15 @@ export async function openChatWindow(): Promise<void> {
   window.open("/chat.html", "ourcamp-chat", "popup,width=420,height=660");
 }
 
+/** Opens the settings window (ADR-0057), or brings it forward. */
+export async function openSettingsWindow(): Promise<void> {
+  if (isTauri()) {
+    await invoke("settings_window_open");
+    return;
+  }
+  window.open("/settings.html", "ourcamp-settings", "popup,width=720,height=600");
+}
+
 /** Opens the window "Начать стрим" (ADR-0054), or brings it forward. */
 export async function openStreamStartWindow(): Promise<void> {
   if (isTauri()) {

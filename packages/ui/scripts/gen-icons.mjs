@@ -21,6 +21,8 @@ const ICONS = {
   chat: ["message-square", "same"],
   screen: ["monitor", '<rect width="20" height="14" x="2" y="3" rx="2" />'],
   users: ["users", '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2z" /><circle cx="9" cy="7" r="4" />'],
+  user: ["user", '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2z" /><circle cx="12" cy="7" r="4" />'],
+  keyboard: ["keyboard", null],
   chevron: ["chevron-down", null],
   back: ["chevron-left", null],
   minimize: ["minus", null],

@@ -21,6 +21,9 @@ const CAMP_DIRECTIVE_EVENT = "camp://directive";
 /** Event emitted by `src-tauri/src/lib.rs` (`CAMP_CHAT_EVENT`). */
 const CAMP_CHAT_EVENT = "camp://chat";
 
+/** Event emitted by `src-tauri/src/commands.rs` (`PROFILE_CHANGED_EVENT`). */
+const PROFILE_CHANGED_EVENT = "profile://changed";
+
 /** Camp commands of `src-tauri/src/commands.rs`. */
 export class TauriCampApi implements CampApi {
   list(): Promise<CampList> {
@@ -58,6 +61,14 @@ export class TauriCampApi implements CampApi {
 
   setProfileAvatar(picture: Uint8Array | null): Promise<void> {
     return invoke("profile_set_avatar", { picture: picture === null ? null : encodeBase64Url(picture) });
+  }
+
+  setProfileName(name: string): Promise<void> {
+    return invoke("profile_set_name", { name });
+  }
+
+  onProfileChanged(listener: () => void): () => void {
+    return subscribe<null>(PROFILE_CHANGED_EVENT, () => listener());
   }
 
   async avatar(id: string, userId: string, hash: string): Promise<Uint8Array> {
