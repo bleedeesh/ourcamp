@@ -86,6 +86,9 @@
   align-items: center;
   gap: 6px;
   color: var(--text-faint);
+}
+
+.stream-panel__volume[data-off] {
   opacity: 0.5;
 }
 

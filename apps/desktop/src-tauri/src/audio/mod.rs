@@ -6,10 +6,12 @@ pub mod input;
 pub mod output;
 pub mod synthetic;
 
-/// Identifies one mixer source. Stream audio gets its own variant (and therefore its
-/// own local volume, independent of the member's voice) when streams land in M6.
+/// Identifies one mixer source. The sound of a stream has its own, and therefore its own
+/// local volume, independent of the member's voice (ADR-0055).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceKey {
     /// Microphone track of a member.
     Voice(String),
+    /// The sound of the stream being watched; one at a time, like the viewer's window.
+    Stream,
 }

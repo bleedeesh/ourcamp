@@ -142,6 +142,8 @@ struct Live {
     disconnect_listener: Option<DisconnectListener>,
     link_listener: Option<LinkListener>,
     stream_listener: Option<StreamListener>,
+    /// Local volume of the sound of streams, percent; the viewer's page sets it.
+    stream_volume: f32,
     link: LinkRelay,
     next_session_id: u64,
     next_stream: u64,
@@ -191,9 +193,52 @@ impl Live {
         }
     }
 
-    fn announce_stream(&self, live: bool, ended: Option<String>) {
+    fn announce_stream(&self, live: bool, note: Option<String>) {
         if let Some(listener) = &self.stream_listener {
-            listener(OwnStream { live, ended });
+            listener(OwnStream { live, note });
+        }
+    }
+}
+
+/// Where the viewer puts the sound of the stream it shows (ADR-0055).
+#[derive(Clone)]
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "the viewer is Windows only until step 6")
+)]
+pub struct StreamOutlet {
+    live: Weak<Mutex<Live>>,
+    /// What the mixer plays at.
+    pub rate: u32,
+}
+
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "the viewer is Windows only until step 6")
+)]
+impl StreamOutlet {
+    /// A mixer source for the sound, replacing a stale one. `None` if the mixer refused.
+    pub fn open(&self) -> Option<SourceInput> {
+        let live = self.live.upgrade()?;
+        let mut live = lock(&live);
+        let gain = percent_to_gain(live.stream_volume);
+        let _ = live.mixer.remove_source(&SourceKey::Stream);
+        match live
+            .mixer
+            .add_source(SourceKey::Stream, Layout::Stereo, gain)
+        {
+            Ok(input) => Some(input),
+            Err(e) => {
+                eprintln!("[oc-stream] cannot play the sound: {e}");
+                None
+            }
+        }
+    }
+
+    /// The sound is over.
+    pub fn close(&self) {
+        if let Some(live) = self.live.upgrade() {
+            let _ = lock(&live).mixer.remove_source(&SourceKey::Stream);
         }
     }
 }
@@ -252,6 +297,7 @@ impl Engine {
                 disconnect_listener: None,
                 link_listener: None,
                 stream_listener: None,
+                stream_volume: 100.0,
                 link: LinkRelay::default(),
                 next_session_id: 0,
                 next_stream: 0,
@@ -445,6 +491,7 @@ impl Engine {
         kind: SourceKind,
         id: u64,
         quality: StreamQuality,
+        sound: bool,
     ) -> Result<(), String> {
         let _transition = self.transitions.lock().await;
         let (room, previous) = {
@@ -455,7 +502,7 @@ impl Engine {
         if let Some(previous) = previous {
             previous.stream.stop().await;
         }
-        let mut stream = match ScreenStream::start(room, kind, id, quality).await {
+        let mut stream = match ScreenStream::start(room, kind, id, quality, sound).await {
             Ok(stream) => stream,
             Err(e) => {
                 self.lock().announce_stream(false, None);
@@ -463,6 +510,7 @@ impl Engine {
             }
         };
         let ended = stream.ended();
+        let note = stream.sound_problem();
         let serial = {
             let mut live = self.lock();
             live.next_stream += 1;
@@ -471,7 +519,7 @@ impl Engine {
             if let Some(session) = live.session.as_mut() {
                 session.stream = Some(Outgoing { serial, stream });
             }
-            live.announce_stream(true, None);
+            live.announce_stream(true, note);
             serial
         };
         let engine = self.clone();
@@ -541,7 +589,11 @@ impl Engine {
         }
         let window = crate::windows::open_stream(app, &name)
             .map_err(|e| format!("Не удалось открыть окно стрима: {e}"))?;
-        let viewer = match Viewer::start(room, user_id, name, window.clone()).await {
+        let outlet = StreamOutlet {
+            live: Arc::downgrade(&self.live),
+            rate: self.lock().output_rate,
+        };
+        let viewer = match Viewer::start(room, user_id, name, window.clone(), outlet).await {
             Ok(viewer) => viewer,
             Err(e) => {
                 let _ = window.destroy();
@@ -586,6 +638,16 @@ impl Engine {
         if let Some(viewer) = live.session.as_ref().and_then(|s| s.viewer.as_ref()) {
             viewer.place(x, y, width, height);
         }
+    }
+
+    /// Sets the local volume of the sound of streams, now and for the next one.
+    pub fn set_stream_volume(&self, percent: f32) {
+        let mut live = self.lock();
+        live.stream_volume = percent;
+        // No sound playing yet is fine: `StreamOutlet::open` reads the value.
+        let _ = live
+            .mixer
+            .set_gain(&SourceKey::Stream, percent_to_gain(percent));
     }
 
     /// Sets a member's local volume, now and for whenever they (re)appear.

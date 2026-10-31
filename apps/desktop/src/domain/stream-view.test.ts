@@ -1,9 +1,42 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { physicalRect, qualityText, viewersText, waitingText, type ViewStatus } from "./stream-view.ts";
+import {
+  DEFAULT_STREAM_VOLUME,
+  physicalRect,
+  qualityText,
+  readStreamVolume,
+  saveStreamVolume,
+  viewersText,
+  waitingText,
+  type ViewStatus,
+} from "./stream-view.ts";
 
-const live: ViewStatus = { live: true, height: 1080, fps: 60, viewers: 3 };
-const off: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1 };
+const live: ViewStatus = { live: true, height: 1080, fps: 60, viewers: 3, sound: true };
+const off: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false };
+
+test("the volume of streams is remembered, and a bad memory gives the default", () => {
+  const stored = new Map<string, string>();
+  const storage = { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => void stored.set(k, v) };
+  assert.equal(readStreamVolume(storage), DEFAULT_STREAM_VOLUME);
+  saveStreamVolume(storage, 35);
+  assert.equal(readStreamVolume(storage), 35);
+  saveStreamVolume(storage, 0);
+  assert.equal(readStreamVolume(storage), 0, "silence is a real choice");
+  stored.set("ourcamp.streamVolume", "громко");
+  assert.equal(readStreamVolume(storage), DEFAULT_STREAM_VOLUME);
+  stored.set("ourcamp.streamVolume", "900");
+  assert.equal(readStreamVolume(storage), DEFAULT_STREAM_VOLUME);
+  const broken = {
+    getItem: () => {
+      throw new Error("denied");
+    },
+    setItem: () => {
+      throw new Error("denied");
+    },
+  };
+  assert.equal(readStreamVolume(broken), DEFAULT_STREAM_VOLUME);
+  saveStreamVolume(broken, 10);
+});
 
 test("the quality shows only while there is a picture", () => {
   assert.equal(qualityText(live), "1080p · 60 fps");

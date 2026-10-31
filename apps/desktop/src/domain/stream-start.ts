@@ -93,6 +93,11 @@ export function uploadText(bitsPerSecond: number, others: number): string {
   return `${each} При ${others} ${one ? "зрителе" : "зрителях"} это до ${total} Мбит/с исходящего канала; на домашнем сервере — канала хозяина.`;
 }
 
+/** Whose sound goes out with a source (ADR-0055). */
+export function soundHint(kind: StreamSource["kind"]): string {
+  return kind === "screen" ? "Звук всего компьютера, кроме голосов в OurCamp" : "Только звук этого приложения";
+}
+
 /** 1440p is measured on a fast video card only (ADR-0054): the streamer should know. */
 export function heavyText(height: number): string | null {
   return height >= 1440 ? "1440p нагружает компьютер сильнее: на слабом частота кадров у зрителей упадёт." : null;

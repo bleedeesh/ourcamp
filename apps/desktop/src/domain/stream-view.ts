@@ -8,6 +8,8 @@ export interface ViewStatus {
   readonly fps: number;
   /** How many are watching, you included. */
   readonly viewers: number;
+  /** The stream comes with sound. */
+  readonly sound: boolean;
 }
 
 /** Who the window shows, and how it is going. */
@@ -33,6 +35,31 @@ export function viewersText(viewers: number): string {
 export function waitingText(status: ViewStatus, seen: boolean): string {
   if (status.live) return "";
   return seen ? "Стрим закончился" : "Подключаемся к стриму…";
+}
+
+/** What the volume of streams starts at, as in the mockup. */
+export const DEFAULT_STREAM_VOLUME = 70;
+
+const STREAM_VOLUME_KEY = "ourcamp.streamVolume";
+
+/** The volume of streams as last set on this device; browser storage may fail, or lie. */
+export function readStreamVolume(storage: Pick<Storage, "getItem">): number {
+  try {
+    const stored = storage.getItem(STREAM_VOLUME_KEY);
+    const volume = stored === null ? Number.NaN : Number(stored);
+    return Number.isFinite(volume) && volume >= 0 && volume <= 100 ? volume : DEFAULT_STREAM_VOLUME;
+  } catch {
+    return DEFAULT_STREAM_VOLUME;
+  }
+}
+
+/** A failed write costs only the memory of this value. */
+export function saveStreamVolume(storage: Pick<Storage, "setItem">, volume: number): void {
+  try {
+    storage.setItem(STREAM_VOLUME_KEY, String(volume));
+  } catch {
+    // Nothing to do: the sound itself is already at this volume.
+  }
 }
 
 /** The picture's rectangle in the window's pixels, from the page's CSS pixels. */

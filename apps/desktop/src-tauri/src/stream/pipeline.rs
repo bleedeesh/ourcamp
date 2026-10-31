@@ -25,6 +25,7 @@ use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
 use super::mf::{EncoderChoice, EncoderSettings, H264Encoder};
+use super::sound::StreamSound;
 use super::{bitrate, SourceKind, StreamQuality, StreamSource};
 
 /// The first frame must come within this, or the source is not there to capture.
@@ -204,10 +205,13 @@ pub struct ScreenStream {
     room: Arc<Room>,
     track_sid: livekit::id::TrackSid,
     ended: Option<oneshot::Receiver<()>>,
+    sound: Option<StreamSound>,
+    sound_problem: Option<String>,
 }
 
 impl ScreenStream {
-    /// Starts streaming a screen or window into `room`.
+    /// Starts streaming a screen or window into `room`, with its `sound` if asked. Without
+    /// sound is still a stream: see [`Self::sound_problem`].
     ///
     /// # Errors
     /// The source is gone, no encoder works, or the room refused the track (forbidden to
@@ -217,11 +221,27 @@ impl ScreenStream {
         kind: SourceKind,
         id: u64,
         quality: StreamQuality,
+        sound: bool,
     ) -> Result<Self, String> {
-        Self::run(room, quality, EncoderChoice::Best, move || {
+        let mut stream = Self::run(room, quality, EncoderChoice::Best, move || {
             Ok(Box::new(Desktop::open(kind, id, quality)?) as Box<dyn Frames>)
         })
-        .await
+        .await?;
+        if sound {
+            match StreamSound::start(Arc::clone(&stream.room), kind, id).await {
+                Ok(sound) => stream.sound = Some(sound),
+                Err(e) => {
+                    eprintln!("[oc-stream] sound: {e}");
+                    stream.sound_problem = Some(format!("Стрим идёт без звука: {e}"));
+                }
+            }
+        }
+        Ok(stream)
+    }
+
+    /// Why the sound that was asked for did not start.
+    pub fn sound_problem(&self) -> Option<String> {
+        self.sound_problem.clone()
     }
 
     async fn run(
@@ -293,6 +313,8 @@ impl ScreenStream {
             room,
             track_sid: publication.sid(),
             ended: Some(ended),
+            sound: None,
+            sound_problem: None,
         })
     }
 
@@ -304,6 +326,9 @@ impl ScreenStream {
 
     /// Stops the stream and takes it out of the room.
     pub async fn stop(mut self) {
+        if let Some(sound) = self.sound.take() {
+            sound.stop().await;
+        }
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = tauri::async_runtime::spawn_blocking(move || thread.join()).await;
@@ -721,6 +746,7 @@ mod tests {
                 screen.kind,
                 screen.id,
                 q(height, fps),
+                false,
             )
             .await
             .unwrap();
@@ -743,9 +769,113 @@ mod tests {
         });
     }
 
-    /// The whole road, but for the screen: encoder, pre-encoded track, a real LiveKit through
-    /// the camp's pinned port, and another member decoding what arrives. The size and the
-    /// count come out of the decoder, so a stream nobody can decode fails here.
+    /// A tone on each side, and nothing else, must arrive each on its own side: stereo is
+    /// not a given, the encoder takes it from the negotiation. The streamer's microphone is
+    /// published first, as in a real channel, and stays mono.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn the_sound_of_a_stream_reaches_a_viewer_in_stereo() {
+        use crate::stream::sound::tests::{
+            test_publish, test_send, test_source, tone_in, TEST_FRAME, TEST_RATE,
+        };
+        use futures_util::StreamExt;
+        use livekit::options::TrackPublishOptions;
+        use livekit::track::{LocalAudioTrack, LocalTrack, RemoteTrack, TrackSource as Source};
+        use livekit::webrtc::audio_source::native::NativeAudioSource;
+        use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
+        use livekit::webrtc::audio_stream::native::NativeAudioStream;
+
+        const LEFT: f64 = 440.0;
+        const RIGHT: f64 = 1000.0;
+        tauri::async_runtime::block_on(async {
+            let mut room = Audience::gather("stream-sound").await;
+            let mic_source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let mic =
+                LocalAudioTrack::create_audio_track("mic", RtcAudioSource::Native(mic_source));
+            room.streamer
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Audio(mic.clone()),
+                    TrackPublishOptions {
+                        source: Source::Microphone,
+                        ..TrackPublishOptions::default()
+                    },
+                )
+                .await
+                .expect("the microphone is published");
+            let source = test_source();
+            test_publish(&room.streamer, source.clone()).await;
+            let sending = Arc::new(AtomicBool::new(true));
+            let feeder = std::thread::spawn({
+                let sending = Arc::clone(&sending);
+                move || {
+                    let mut n = 0.0_f64;
+                    let mut next = Instant::now();
+                    let mut frame = vec![0_i16; TEST_FRAME];
+                    while sending.load(Ordering::Relaxed) {
+                        for pair in frame.as_chunks_mut::<2>().0 {
+                            let at = std::f64::consts::TAU * n / TEST_RATE;
+                            pair[0] = (6000.0 * (at * LEFT).sin()) as i16;
+                            pair[1] = (6000.0 * (at * RIGHT).sin()) as i16;
+                            n += 1.0;
+                        }
+                        test_send(&source, &frame);
+                        next += Duration::from_millis(10);
+                        std::thread::sleep(next.saturating_duration_since(Instant::now()));
+                    }
+                }
+            });
+            let streamer = room.streamer.local_participant().identity();
+            let track = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if let Some(livekit::RoomEvent::TrackSubscribed {
+                        track: RemoteTrack::Audio(track),
+                        publication,
+                        participant,
+                    }) = room.events.recv().await
+                    {
+                        if participant.identity() == streamer
+                            && publication.source() == Source::ScreenshareAudio
+                        {
+                            return track;
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("the sound arrives");
+            let mut stream = NativeAudioStream::new(track.rtc_track(), 48_000, 2);
+            let mut heard: Vec<i16> = Vec::new();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(3) {
+                let frame = tokio::time::timeout(Duration::from_secs(2), stream.next())
+                    .await
+                    .expect("frames keep coming")
+                    .expect("the track goes on");
+                // The first second settles the decoder.
+                if started.elapsed() > Duration::from_secs(1) {
+                    heard.extend_from_slice(&frame.data);
+                }
+            }
+            sending.store(false, Ordering::Relaxed);
+            feeder.join().unwrap();
+            let on_left = (tone_in(&heard, 0, 2, LEFT), tone_in(&heard, 0, 2, RIGHT));
+            let on_right = (tone_in(&heard, 1, 2, LEFT), tone_in(&heard, 1, 2, RIGHT));
+            eprintln!("left {on_left:.0?}, right {on_right:.0?}");
+            assert!(on_left.0 > 3000.0, "the left tone on the left: {on_left:?}");
+            assert!(
+                on_right.1 > 3000.0,
+                "the right tone on the right: {on_right:?}"
+            );
+            assert!(on_left.1 < 600.0, "no right tone on the left: {on_left:?}");
+            assert!(
+                on_right.0 < 600.0,
+                "no left tone on the right: {on_right:?}"
+            );
+            room.leave().await;
+        });
+    }
+
     #[test]
     #[ignore = "needs a local LiveKit: `pnpm livekit`"]
     fn a_stream_says_when_its_source_is_gone() {

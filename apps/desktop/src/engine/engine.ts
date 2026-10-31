@@ -49,8 +49,8 @@ export interface JoinRequest {
 /** How your own stream is going, mirrors `stream::OwnStream` (ADR-0054). */
 export interface OwnStream {
   readonly live: boolean;
-  /** Why it stopped when you did not stop it: a sentence for the user. */
-  readonly ended: string | null;
+  /** What you should know and did not ask: why it stopped, or that it goes without sound. */
+  readonly note: string | null;
 }
 
 /**

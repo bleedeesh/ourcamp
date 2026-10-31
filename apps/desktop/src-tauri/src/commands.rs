@@ -99,6 +99,21 @@ pub async fn stream_start_window_open(app: tauri::AppHandle) -> Result<(), Strin
         .map_err(|e| format!("Не удалось открыть окно стрима: {e}"))
 }
 
+/// Whether a stream can go with its sound on this system (ADR-0055).
+#[tauri::command]
+pub async fn stream_sound_available() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(crate::stream::sound_available)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Local volume of the sound of streams, percent.
+#[tauri::command]
+pub fn stream_volume(state: State<'_, EngineState>, percent: f32) -> Result<(), String> {
+    engine(&state)?.set_stream_volume(percent);
+    Ok(())
+}
+
 /// Starts streaming a screen or window into the channel.
 #[tauri::command]
 pub async fn stream_start(
@@ -106,9 +121,10 @@ pub async fn stream_start(
     kind: crate::stream::SourceKind,
     id: u64,
     quality: crate::stream::StreamQuality,
+    sound: bool,
 ) -> Result<(), String> {
     engine(&state)?
-        .start_stream(kind, id, quality)
+        .start_stream(kind, id, quality, sound)
         .await
         .inspect_err(|e| eprintln!("[ourcamp] stream: {e}"))
 }

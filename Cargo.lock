@@ -2833,8 +2833,6 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 [[package]]
 name = "livekit"
 version = "0.9.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "597d8bae50d9de78c82d93b367b17bf08d62b0cd53727d493d7e56e8d3e58665"
 dependencies = [
  "bmrng",
  "bytes",
@@ -3737,6 +3735,7 @@ dependencies = [
  "tokio",
  "wgpu",
  "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

@@ -81,8 +81,8 @@ export class VoiceController {
       // A report racing a leave must not bring the line back.
       if (this.store.get().channelId !== null) this.store.patch({ link });
     });
-    this.#unsubscribeStream ??= this.#engine.onStream(({ live, ended }) => {
-      this.store.patch(ended === null ? { streaming: live } : { streaming: live, error: ended });
+    this.#unsubscribeStream ??= this.#engine.onStream(({ live, note }) => {
+      this.store.patch(note === null ? { streaming: live } : { streaming: live, error: note });
     });
   }
 

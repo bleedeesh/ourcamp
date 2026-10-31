@@ -4,7 +4,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 import { avatarColor } from "../../domain/roster.ts";
-import { physicalRect, qualityText, viewersText, waitingText, type StreamView, type ViewStatus } from "../../domain/stream-view.ts";
+import {
+  physicalRect,
+  qualityText,
+  readStreamVolume,
+  saveStreamVolume,
+  viewersText,
+  waitingText,
+  type StreamView,
+  type ViewStatus,
+} from "../../domain/stream-view.ts";
 import { isTauri } from "../../engine/tauri-engine.ts";
 
 /** Must match `VIEW_EVENT` in `src-tauri/src/stream/view/mod.rs`. */
@@ -14,12 +23,12 @@ const STREAM_INPUT_EVENT = "stream://input";
 /** Must match `READY_EVENT` there. */
 const STREAM_READY_EVENT = "stream://ready";
 
-const NOTHING_YET: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1 };
+const NOTHING_YET: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false };
 /** The demo in a browser has no stream: for the layout only. */
 const DEMO_VIEW: StreamView = {
   userId: "lena",
   name: "Лена",
-  status: { live: true, height: 1080, fps: 60, viewers: 3 },
+  status: { live: true, height: 1080, fps: 60, viewers: 3, sound: true },
 };
 
 /** The viewer's window (M6 step 3, ADR-0053): the mockup's screen 12. */
@@ -27,6 +36,7 @@ export function StreamApp() {
   const [view, setView] = useState<StreamView | null>(isTauri() ? null : DEMO_VIEW);
   const [seen, setSeen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [volume, setVolume] = useState(() => readStreamVolume(window.localStorage));
   // For the listeners, set up once: they need the value of the moment.
   const fullscreenNow = useRef(false);
   const picture = useRef<HTMLDivElement>(null);
@@ -65,6 +75,12 @@ export function StreamApp() {
       stopView();
     };
   }, []);
+
+  // Rust plays the sound and holds its volume; this page remembers it between sessions.
+  useEffect(() => {
+    saveStreamVolume(window.localStorage, volume);
+    if (isTauri()) void invoke("stream_volume", { percent: volume });
+  }, [volume]);
 
   useEffect(() => {
     const onInput = (input: string) => {
@@ -142,10 +158,17 @@ export function StreamApp() {
             {viewersText(status.viewers)}
           </span>
           <span className="stream-panel__spacer" />
-          {/* The sound of a stream arrives in M6 step 5. */}
-          <span className="stream-panel__volume" title="Звук стрима появится позже">
+          <span className="stream-panel__volume" data-off={!status.sound || undefined} title={status.sound ? undefined : "Этот стрим идёт без звука"}>
             <Icon name="speaker" size={16} />
-            <input type="range" min="0" max="100" defaultValue="70" aria-label="Громкость стрима" disabled />
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={volume}
+              aria-label="Громкость стрима"
+              disabled={!status.sound}
+              onChange={(e) => setVolume(Number(e.target.value))}
+            />
           </span>
           <button type="button" className="stream-panel__button" aria-label="Во весь экран" onClick={() => setWindowFullscreen(true)}>
             <Icon name="fullscreen" size={18} />
