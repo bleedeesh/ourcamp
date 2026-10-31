@@ -76,6 +76,36 @@ pub async fn voice_join_channel(
     result.inspect_err(|e| eprintln!("[ourcamp] join {camp_id}/{channel_id}: {e}"))
 }
 
+/// The screens and windows that can be streamed (ADR-0049). Off the main thread: asking
+/// the system for them takes a moment.
+#[tauri::command]
+pub async fn stream_sources() -> Result<Vec<crate::stream::StreamSource>, String> {
+    tauri::async_runtime::spawn_blocking(crate::stream::list_sources)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Starts streaming a screen or window into the channel.
+#[tauri::command]
+pub async fn stream_start(
+    state: State<'_, EngineState>,
+    kind: crate::stream::SourceKind,
+    id: u64,
+    quality: crate::stream::StreamQuality,
+) -> Result<(), String> {
+    engine(&state)?
+        .start_stream(kind, id, quality)
+        .await
+        .inspect_err(|e| eprintln!("[ourcamp] stream: {e}"))
+}
+
+/// Stops the stream.
+#[tauri::command]
+pub async fn stream_stop(state: State<'_, EngineState>) -> Result<(), String> {
+    engine(&state)?.stop_stream().await;
+    Ok(())
+}
+
 /// Leaves the current channel.
 #[tauri::command]
 pub async fn voice_leave_channel(state: State<'_, EngineState>) -> Result<(), String> {

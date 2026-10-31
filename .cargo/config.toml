@@ -6,3 +6,20 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# The prebuilt libwebrtc adds methods to system classes through Objective-C categories. The
+# linker drops those from a static library unless told otherwise, and creating the
+# PeerConnectionFactory then aborts the process. See docs/decisions/0052-macos-objc-link-flag.md.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-ObjC"]
+
+# webrtc-sys compiles its C++ with libwebrtc's _HAS_EXCEPTIONS=0, and in that mode MSVC's
+# std::runtime_error keeps only a pointer to its text, freed before anyone can catch it.
+# 1 is MSVC's default; cc puts these flags last, so they win over webrtc-sys's own.
+# See docs/decisions/0050-webrtc-error-use-after-free.md.
+[env]
+CXXFLAGS_x86_64_pc_windows_msvc = "/D_HAS_EXCEPTIONS=1"
+CXXFLAGS_aarch64_pc_windows_msvc = "/D_HAS_EXCEPTIONS=1"

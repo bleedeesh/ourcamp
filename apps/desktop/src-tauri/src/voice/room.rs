@@ -166,6 +166,11 @@ impl VoiceRoom {
         })
     }
 
+    /// The room, for what else goes into it (a stream, ADR-0049).
+    pub fn room(&self) -> Arc<Room> {
+        Arc::clone(&self.room)
+    }
+
     /// Mutes the published microphone; others see it as muted. Callable from any
     /// thread.
     pub fn set_mic_muted(&self, muted: bool) {
@@ -417,7 +422,7 @@ async fn play(mut stream: NativeAudioStream, mut input: SourceInput) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use livekit::webrtc::audio_source::AudioSourceOptions;
     use oc_camp_client::transport::{install, PlainLoopback};
@@ -451,6 +456,34 @@ mod tests {
         })
     }
 
+    /// What the SDK does on every disconnect by the server: removes a sender from a closed
+    /// connection and gets an error from C++. Its text used to be read after being freed, and
+    /// a debug build then aborted the process now and then (ADR-0050). One call in a few hits
+    /// it, so many calls; needs no server.
+    #[test]
+    fn an_error_from_webrtc_is_read_while_alive() {
+        use livekit::webrtc::audio_source::native::NativeAudioSource;
+        use livekit::webrtc::audio_source::AudioSourceOptions;
+        use livekit::webrtc::media_stream_track::MediaStreamTrack;
+        use livekit::webrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
+        use livekit::webrtc::peer_connection_factory::{PeerConnectionFactory, RtcConfiguration};
+
+        let factory = PeerConnectionFactory::default();
+        let connection = factory
+            .create_peer_connection(RtcConfiguration::default())
+            .unwrap();
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let track = factory.create_audio_track("mic", source);
+        let sender = connection
+            .add_track(MediaStreamTrack::Audio(track), &["stream"])
+            .unwrap();
+        connection.close();
+        for _ in 0..1000 {
+            let error = connection.remove_track(sender.clone()).unwrap_err();
+            assert!(error.message.contains("closed"), "{}", error.message);
+        }
+    }
+
     #[test]
     fn ping_is_the_round_trip_of_the_pair_in_use() {
         assert_eq!(
@@ -482,7 +515,9 @@ mod tests {
 
     /// A camp server in this process (LiveKit from `pnpm livekit`), a fresh device logged
     /// in, and the room parameters for channel `c0` — the real path, pinned TLS included.
-    async fn camp_room(name: &str) -> (oc_server::Running, std::path::PathBuf, RoomParams) {
+    pub(crate) async fn camp_room(
+        name: &str,
+    ) -> (oc_server::Running, std::path::PathBuf, RoomParams) {
         install(PlainLoopback::Deny);
         let data_dir = std::env::temp_dir().join(format!("oc-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
@@ -579,7 +614,11 @@ mod tests {
                 let oc_proto::CampEvent::State(state) = event else {
                     continue;
                 };
-                if !state.presence.is_empty() {
+                // The seat can show up before the microphone does: the camp polls a moment
+                // of LiveKit's state, and on a busy machine the track comes a little later.
+                let unmuted =
+                    |p: &oc_proto::ChannelPresence| p.members.iter().any(|m| !m.mic_muted);
+                if state.presence.iter().any(unmuted) {
                     break state;
                 }
             };
@@ -587,10 +626,6 @@ mod tests {
             let sitter = &state.presence[0].members[0].user_id;
             let profile = state.members.iter().find(|m| &m.user_id == sitter).unwrap();
             assert_eq!(profile.name, "presence", "the person who joined voice");
-            assert!(
-                !state.presence[0].members[0].mic_muted,
-                "published and unmuted"
-            );
 
             // A polite leave (what the app does on exit too) frees the seat at once;
             // without it LiveKit keeps the seat until it times the connection out.

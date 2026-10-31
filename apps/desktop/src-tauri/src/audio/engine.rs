@@ -15,6 +15,7 @@ use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatu
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
+use crate::stream::{ScreenStream, SourceKind, StreamQuality};
 use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
 use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
@@ -83,6 +84,8 @@ struct Session {
     id: u64,
     room: VoiceRoom,
     mic: MicPipeline,
+    /// The screen stream going out in this session (ADR-0049).
+    stream: Option<ScreenStream>,
 }
 
 struct Live {
@@ -340,6 +343,7 @@ impl Engine {
                     id: session_id,
                     room,
                     mic,
+                    stream: None,
                 });
                 // The room measured itself while connecting, before it was ours to report.
                 if let (Some(link), Some(listener)) =
@@ -371,7 +375,13 @@ impl Engine {
             live.local_level = None;
             live.session.take()
         };
-        if let Some(Session { room, mic, .. }) = session {
+        if let Some(Session {
+            room, mic, stream, ..
+        }) = session
+        {
+            if let Some(stream) = stream {
+                stream.stop().await;
+            }
             room.close().await;
             mic.stop();
         }
@@ -379,6 +389,43 @@ impl Engine {
         let result = live.clear_voices().map_err(mixer_error);
         live.announce(Vec::new());
         result
+    }
+
+    /// Starts streaming a screen or window into the channel, replacing a stream already
+    /// going (ADR-0049).
+    ///
+    /// # Errors
+    /// Not in a channel, or the stream could not start; as text for the UI.
+    pub async fn start_stream(
+        &self,
+        kind: SourceKind,
+        id: u64,
+        quality: StreamQuality,
+    ) -> Result<(), String> {
+        let _transition = self.transitions.lock().await;
+        let (room, previous) = {
+            let mut live = self.lock();
+            let session = live.session.as_mut().ok_or("Сначала зайдите в канал")?;
+            (session.room.room(), session.stream.take())
+        };
+        if let Some(previous) = previous {
+            previous.stop().await;
+        }
+        let stream = ScreenStream::start(room, kind, id, quality).await?;
+        // Leaving takes `transitions` too, so the session is the same one.
+        if let Some(session) = self.lock().session.as_mut() {
+            session.stream = Some(stream);
+        }
+        Ok(())
+    }
+
+    /// Stops the stream, if one is going.
+    pub async fn stop_stream(&self) {
+        let _transition = self.transitions.lock().await;
+        let stream = self.lock().session.as_mut().and_then(|s| s.stream.take());
+        if let Some(stream) = stream {
+            stream.stop().await;
+        }
     }
 
     /// Sets a member's local volume, now and for whenever they (re)appear.
@@ -564,7 +611,13 @@ impl RoomHost for Host {
                 live.local_level = None;
                 live.session.take()
             };
-            if let Some(Session { room, mic, .. }) = session {
+            if let Some(Session {
+                room, mic, stream, ..
+            }) = session
+            {
+                if let Some(stream) = stream {
+                    stream.stop().await;
+                }
                 room.close().await;
                 mic.stop();
             }

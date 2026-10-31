@@ -4,6 +4,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use oc_camp_client::{CampClient, ClientError, DeviceKey, Trust};
 use oc_invite::{Fingerprint, Host, Invite, InviteKind};
@@ -447,11 +448,7 @@ async fn only_signalling_is_exposed_not_the_rest_of_livekit() {
 
 #[tokio::test]
 async fn livekit_down_is_a_bad_gateway_not_a_hang() {
-    // A port nothing listens on.
-    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let upstream = format!("ws://{}", free.local_addr().unwrap());
-    drop(free);
-    let camp = camp_with_upstream(&upstream).await;
+    let camp = camp_with_upstream(&livekit_down()).await;
     let (addr, pin) = (camp.running.local_addr, camp.running.fingerprint);
     let (status, _) = raw(addr, pin, "GET", "/rtc/validate", None).await.unwrap();
     assert_eq!(status, 502);
@@ -694,10 +691,7 @@ async fn the_event_stream_is_for_members_only() {
 
 #[tokio::test]
 async fn with_livekit_down_the_camp_still_streams_its_members() {
-    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let upstream = format!("ws://{}", free.local_addr().unwrap());
-    drop(free);
-    let camp = camp_with_upstream(&upstream).await;
+    let camp = camp_with_upstream(&livekit_down()).await;
     let client = camp.client();
     let session = client
         .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
@@ -1328,10 +1322,7 @@ async fn control_status_where(
 async fn the_owner_commands_the_running_camp_from_its_data_directory() {
     use oc_server::control::{CallError, Command, ControlClient, CONTROL_FILE};
 
-    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let upstream = format!("ws://{}", free.local_addr().unwrap());
-    drop(free);
-    let camp = camp_with_upstream(&upstream).await;
+    let camp = camp_with_upstream(&livekit_down()).await;
     let client = camp.client();
     let lena = DeviceKey::generate();
     client
@@ -1414,9 +1405,16 @@ async fn the_owner_commands_the_running_camp_from_its_data_directory() {
 // ---- a domain with a certificate from an authority (ADR-0042) ----
 
 /// A LiveKit address nothing listens on: presence fails at once instead of timing out.
+/// The port stays bound, without listening, for the whole run. Freed, it could go to the
+/// camp of a test running alongside, and that camp would answer as LiveKit.
 fn livekit_down() -> String {
-    let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    format!("ws://{}", free.local_addr().unwrap())
+    static PORT: LazyLock<(tokio::net::TcpSocket, String)> = LazyLock::new(|| {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+        let address = format!("ws://{}", socket.local_addr().unwrap());
+        (socket, address)
+    });
+    PORT.1.clone()
 }
 
 /// Listens on `[::1]`: Windows resolves `localhost` there first and takes ~2 s to give up

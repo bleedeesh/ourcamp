@@ -8,6 +8,7 @@ mod camps;
 mod commands;
 mod levels;
 mod participants;
+mod stream;
 mod voice;
 mod windows;
 
@@ -136,6 +137,9 @@ pub fn run() {
             commands::voice_set_local_mute,
             commands::voice_set_mic_muted,
             commands::voice_set_deafened,
+            commands::stream_sources,
+            commands::stream_start,
+            commands::stream_stop,
             commands::camp_list,
             commands::camp_preview,
             commands::camp_join,
