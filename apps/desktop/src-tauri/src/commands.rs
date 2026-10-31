@@ -329,9 +329,11 @@ pub fn chat_context(
     Ok(camps(&state)?.chat_context())
 }
 
-/// Opens the chat window beside the main one, or brings it forward.
+/// Opens the chat window beside the main one, or brings it forward. `async` is what makes
+/// this work: a command without it runs on the main thread, and creating a window there
+/// deadlocks on Windows (`WebView2`) — the whole app stops, tray and close button included.
 #[tauri::command]
-pub fn chat_window_open(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn chat_window_open(app: tauri::AppHandle) -> Result<(), String> {
     crate::windows::open_chat(&app).map_err(|e| format!("Не удалось открыть окно чата: {e}"))
 }
 

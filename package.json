@@ -16,6 +16,6 @@
     "server:pack": "node dev/pack-server.ts",
     "test": "pnpm -r test && cargo test",
     "typecheck": "pnpm -r typecheck",
-    "lint:rust": "cargo clippy --all-targets -- -D warnings && cargo fmt --check"
+    "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check"
   }
 }

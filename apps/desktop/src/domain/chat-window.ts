@@ -290,7 +290,9 @@ export class ChatController {
     const { threads, latest } = this.store.get();
     for (const [chatId, thread] of Object.entries(threads)) {
       const last = latest[chatId] ?? 0;
-      if (thread.messages.length > 0 && gapBefore(thread.messages, last + 1) > 0) void this.#fill(chatId, last);
+      if (!(thread.loading && thread.messages.length === 0) && gapBefore(thread.messages, last + 1) > 0) {
+        void this.#fill(chatId, last);
+      }
     }
   }
 
@@ -332,8 +334,9 @@ export class ChatController {
     const { channelId, seq } = incoming;
     this.store.patch({ latest: advance(this.store.get().latest, channelId, seq) });
     const thread = this.store.get().threads[channelId];
-    // A chat never opened here is fetched whole when it is.
-    if (!thread || thread.messages.length === 0) return;
+    // A chat never opened here is fetched whole when it is; one being fetched checks
+    // `latest` when its page comes. An open chat with nothing in it takes its first.
+    if (!thread || (thread.loading && thread.messages.length === 0)) return;
     if (gapBefore(thread.messages, seq) === 0) {
       this.#setThread(channelId, { ...thread, messages: mergeMessages(thread.messages, [incoming]) });
     } else {
@@ -377,6 +380,9 @@ export class ChatController {
         error: null,
         unreadAfter: read[chatId] ?? 0,
       });
+      // Written while the page was on its way: it may not be on the page.
+      const latest = this.store.get().latest[chatId] ?? 0;
+      if (latest > last) void this.#fill(chatId, latest);
     } catch (err) {
       if (generation === this.#generation) this.#setThread(chatId, { ...EMPTY_THREAD, error: message(err) });
     }
