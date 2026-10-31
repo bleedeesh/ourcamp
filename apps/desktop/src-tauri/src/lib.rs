@@ -156,6 +156,8 @@ pub fn run() {
             commands::voice_set_mic_muted,
             commands::voice_set_deafened,
             commands::stream_sources,
+            commands::stream_qualities,
+            commands::stream_start_window_open,
             commands::stream_start,
             commands::stream_stop,
             commands::stream_watch,

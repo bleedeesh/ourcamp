@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoderBackend, VideoEncoding};
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource};
 use livekit::webrtc::desktop_capturer::{
-    CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions, DesktopFrame,
+    CaptureError, CaptureSource, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
+    DesktopFrame,
 };
 use livekit::webrtc::native::yuv_helper;
 use livekit::webrtc::video_frame::{
@@ -20,22 +21,33 @@ use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
 use livekit::Room;
 use tokio::sync::oneshot;
+use windows::Win32::Foundation::HWND;
+use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
 use super::mf::{EncoderChoice, EncoderSettings, H264Encoder};
-use super::{SourceKind, StreamQuality, StreamSource};
+use super::{bitrate, SourceKind, StreamQuality, StreamSource};
 
 /// The first frame must come within this, or the source is not there to capture.
 const FIRST_FRAME: Duration = Duration::from_secs(5);
 /// `WebRTC` may ask for little on a bad link; below this the picture is mush anyway.
 const MIN_BITRATE: u32 = 300_000;
 
-/// Bits per second for a quality (ADR-0049).
-const fn bitrate(quality: StreamQuality) -> u32 {
-    match (quality.height >= 1080, quality.fps >= 60) {
-        (true, true) => 6_000_000,
-        (true, false) | (false, true) => 4_000_000,
-        (false, false) => 2_500_000,
-    }
+/// Bits per second for a picture of `height` at this quality: a 1080p screen under the
+/// choice of 1440p, or a small window, needs no more than its own size asks (ADR-0054).
+const fn rate_for(quality: StreamQuality, height: u32) -> u32 {
+    let row = match height {
+        ..=720 => 720,
+        721..=1080 => 1080,
+        _ => 1440,
+    };
+    bitrate(StreamQuality {
+        height: if row < quality.height {
+            row
+        } else {
+            quality.height
+        },
+        fps: quality.fps,
+    })
 }
 
 /// The source's size brought down to fit the quality: proportions kept, never enlarged,
@@ -56,6 +68,10 @@ fn fit(width: u32, height: u32, quality: StreamQuality) -> (u32, u32) {
 trait Frames {
     /// The next frame at the chosen size; `None` when none is ready yet.
     fn next(&mut self) -> Option<I420Buffer>;
+    /// The source will never give another frame: its window was closed.
+    fn gone(&self) -> bool {
+        false
+    }
 }
 
 /// A frame from the capturer, at the chosen size.
@@ -92,6 +108,9 @@ fn to_i420(frame: &DesktopFrame, quality: StreamQuality) -> Option<I420Buffer> {
 struct Desktop {
     capturer: DesktopCapturer,
     frames: mpsc::Receiver<I420Buffer>,
+    gone: Arc<AtomicBool>,
+    /// The captured window, when it is one: a source's id on Windows is its handle.
+    window: Option<HWND>,
 }
 
 impl Desktop {
@@ -103,14 +122,25 @@ impl Desktop {
             .find(|s| s.id() == id)
             .ok_or("Этого экрана или окна больше нет")?;
         let (sender, frames) = mpsc::channel();
-        capturer.start_capture(Some(source), move |result| {
+        let gone = Arc::new(AtomicBool::new(false));
+        let gone_now = Arc::clone(&gone);
+        capturer.start_capture(Some(source), move |result| match result {
+            Ok(frame) => {
+                if let Some(buffer) = to_i420(&frame, quality) {
+                    let _ = sender.send(buffer);
+                }
+            }
             // A failed frame is skipped: the next tick asks again, and the thread
             // stops by itself when frames stay away at the start.
-            if let Some(buffer) = result.ok().and_then(|f| to_i420(&f, quality)) {
-                let _ = sender.send(buffer);
-            }
+            Err(CaptureError::Temporary) => {}
+            Err(CaptureError::Permanent) => gone_now.store(true, Ordering::Relaxed),
         });
-        Ok(Self { capturer, frames })
+        Ok(Self {
+            capturer,
+            frames,
+            gone,
+            window: (kind == SourceKind::Window).then_some(HWND(id as *mut _)),
+        })
     }
 }
 
@@ -118,6 +148,17 @@ impl Frames for Desktop {
     fn next(&mut self) -> Option<I420Buffer> {
         self.capturer.capture_frame();
         self.frames.try_recv().ok()
+    }
+
+    /// The capturer's word, and the window's own: on a closed window the capturer may only
+    /// go on with temporary errors (ADR-0054). Not the list of sources: it also leaves out
+    /// a window that is merely hidden or on another virtual desktop.
+    fn gone(&self) -> bool {
+        // SAFETY: `IsWindow` takes any value and only answers whether it is a window.
+        self.gone.load(Ordering::Relaxed)
+            || self
+                .window
+                .is_some_and(|w| !unsafe { IsWindow(Some(w)) }.as_bool())
     }
 }
 
@@ -162,6 +203,7 @@ pub struct ScreenStream {
     thread: Option<JoinHandle<()>>,
     room: Arc<Room>,
     track_sid: livekit::id::TrackSid,
+    ended: Option<oneshot::Receiver<()>>,
 }
 
 impl ScreenStream {
@@ -191,11 +233,16 @@ impl ScreenStream {
         let stop = Arc::new(AtomicBool::new(false));
         let go = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = oneshot::channel();
+        let (ended_tx, ended) = oneshot::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("oc-stream".into())
             .spawn({
                 let (stop, go) = (Arc::clone(&stop), Arc::clone(&go));
-                move || stream_thread(open, quality, choice, &stop, &go, ready_tx)
+                move || {
+                    // Dropped when the thread ends, whatever ended it.
+                    let _ended = ended_tx;
+                    stream_thread(open, quality, choice, &stop, &go, ready_tx);
+                }
             })
             .map_err(|e| format!("Не удалось начать стрим: {e}"))?;
         let halt = |thread: JoinHandle<()>, stop: &AtomicBool| {
@@ -245,7 +292,14 @@ impl ScreenStream {
             thread: Some(thread),
             room,
             track_sid: publication.sid(),
+            ended: Some(ended),
         })
+    }
+
+    /// Resolves, once, when the stream's thread is over: told to stop, or by itself when
+    /// the source is gone or the encoder gave up. The track stays until [`Self::stop`].
+    pub fn ended(&mut self) -> oneshot::Receiver<()> {
+        self.ended.take().unwrap_or_else(|| oneshot::channel().1)
     }
 
     /// Stops the stream and takes it out of the room.
@@ -270,6 +324,7 @@ struct Encoding {
     encoder: H264Encoder,
     width: u32,
     height: u32,
+    bitrate: u32,
     nv12: Vec<u8>,
 }
 
@@ -280,12 +335,13 @@ impl Encoding {
         quality: StreamQuality,
         choice: EncoderChoice,
     ) -> Result<Self, String> {
+        let bitrate = rate_for(quality, height);
         let encoder = H264Encoder::new(
             EncoderSettings {
                 width,
                 height,
                 fps: quality.fps,
-                bitrate: bitrate(quality),
+                bitrate,
             },
             choice,
         )?;
@@ -293,6 +349,7 @@ impl Encoding {
             encoder,
             width,
             height,
+            bitrate,
             nv12: vec![0; (width * height * 3 / 2) as usize],
         })
     }
@@ -400,6 +457,10 @@ fn pump(
     let mut next = Instant::now();
     let started = Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        if frames.gone() {
+            eprintln!("[oc-stream] the source is gone");
+            return;
+        }
         if let Some(frame) = current.take().or_else(|| frames.next()) {
             if (frame.width(), frame.height()) != (encoding.width, encoding.height) {
                 // A window changed size: a new encoder, starting with a key frame.
@@ -414,7 +475,7 @@ fn pump(
             }
             key |= source.take_keyframe_request();
             if let Some(rate) = source.take_rate_control_request() {
-                let target = (rate.target_bitrate_bps.min(u64::from(bitrate(quality))) as u32)
+                let target = (rate.target_bitrate_bps.min(u64::from(encoding.bitrate)) as u32)
                     .max(MIN_BITRATE);
                 encoding.encoder.set_bitrate(target);
             }
@@ -490,6 +551,17 @@ mod tests {
         assert_eq!(bitrate(q(1080, 30)), 4_000_000);
         assert_eq!(bitrate(q(720, 60)), 4_000_000);
         assert_eq!(bitrate(q(720, 30)), 2_500_000);
+        assert_eq!(bitrate(q(1440, 60)), 10_000_000);
+        assert_eq!(bitrate(q(1440, 30)), 7_000_000);
+    }
+
+    #[test]
+    fn a_small_picture_takes_no_more_than_its_size_asks() {
+        assert_eq!(rate_for(q(1440, 60), 1440), 10_000_000);
+        assert_eq!(rate_for(q(1440, 60), 1080), 6_000_000, "a 1080p screen");
+        assert_eq!(rate_for(q(1440, 30), 600), 2_500_000, "a small window");
+        assert_eq!(rate_for(q(1080, 60), 1000), 6_000_000, "just under 1080");
+        assert_eq!(rate_for(q(720, 60), 720), 4_000_000);
     }
 
     /// Moving stripes at a fixed size.
@@ -513,6 +585,23 @@ mod tests {
             v.fill(128);
             self.frame += 1;
             Some(buffer)
+        }
+    }
+
+    /// Stripes until the source closes, like a window being closed.
+    struct Closing {
+        stripes: Stripes,
+        left: u32,
+    }
+
+    impl Frames for Closing {
+        fn next(&mut self) -> Option<I420Buffer> {
+            self.left = self.left.saturating_sub(1);
+            self.stripes.next()
+        }
+
+        fn gone(&self) -> bool {
+            self.left == 0
         }
     }
 
@@ -619,11 +708,19 @@ mod tests {
                 .into_iter()
                 .find(|s| s.kind == SourceKind::Screen)
                 .expect("a screen");
+            // Another quality to measure: `OC_TEST_QUALITY=1440x60`.
+            let (height, fps) = std::env::var("OC_TEST_QUALITY")
+                .ok()
+                .and_then(|v| {
+                    let (h, f) = v.split_once('x')?;
+                    Some((h.parse().ok()?, f.parse().ok()?))
+                })
+                .unwrap_or((1080, 60));
             let stream = ScreenStream::start(
                 Arc::clone(&room.streamer),
                 screen.kind,
                 screen.id,
-                q(1080, 60),
+                q(height, fps),
             )
             .await
             .unwrap();
@@ -636,8 +733,11 @@ mod tests {
                 "viewer: {:.1} fps at {size:?}",
                 f64::from(count) / seconds as f64
             );
-            assert_eq!(size.1, 1080);
-            assert!(count > 40 * seconds as u32, "near 60 a second, got {count}");
+            assert_eq!(size.1, height);
+            assert!(
+                count > fps * 2 / 3 * seconds as u32,
+                "near {fps} a second, got {count}"
+            );
             stream.stop().await;
             room.leave().await;
         });
@@ -646,6 +746,46 @@ mod tests {
     /// The whole road, but for the screen: encoder, pre-encoded track, a real LiveKit through
     /// the camp's pinned port, and another member decoding what arrives. The size and the
     /// count come out of the decoder, so a stream nobody can decode fails here.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_stream_says_when_its_source_is_gone() {
+        tauri::async_runtime::block_on(async {
+            let room = Audience::gather("stream-source-gone").await;
+            let mut stream = ScreenStream::run(
+                Arc::clone(&room.streamer),
+                q(720, 30),
+                EncoderChoice::Best,
+                || {
+                    Ok(Box::new(Closing {
+                        stripes: Stripes {
+                            width: 1280,
+                            height: 720,
+                            frame: 0,
+                        },
+                        left: 30,
+                    }) as Box<dyn Frames>)
+                },
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(10), stream.ended())
+                .await
+                .expect("the stream ends by itself")
+                .unwrap_err();
+            assert_eq!(
+                room.streamer.local_participant().track_publications().len(),
+                1
+            );
+            stream.stop().await;
+            assert!(room
+                .streamer
+                .local_participant()
+                .track_publications()
+                .is_empty());
+            room.leave().await;
+        });
+    }
+
     #[test]
     #[ignore = "needs a local LiveKit: `pnpm livekit`"]
     fn a_stream_reaches_another_member_and_decodes() {

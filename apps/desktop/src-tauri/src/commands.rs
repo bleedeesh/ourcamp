@@ -85,6 +85,20 @@ pub async fn stream_sources() -> Result<Vec<crate::stream::StreamSource>, String
         .map_err(|e| e.to_string())
 }
 
+/// The qualities a stream can have, with what each costs (ADR-0054).
+#[tauri::command]
+#[must_use]
+pub fn stream_qualities() -> Vec<crate::stream::QualityOption> {
+    crate::stream::quality_options()
+}
+
+/// Opens the window "Начать стрим", or brings it forward. `async`, as all that make windows.
+#[tauri::command]
+pub async fn stream_start_window_open(app: tauri::AppHandle) -> Result<(), String> {
+    crate::windows::open_stream_start(&app)
+        .map_err(|e| format!("Не удалось открыть окно стрима: {e}"))
+}
+
 /// Starts streaming a screen or window into the channel.
 #[tauri::command]
 pub async fn stream_start(

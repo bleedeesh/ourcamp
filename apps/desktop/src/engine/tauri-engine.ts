@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UserId } from "../domain/types.ts";
-import type { JoinRequest, LinkStatus, MemberLevel, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
+import type { JoinRequest, LinkStatus, MemberLevel, OwnStream, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 
 /** Event emitted by `src-tauri/src/levels.rs`. */
@@ -11,6 +11,8 @@ const PARTICIPANTS_EVENT = "voice://participants";
 const DISCONNECTED_EVENT = "voice://disconnected";
 /** Event emitted by `src-tauri/src/participants.rs`: quality and ping (ADR-0030). */
 const LINK_EVENT = "voice://link";
+/** Event emitted by `src-tauri/src/participants.rs`: your own stream (ADR-0054). */
+const STREAM_EVENT = "voice://stream";
 
 /**
  * Talks to the Rust media engine. Command names and argument shapes must match
@@ -49,6 +51,10 @@ export class TauriEngine implements VoiceEngine {
     return invoke("stream_watch", { userId, name });
   }
 
+  stopStream(): Promise<void> {
+    return invoke("stream_stop");
+  }
+
   onLevels(listener: (levels: readonly MemberLevel[]) => void): () => void {
     return subscribe<MemberLevel[]>(LEVELS_EVENT, listener);
   }
@@ -63,6 +69,10 @@ export class TauriEngine implements VoiceEngine {
 
   onLink(listener: (link: LinkStatus) => void): () => void {
     return subscribe<LinkStatus>(LINK_EVENT, listener);
+  }
+
+  onStream(listener: (stream: OwnStream) => void): () => void {
+    return subscribe<OwnStream>(STREAM_EVENT, listener);
   }
 }
 

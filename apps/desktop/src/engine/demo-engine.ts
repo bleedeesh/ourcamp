@@ -61,6 +61,15 @@ export class DemoEngine implements VoiceEngine {
     return Promise.resolve();
   }
 
+  stopStream(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /** The demo never goes on air: `stream-start.html` shows the layout by itself. */
+  onStream(): () => void {
+    return () => undefined;
+  }
+
   setDeafened(): Promise<void> {
     return Promise.resolve();
   }

@@ -1,6 +1,6 @@
 import { badgeText, unreadLabel } from "../domain/chat.ts";
 import { linkView, type LinkView } from "../domain/link.ts";
-import { openChatWindow } from "../engine/windows.ts";
+import { openChatWindow, openStreamStartWindow } from "../engine/windows.ts";
 import { Avatar } from "./Avatar.tsx";
 import { useCamps } from "./camps-context.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
@@ -34,11 +34,14 @@ export function BottomPanel() {
   const micMuted = useVoice((s) => s.micMuted);
   const deafened = useVoice((s) => s.deafened);
   const link = useVoice((s) => s.link);
+  const streaming = useVoice((s) => s.streaming);
   const campOffline = useCamps((s) => s.offline);
   const unread = useCamps((s) => s.unread);
   // A moderator forbade speaking (ADR-0028): the button is locked until lifted.
   const silenced = self?.silenced === true;
   const micOff = micMuted || silenced;
+  // Why a stream cannot start now; a stream going can always stop.
+  const noStream = silenced ? "Модератор запретил вам говорить" : channelName === null ? "Сначала зайдите в канал" : null;
 
   return (
     <section className="panel" aria-label="Голос и управление">
@@ -104,10 +107,25 @@ export function BottomPanel() {
             </span>
           )}
         </button>
-        <button type="button" className="wide-button" aria-disabled="true" title="Скоро">
-          <Icon name="screen" size={18} />
-          Стрим
-        </button>
+        {streaming ? (
+          <button type="button" className="wide-button wide-button--danger" onClick={() => void voice.stopStream()}>
+            <Icon name="screen" size={18} />
+            Остановить
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="wide-button"
+            aria-disabled={noStream !== null || undefined}
+            title={noStream ?? undefined}
+            onClick={() => {
+              if (noStream === null) void openStreamStartWindow();
+            }}
+          >
+            <Icon name="screen" size={18} />
+            Стрим
+          </button>
+        )}
       </div>
     </section>
   );

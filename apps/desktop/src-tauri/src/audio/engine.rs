@@ -15,7 +15,7 @@ use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatu
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
-use crate::stream::{ScreenStream, SourceKind, StreamQuality, ViewStatus, Viewer};
+use crate::stream::{OwnStream, ScreenStream, SourceKind, StreamQuality, ViewStatus, Viewer};
 use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
 use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
@@ -70,6 +70,9 @@ pub type DisconnectListener = Arc<dyn Fn(String) + Send + Sync>;
 /// Receives the connection's quality and ping while in a channel (ADR-0030).
 pub type LinkListener = Arc<dyn Fn(Link) + Send + Sync>;
 
+/// Receives how your own stream is going (ADR-0054).
+pub type StreamListener = Arc<dyn Fn(OwnStream) + Send + Sync>;
+
 /// User-facing error text (shown in the UI toast).
 pub type EngineError = String;
 
@@ -88,13 +91,19 @@ impl Default for Prefs {
     }
 }
 
+/// A stream going out, and which one: an old stream's end must not stop its replacement.
+struct Outgoing {
+    serial: u64,
+    stream: ScreenStream,
+}
+
 struct Session {
     /// Tells a late server disconnect apart from the session that replaced it.
     id: u64,
     room: VoiceRoom,
     mic: MicPipeline,
     /// The screen stream going out in this session (ADR-0049).
-    stream: Option<ScreenStream>,
+    stream: Option<Outgoing>,
     /// Someone's stream open in the viewer's window (ADR-0053). Only in this session's
     /// room, so it ends with it.
     viewer: Option<Viewer>,
@@ -106,8 +115,8 @@ impl Session {
         if let Some(viewer) = self.viewer {
             viewer.close().await;
         }
-        if let Some(stream) = self.stream {
-            stream.stop().await;
+        if let Some(outgoing) = self.stream {
+            outgoing.stream.stop().await;
         }
         self.room.close().await;
         self.mic.stop();
@@ -132,8 +141,10 @@ struct Live {
     self_id: String,
     disconnect_listener: Option<DisconnectListener>,
     link_listener: Option<LinkListener>,
+    stream_listener: Option<StreamListener>,
     link: LinkRelay,
     next_session_id: u64,
+    next_stream: u64,
     output_latency: DeviceLatency,
     output_rate: u32,
     _output: Output,
@@ -177,6 +188,12 @@ impl Live {
                 self_id: self.self_id.clone(),
                 members,
             });
+        }
+    }
+
+    fn announce_stream(&self, live: bool, ended: Option<String>) {
+        if let Some(listener) = &self.stream_listener {
+            listener(OwnStream { live, ended });
         }
     }
 }
@@ -234,8 +251,10 @@ impl Engine {
                 listener: None,
                 disconnect_listener: None,
                 link_listener: None,
+                stream_listener: None,
                 link: LinkRelay::default(),
                 next_session_id: 0,
+                next_stream: 0,
                 // Set when a camp is opened (`set_self_id`).
                 self_id: String::new(),
                 output_latency: output.latency(),
@@ -262,6 +281,10 @@ impl Engine {
 
     pub fn set_link_listener(&self, listener: LinkListener) {
         self.lock().link_listener = Some(listener);
+    }
+
+    pub fn set_stream_listener(&self, listener: StreamListener) {
+        self.lock().stream_listener = Some(listener);
     }
 
     /// Whether joining needs a room ([`RoomAccess`]) — false for synthetic voices.
@@ -408,6 +431,7 @@ impl Engine {
         let mut live = self.lock();
         let result = live.clear_voices().map_err(mixer_error);
         live.announce(Vec::new());
+        live.announce_stream(false, None);
         result
     }
 
@@ -429,23 +453,66 @@ impl Engine {
             (session.room.room(), session.stream.take())
         };
         if let Some(previous) = previous {
-            previous.stop().await;
+            previous.stream.stop().await;
         }
-        let stream = ScreenStream::start(room, kind, id, quality).await?;
-        // Leaving takes `transitions` too, so the session is the same one.
-        if let Some(session) = self.lock().session.as_mut() {
-            session.stream = Some(stream);
-        }
+        let mut stream = match ScreenStream::start(room, kind, id, quality).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                self.lock().announce_stream(false, None);
+                return Err(e);
+            }
+        };
+        let ended = stream.ended();
+        let serial = {
+            let mut live = self.lock();
+            live.next_stream += 1;
+            let serial = live.next_stream;
+            // Leaving takes `transitions` too, so the session is the same one.
+            if let Some(session) = live.session.as_mut() {
+                session.stream = Some(Outgoing { serial, stream });
+            }
+            live.announce_stream(true, None);
+            serial
+        };
+        let engine = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = ended.await;
+            engine.stream_ended(serial).await;
+        });
         Ok(())
+    }
+
+    /// The stream's thread is over. If nobody stopped it, its source is gone or its encoder
+    /// gave up: viewers must not stay on a frozen picture, and you must hear about it.
+    async fn stream_ended(&self, serial: u64) {
+        let _transition = self.transitions.lock().await;
+        let outgoing = {
+            let mut live = self.lock();
+            let Some(session) = live.session.as_mut() else {
+                return;
+            };
+            if session.stream.as_ref().is_none_or(|o| o.serial != serial) {
+                return;
+            }
+            session.stream.take()
+        };
+        if let Some(outgoing) = outgoing {
+            outgoing.stream.stop().await;
+            self.lock().announce_stream(
+                false,
+                Some("Стрим остановился: окно закрыто или экран недоступен".to_owned()),
+            );
+        }
     }
 
     /// Stops the stream, if one is going.
     pub async fn stop_stream(&self) {
         let _transition = self.transitions.lock().await;
-        let stream = self.lock().session.as_mut().and_then(|s| s.stream.take());
-        if let Some(stream) = stream {
-            stream.stop().await;
+        let outgoing = self.lock().session.as_mut().and_then(|s| s.stream.take());
+        if let Some(outgoing) = outgoing {
+            outgoing.stream.stop().await;
         }
+        self.lock().announce_stream(false, None);
     }
 
     /// Opens someone's stream in the viewer's window; only one at a time, so a stream
@@ -712,6 +779,7 @@ impl RoomHost for Host {
                 eprintln!("[oc-voice] cleanup after disconnect: {e}");
             }
             live.announce(Vec::new());
+            live.announce_stream(false, None);
             if let Some(listener) = &live.disconnect_listener {
                 listener(message);
             }
