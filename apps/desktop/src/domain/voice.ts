@@ -285,6 +285,19 @@ export class VoiceController {
     if (changed) this.store.patch({ speaking: next });
   }
 
+  /**
+   * Opens `userId`'s stream. Streams are watched only from their channel, so someone in
+   * another one comes over first (ADR-0049); if that fails, the error is already shown.
+   */
+  async watchStream(userId: UserId, channelId: string): Promise<void> {
+    const { camp, selfId } = this.store.get();
+    const member = camp.members[userId];
+    if (!member || userId === selfId) return;
+    await this.join(channelId);
+    if (this.store.get().channelId !== channelId) return;
+    await this.#run(() => this.#engine.watchStream(userId, member.name));
+  }
+
   async #run(action: () => Promise<void>, rollback?: () => void): Promise<void> {
     try {
       await action();

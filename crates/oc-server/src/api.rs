@@ -593,6 +593,8 @@ async fn room_token(
             // A silenced member joins listening only; LiveKit enforces it (ADR-0028).
             can_publish: Some(!member.silenced),
             can_subscribe: Some(true),
+            // Whose stream they watch, for the count of viewers (ADR-0053).
+            can_update_own_metadata: Some(true),
             ..VideoGrants::default()
         })
         .to_jwt()

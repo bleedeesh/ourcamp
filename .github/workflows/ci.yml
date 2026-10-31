@@ -187,7 +187,8 @@ jobs:
           done
           docker compose -f dev/compose.yaml logs
           exit 1
-      - run: cargo test -p ourcamp-desktop -- --include-ignored
+      # One at a time: every camp's first channel is the same room on this LiveKit (ADR-0053).
+      - run: cargo test -p ourcamp-desktop -- --include-ignored --test-threads=1
         env:
           CC: clang-21
           CXX: clang++-21

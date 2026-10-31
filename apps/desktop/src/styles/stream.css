@@ -1,0 +1,122 @@
+/* The viewer's window (ADR-0053). The picture is a native window over `.stream-app__picture`:
+   nothing of the page shows there while a stream is on, or can lie on top of it. */
+
+.stream-app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+}
+
+.stream-app__picture {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: #000;
+}
+
+.stream-app__picture[data-demo] {
+  background: var(--surface);
+}
+
+.stream-app__waiting {
+  margin: auto;
+  color: var(--text-faint);
+  font-size: 14px;
+}
+
+.stream-panel {
+  flex: none;
+  height: 56px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-0);
+  font-size: 13px;
+}
+
+.stream-panel__avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #101010;
+  font-weight: 700;
+}
+
+.stream-panel__who {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.stream-panel__name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.stream-panel__quality {
+  min-height: 16px;
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.stream-panel__viewers {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.stream-panel__spacer {
+  flex: 1;
+}
+
+.stream-panel__volume {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+  opacity: 0.5;
+}
+
+.stream-panel__volume input {
+  width: 96px;
+}
+
+.stream-panel__button {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+}
+
+.stream-panel__button:hover {
+  background: var(--surface-2);
+}
+
+/* The LIVE of the tree opens the stream, unless it is your own. */
+.live-badge--watch {
+  cursor: pointer;
+}
+
+.live-badge--watch:hover,
+.live-badge--watch:focus-visible {
+  filter: brightness(1.15);
+}

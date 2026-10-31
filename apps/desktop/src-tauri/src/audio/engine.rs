@@ -15,7 +15,7 @@ use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatu
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
-use crate::stream::{ScreenStream, SourceKind, StreamQuality};
+use crate::stream::{ScreenStream, SourceKind, StreamQuality, ViewStatus, Viewer};
 use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
 use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
@@ -30,6 +30,15 @@ pub struct MemberSpec {
     pub muted: bool,
     /// The member muted their own microphone, so no audio arrives from them.
     pub remote_mic_muted: bool,
+}
+
+/// Who the viewer's window shows, for its page.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamView {
+    pub user_id: String,
+    pub name: String,
+    pub status: ViewStatus,
 }
 
 /// Level of one member, for the speaking ring.
@@ -86,6 +95,23 @@ struct Session {
     mic: MicPipeline,
     /// The screen stream going out in this session (ADR-0049).
     stream: Option<ScreenStream>,
+    /// Someone's stream open in the viewer's window (ADR-0053). Only in this session's
+    /// room, so it ends with it.
+    viewer: Option<Viewer>,
+}
+
+impl Session {
+    /// What goes out and comes in stops first, the room after.
+    async fn close(self) {
+        if let Some(viewer) = self.viewer {
+            viewer.close().await;
+        }
+        if let Some(stream) = self.stream {
+            stream.stop().await;
+        }
+        self.room.close().await;
+        self.mic.stop();
+    }
 }
 
 struct Live {
@@ -344,6 +370,7 @@ impl Engine {
                     room,
                     mic,
                     stream: None,
+                    viewer: None,
                 });
                 // The room measured itself while connecting, before it was ours to report.
                 if let (Some(link), Some(listener)) =
@@ -375,15 +402,8 @@ impl Engine {
             live.local_level = None;
             live.session.take()
         };
-        if let Some(Session {
-            room, mic, stream, ..
-        }) = session
-        {
-            if let Some(stream) = stream {
-                stream.stop().await;
-            }
-            room.close().await;
-            mic.stop();
+        if let Some(session) = session {
+            session.close().await;
         }
         let mut live = self.lock();
         let result = live.clear_voices().map_err(mixer_error);
@@ -425,6 +445,79 @@ impl Engine {
         let stream = self.lock().session.as_mut().and_then(|s| s.stream.take());
         if let Some(stream) = stream {
             stream.stop().await;
+        }
+    }
+
+    /// Opens someone's stream in the viewer's window; only one at a time, so a stream
+    /// already open closes first. Clicking the one already open brings its window up.
+    ///
+    /// # Errors
+    /// Not in a channel, or no window; as text for the UI.
+    pub async fn watch_stream(
+        &self,
+        app: &tauri::AppHandle,
+        user_id: String,
+        name: String,
+    ) -> Result<(), String> {
+        let _transition = self.transitions.lock().await;
+        let (room, previous) = {
+            let mut live = self.lock();
+            let session = live.session.as_mut().ok_or("Сначала зайдите в канал")?;
+            if let Some(viewer) = session.viewer.as_ref().filter(|v| v.user_id() == user_id) {
+                viewer.raise();
+                return Ok(());
+            }
+            (session.room.room(), session.viewer.take())
+        };
+        if let Some(previous) = previous {
+            previous.close().await;
+        }
+        let window = crate::windows::open_stream(app, &name)
+            .map_err(|e| format!("Не удалось открыть окно стрима: {e}"))?;
+        let viewer = match Viewer::start(room, user_id, name, window.clone()).await {
+            Ok(viewer) => viewer,
+            Err(e) => {
+                let _ = window.destroy();
+                return Err(e);
+            }
+        };
+        // Leaving takes `transitions` too, so the session is the same one.
+        let mut live = self.lock();
+        match live.session.as_mut() {
+            Some(session) => {
+                viewer.announce();
+                session.viewer = Some(viewer);
+            }
+            None => return Err("Сначала зайдите в канал".to_owned()),
+        }
+        Ok(())
+    }
+
+    /// Closes the viewer's window. Whether a viewer was there to close it.
+    pub async fn stop_watching(&self) -> bool {
+        let _transition = self.transitions.lock().await;
+        let viewer = self.lock().session.as_mut().and_then(|s| s.viewer.take());
+        let Some(viewer) = viewer else { return false };
+        viewer.close().await;
+        true
+    }
+
+    /// Who is being watched, and the panel's numbers, for the viewer's page.
+    pub fn stream_view(&self) -> Option<StreamView> {
+        let live = self.lock();
+        let viewer = live.session.as_ref()?.viewer.as_ref()?;
+        Some(StreamView {
+            user_id: viewer.user_id().to_owned(),
+            name: viewer.name().to_owned(),
+            status: viewer.status(),
+        })
+    }
+
+    /// Where the page wants the picture, in the window's pixels.
+    pub fn place_stream(&self, x: i32, y: i32, width: u32, height: u32) {
+        let live = self.lock();
+        if let Some(viewer) = live.session.as_ref().and_then(|s| s.viewer.as_ref()) {
+            viewer.place(x, y, width, height);
         }
     }
 
@@ -611,15 +704,8 @@ impl RoomHost for Host {
                 live.local_level = None;
                 live.session.take()
             };
-            if let Some(Session {
-                room, mic, stream, ..
-            }) = session
-            {
-                if let Some(stream) = stream {
-                    stream.stop().await;
-                }
-                room.close().await;
-                mic.stop();
+            if let Some(session) = session {
+                session.close().await;
             }
             let live = &mut lock(&live);
             if let Err(e) = live.clear_voices() {

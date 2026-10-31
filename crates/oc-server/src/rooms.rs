@@ -201,6 +201,7 @@ impl RoomService {
                 "can_subscribe": true,
                 "can_publish": can_publish,
                 "can_publish_data": true,
+                "can_update_metadata": true,
             },
         })
         .to_string();

@@ -39,6 +39,9 @@ export class FakeEngine implements VoiceEngine {
   setMicMuted(m: boolean) {
     return this.#record(`mic:${m}`);
   }
+  watchStream(id: string) {
+    return this.#record(`watch:${id}`);
+  }
   setDeafened(d: boolean) {
     return this.#record(`deaf:${d}`);
   }

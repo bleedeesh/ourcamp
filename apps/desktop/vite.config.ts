@@ -22,11 +22,12 @@ export default defineConfig({
     // WebView2 (Windows) and WKWebView (macOS 13+) both handle modern syntax.
     target: "es2022",
     sourcemap: Boolean(process.env.TAURI_ENV_DEBUG),
-    // Two pages: the main window and the chat window (ADR-0046).
+    // The main window, the chat (ADR-0046) and the viewer of a stream (ADR-0053).
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("index.html", import.meta.url)),
         chat: fileURLToPath(new URL("chat.html", import.meta.url)),
+        stream: fileURLToPath(new URL("stream.html", import.meta.url)),
       },
     },
   },

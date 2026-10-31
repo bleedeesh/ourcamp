@@ -55,7 +55,7 @@ pnpm dev
 3. Клиент: `pnpm dev` → «Войти по ссылке» → вставить ссылку для друзей → имя → «Войти в лагерь».
 
 LiveKit в Docker ([ADR-0013](decisions/0013-dev-livekit-in-docker.md), `pnpm livekit`) остаётся
-для тестов голоса приложения (`cargo test -p ourcamp-desktop -- --ignored`) и для
+для тестов голоса приложения (`cargo test -p ourcamp-desktop -- --ignored --test-threads=1`: у тестов одна комната, ADR-0053) и для
 `pnpm server:docker` (лагерь без своего LiveKit). Оба LiveKit берут порты 7881/7882 —
 одновременно работает только один: `pnpm livekit:down` перед `pnpm server`.
 
