@@ -128,6 +128,7 @@ export class CampsController {
   #unsubscribeLive: (() => void) | null = null;
   #unsubscribeDirective: (() => void) | null = null;
   #unsubscribeChat: (() => void) | null = null;
+  #unsubscribeProfile: (() => void) | null = null;
   #chats: OpenChats = {
     channels: [],
     latest: {},
@@ -190,10 +191,29 @@ export class CampsController {
     }
   }
 
+  /**
+   * The settings window changed your name or avatar (ADR-0057). The name in the join form
+   * follows unless you have typed another there.
+   */
+  async #followProfile(): Promise<void> {
+    try {
+      const [list, avatar] = await Promise.all([this.#api.list(), this.#api.profileAvatar()]);
+      const { displayName, name } = this.store.get();
+      this.store.patch({
+        displayName: list.displayName,
+        name: name === displayName ? list.displayName : name,
+        avatar,
+      });
+    } catch {
+      // What the form shows is only an offer: the next start reads it again.
+    }
+  }
+
   async start(): Promise<void> {
     this.#unsubscribeLive ??= this.#api.onLive((live) => this.#onLive(live));
     this.#unsubscribeDirective ??= this.#api.onDirective((d) => void this.#onDirective(d));
     this.#unsubscribeChat ??= this.#api.onChat((u) => this.#onChat(u));
+    this.#unsubscribeProfile ??= this.#api.onProfileChanged(() => void this.#followProfile());
     void this.#api.profileAvatar().then(
       (avatar) => this.store.patch({ avatar }),
       () => {},

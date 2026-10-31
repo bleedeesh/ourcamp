@@ -360,6 +360,28 @@ pub struct SetSilenced {
     pub silenced: bool,
 }
 
+/// The longest name a member can have, in characters.
+pub const MAX_NAME_CHARS: usize = 32;
+
+/// A member's name as a camp keeps it, or `None` for one it refuses: empty after trimming,
+/// too long, or with control characters.
+#[must_use]
+pub fn clean_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    let fits = !name.is_empty()
+        && name.chars().count() <= MAX_NAME_CHARS
+        && !name.chars().any(char::is_control);
+    fits.then(|| name.to_owned())
+}
+
+/// `PUT /api/v1/members/me/name` (ADR-0057).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetName {
+    /// The new name; see [`clean_name`].
+    pub name: String,
+}
+
 /// `POST /api/v1/members/{userId}/move` (ADR-0029).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

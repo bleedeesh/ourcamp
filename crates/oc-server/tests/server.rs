@@ -966,6 +966,41 @@ fn can_publish(token: &str) -> Option<bool> {
         .can_publish
 }
 
+/// ADR-0057: a member renames themself; everyone's snapshot shows it, and a name that login
+/// would refuse is refused here too.
+#[tokio::test]
+async fn a_new_name_reaches_everyone() {
+    let room: Room = std::sync::Arc::default();
+    let (upstream, _calls) = fake_twirp_logged(room).await;
+    let camp = camp_with_upstream(&upstream).await;
+    let client = camp.client();
+    let lena = client
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let bob = client
+        .login(&DeviceKey::generate(), "Боб", Some(&camp.join()))
+        .await
+        .unwrap();
+    let mut bob_events = client.events(&bob).await.unwrap();
+
+    client.set_name(&lena, "  Елена ").await.unwrap();
+    state_where(&mut bob_events, |s| {
+        s.members
+            .iter()
+            .any(|m| m.user_id == lena.user_id && m.name == "Елена")
+    })
+    .await;
+
+    for bad in ["   ", "a\nb", &"я".repeat(33)] {
+        assert_eq!(
+            api_error(client.set_name(&lena, bad).await),
+            ErrorCode::BadRequest,
+            "{bad:?}"
+        );
+    }
+}
+
 /// ADR-0035: a member sends an avatar; everyone's snapshot names it by hash and members
 /// fetch the same bytes. Only PNG/WebP within the size limit is kept.
 #[tokio::test]

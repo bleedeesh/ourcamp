@@ -118,6 +118,10 @@ export interface CampApi {
   profileAvatar(): Promise<Uint8Array | null>;
   /** Sets your avatar (a PNG/WebP from `makeAvatar`) or drops it; the open camp gets it at once. */
   setProfileAvatar(picture: Uint8Array | null): Promise<void>;
+  /** Sets your name; the open camp gets it at once, the others when opened (ADR-0057). */
+  setProfileName(name: string): Promise<void>;
+  /** Your name or avatar changed, possibly in another window. */
+  onProfileChanged(listener: () => void): () => void;
   /** A member's avatar by the hash the snapshot names (cached by the app). */
   avatar(id: string, userId: UserId, hash: string): Promise<Uint8Array>;
   /** Kicks someone of a lower rank out of the camp, no ban (ADR-0033). */

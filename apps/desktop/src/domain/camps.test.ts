@@ -107,6 +107,18 @@ class FakeCampApi implements CampApi {
   emitLive(live: CampLive) {
     this.#live?.(live);
   }
+  #profile: (() => void) | null = null;
+  onProfileChanged(listener: () => void) {
+    this.#profile = listener;
+    return () => (this.#profile = null);
+  }
+  emitProfile() {
+    this.#profile?.();
+  }
+  setProfileName(name: string) {
+    this.list_ = { ...this.list_, displayName: name };
+    return Promise.resolve();
+  }
   #directive: ((d: CampDirective) => void) | null = null;
   onDirective(listener: (d: CampDirective) => void) {
     this.#directive = listener;
@@ -591,4 +603,26 @@ test("the Чат button counts what is unread in the open camp's chats", async (
   api.emitChat(message(7, "me"));
   assert.equal(camps.store.get().unread, 0, "your own message is read");
   assert.ok(api.calls.includes("read:vk:t1:7"), "and marked read on the device");
+});
+
+test("a profile changed in the settings window reaches the join form", async () => {
+  const { api, camps } = setup();
+  api.list_ = { displayName: "Дима", camps: [], current: null };
+  await camps.start();
+  assert.equal(camps.store.get().name, "Дима");
+
+  await api.setProfileName("Дмитрий");
+  api.emitProfile();
+  await tick();
+  await tick();
+  assert.equal(camps.store.get().displayName, "Дмитрий");
+  assert.equal(camps.store.get().name, "Дмитрий", "an untouched form follows");
+
+  camps.store.patch({ name: "Набрал сам" });
+  await api.setProfileName("Дима");
+  api.emitProfile();
+  await tick();
+  await tick();
+  assert.equal(camps.store.get().displayName, "Дима");
+  assert.equal(camps.store.get().name, "Набрал сам", "what you typed stays");
 });

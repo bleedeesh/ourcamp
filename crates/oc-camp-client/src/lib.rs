@@ -32,7 +32,7 @@ use std::io;
 use oc_invite::{Host, Invite, InviteKind, Token};
 use oc_proto::{
     CampInfo, CampKey, Challenge, ChatMessage, CurrentInvite, ErrorCode, History, InviteInfo,
-    LoginRequest, LoginResponse, MoveMember, NewMessage, PhotoUploaded, Role, RoomToken,
+    LoginRequest, LoginResponse, MoveMember, NewMessage, PhotoUploaded, Role, RoomToken, SetName,
     SetSilenced, API_VERSION,
 };
 pub use oc_tls::Trust;
@@ -300,6 +300,22 @@ impl CampClient {
                 &session.token,
                 &MoveMember {
                     channel_id: channel_id.to_owned(),
+                },
+            )
+            .await
+    }
+
+    /// Renames this member (ADR-0057).
+    ///
+    /// # Errors
+    /// [`ErrorCode::BadRequest`] for a name the camp refuses, [`ErrorCode::Unauthorized`].
+    pub async fn set_name(&self, session: &Session, name: &str) -> Result<(), ClientError> {
+        self.http
+            .put_no_content(
+                "/api/v1/members/me/name",
+                &session.token,
+                &SetName {
+                    name: name.to_owned(),
                 },
             )
             .await

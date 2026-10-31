@@ -140,6 +140,37 @@ export const ICONS = {
       </>
     ),
   },
+  user: {
+    lucide: "user",
+    stroke: (
+      <>
+        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+        <circle cx="12" cy="7" r="4" />
+      </>
+    ),
+    fill: (
+      <>
+        <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2z" />
+        <circle cx="12" cy="7" r="4" />
+      </>
+    ),
+  },
+  keyboard: {
+    lucide: "keyboard",
+    stroke: (
+      <>
+        <path d="M10 8h.01" />
+        <path d="M12 12h.01" />
+        <path d="M14 8h.01" />
+        <path d="M16 12h.01" />
+        <path d="M18 8h.01" />
+        <path d="M6 8h.01" />
+        <path d="M7 16h10" />
+        <path d="M8 12h.01" />
+        <rect width="20" height="16" x="2" y="4" rx="2" />
+      </>
+    ),
+  },
   chevron: {
     lucide: "chevron-down",
     stroke: (

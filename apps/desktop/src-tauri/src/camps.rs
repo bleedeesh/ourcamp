@@ -19,7 +19,7 @@ use oc_camp_client::{CampClient, CertificateProblem, ClientError, DeviceKey, Ses
 use oc_invite::{Fingerprint, Host, InviteError, Link, Token};
 use oc_proto::{
     avatar_hash, AvatarFormat, CampEvent, CampState, Channel, ErrorCode, InviteKindDto, Role,
-    MAX_AVATAR_BYTES,
+    MAX_AVATAR_BYTES, MAX_NAME_CHARS,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,10 @@ struct SavedCamp {
     /// Hash of the avatar this camp has from us; `None`: none (or never sent).
     #[serde(default)]
     avatar_sent: Option<String>,
+    /// The name this camp last took from this device (ADR-0057); `None` before the field
+    /// existed, which costs one extra send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name_sent: Option<String>,
     /// Chat id → the last `seq` read there (ADR-0044); a chat not here: nothing read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     read: BTreeMap<String, u64>,
@@ -363,6 +367,8 @@ impl Camps {
             role: session.role,
             session: session.token().to_owned(),
             avatar_sent: None,
+            // Login carries the name.
+            name_sent: Some(name.to_owned()),
             read: BTreeMap::new(),
         };
         // Coming back keeps what was read; a first join starts at now. The lock is let
@@ -415,8 +421,72 @@ impl Camps {
         })?;
         if !offline {
             self.sync_avatar(&camp.id).await;
+            self.sync_name(&camp.id).await;
         }
         Ok(self.opened(&camp, offline))
+    }
+
+    /// Sets your name on this device, then on the open camp; the others get it when next
+    /// opened (ADR-0057).
+    ///
+    /// # Errors
+    /// A name no camp would take, or the file cannot be written.
+    pub async fn set_name(&self, name: &str) -> Result<(), CampError> {
+        let name = oc_proto::clean_name(name)
+            .ok_or_else(|| format!("Имя — от 1 до {MAX_NAME_CHARS} символов"))?;
+        self.update(|saved| saved.display_name = name)?;
+        let current = self.lock().current.clone();
+        if let Some(id) = current {
+            self.sync_name(&id).await;
+        }
+        Ok(())
+    }
+
+    /// Brings camp `id`'s copy of your name in line with this device's. Best effort: a camp
+    /// that does not answer gets it next time it is opened.
+    async fn sync_name(&self, id: &str) {
+        let Ok(camp) = self.camp(id) else { return };
+        let name = self.lock().display_name.clone();
+        if name.is_empty() || camp.name_sent.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        let Ok(client) = camp.client() else { return };
+        let result = self
+            .authorized(&camp, &client, |session| {
+                let (client, name) = (&client, name.clone());
+                async move { client.set_name(&session, &name).await }
+            })
+            .await
+            .and_then(|()| {
+                self.update(|saved| {
+                    if let Some(stored) = saved.camps.iter_mut().find(|c| c.id == id) {
+                        stored.name_sent = Some(name.clone());
+                    }
+                })
+            });
+        if let Err(e) = result {
+            eprintln!("[ourcamp] name to {}: {e}", camp.name);
+        }
+    }
+
+    /// Runs `send` with the camp's session; if that has expired, logs in again and repeats.
+    async fn authorized<F, Fut>(
+        &self,
+        camp: &SavedCamp,
+        client: &CampClient,
+        send: F,
+    ) -> Result<(), CampError>
+    where
+        F: Fn(Session) -> Fut,
+        Fut: std::future::Future<Output = Result<(), ClientError>>,
+    {
+        match send(camp.session()).await {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(camp, client).await?;
+                send(session).await.map_err(describe)
+            }
+            other => other.map_err(describe),
+        }
     }
 
     /// Your avatar as this device keeps it (ADR-0035).
@@ -474,29 +544,15 @@ impl Camps {
                 }
             }
         };
-        let result = match send(camp.session()).await {
-            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
-                match self.relogin(&camp, &client).await {
-                    Ok(session) => send(session).await,
-                    Err(e) => {
-                        eprintln!("[ourcamp] avatar to {}: {e}", camp.name);
-                        return;
-                    }
+        let result = self.authorized(&camp, &client, send).await.and_then(|()| {
+            self.update(|saved| {
+                if let Some(stored) = saved.camps.iter_mut().find(|c| c.id == id) {
+                    stored.avatar_sent.clone_from(&hash);
                 }
-            }
-            other => other,
-        };
-        match result {
-            Ok(()) => {
-                if let Err(e) = self.update(|saved| {
-                    if let Some(stored) = saved.camps.iter_mut().find(|c| c.id == id) {
-                        stored.avatar_sent.clone_from(&hash);
-                    }
-                }) {
-                    eprintln!("[ourcamp] avatar to {}: {e}", camp.name);
-                }
-            }
-            Err(e) => eprintln!("[ourcamp] avatar to {}: {}", camp.name, describe(e)),
+            })
+        });
+        if let Err(e) = result {
+            eprintln!("[ourcamp] avatar to {}: {e}", camp.name);
         }
     }
 
@@ -1417,6 +1473,66 @@ mod tests {
 
     /// ADR-0035: the avatar lives on the device and reaches the camp on joining; another
     /// member fetches it once by hash, then from the cache — even with the camp down.
+    #[test]
+    fn your_new_name_reaches_the_open_camp_at_once_and_the_others_when_opened() {
+        tauri::async_runtime::block_on(async {
+            let (first, first_dir) = camp("name-1").await;
+            let (second, second_dir) = camp("name-2").await;
+            let dir = temp_dir("name-lena");
+            let lena = Camps::load(&dir).unwrap();
+            let in_second = lena
+                .join(&second.links.join.to_string(), "Лена")
+                .await
+                .unwrap();
+            let in_first = lena
+                .join(&first.links.join.to_string(), "Лена")
+                .await
+                .unwrap();
+
+            let called = |server: &oc_server::Running, me: &str, name: &'static str| {
+                let mut state = server.camp_state();
+                let me = me.to_owned();
+                async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        state.wait_for(|s| {
+                            s.members.iter().any(|m| m.user_id == me && m.name == name)
+                        }),
+                    )
+                    .await
+                    .is_ok()
+                }
+            };
+
+            assert!(lena.set_name("   ").await.is_err());
+            assert_eq!(lena.list().display_name, "Лена");
+
+            lena.set_name(" Елена ").await.unwrap();
+            assert_eq!(lena.list().display_name, "Елена");
+            assert!(
+                called(&first, &in_first.me.user_id, "Елена").await,
+                "the open camp"
+            );
+            assert!(
+                called(&second, &in_second.me.user_id, "Лена").await,
+                "not yet"
+            );
+
+            let opened = lena.open(&in_second.id).await.unwrap();
+            assert_eq!(opened.me.name, "Елена");
+            assert!(
+                called(&second, &in_second.me.user_id, "Елена").await,
+                "when opened"
+            );
+
+            first.stop().await;
+            second.stop().await;
+            for d in [first_dir, second_dir, dir] {
+                let _ = fs::remove_dir_all(d);
+            }
+        });
+    }
+
     #[test]
     fn your_avatar_reaches_the_camp_and_others_fetch_it_once() {
         tauri::async_runtime::block_on(async {

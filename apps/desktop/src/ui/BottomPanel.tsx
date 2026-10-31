@@ -1,6 +1,6 @@
 import { badgeText, unreadLabel } from "../domain/chat.ts";
 import { linkView, type LinkView } from "../domain/link.ts";
-import { openChatWindow, openStreamStartWindow } from "../engine/windows.ts";
+import { openChatWindow, openStreamStartWindow, openSettingsWindow } from "../engine/windows.ts";
 import { Avatar } from "./Avatar.tsx";
 import { useCamps } from "./camps-context.tsx";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
@@ -86,7 +86,7 @@ export function BottomPanel() {
         >
           <Icon name="headphones" off={deafened} />
         </button>
-        <button type="button" className="square-button" aria-label="Настройки" aria-disabled="true" title="Скоро">
+        <button type="button" className="square-button" aria-label="Настройки" onClick={() => void openSettingsWindow()}>
           <Icon name="gear" />
         </button>
       </div>

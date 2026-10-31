@@ -415,6 +415,22 @@ impl Manager {
         .await
     }
 
+    /// Renames a member: everyone sees it in the next snapshot (ADR-0057).
+    ///
+    /// # Errors
+    /// [`ManageError::NotFound`], [`ManageError::Store`].
+    pub async fn set_member_name(&self, user_id: &str, name: String) -> Result<(), ManageError> {
+        let id = user_id.to_owned();
+        self.change(move |s| {
+            if s.set_member_name(&id, &name)? {
+                Ok(())
+            } else {
+                Err(ManageError::NotFound)
+            }
+        })
+        .await
+    }
+
     /// A member's avatar: media type and bytes (the owner's window shows it).
     ///
     /// # Errors

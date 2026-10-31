@@ -13,10 +13,15 @@ pub const STREAM: &str = "stream";
 /// The label of the window "Начать стрим". Must match `capabilities/default.json`.
 pub const STREAM_START: &str = "stream-start";
 
+/// The settings window's label. Must match `capabilities/default.json`.
+pub const SETTINGS: &str = "settings";
+
 /// Logical size of a new chat window, as in the mockup.
 const CHAT_SIZE: (f64, f64) = (420.0, 660.0);
 /// Logical size of the window "Начать стрим", as in the mockup.
 const STREAM_START_SIZE: (f64, f64) = (520.0, 640.0);
+/// Logical size of the settings window, as in the mockup.
+const SETTINGS_SIZE: (f64, f64) = (720.0, 600.0);
 /// Gap between the main window and the chat beside it, in logical pixels.
 const GAP: f64 = 12.0;
 
@@ -66,6 +71,29 @@ pub fn open_stream_start(app: &AppHandle) -> tauri::Result<()> {
     .visible(false)
     .build()?;
     place_beside_main(app, &window, STREAM_START_SIZE.0);
+    window.show()?;
+    window.set_focus()
+}
+
+/// Shows the settings window (ADR-0057), opening it beside the main window.
+///
+/// # Errors
+/// If the webview cannot be created.
+pub fn open_settings(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(SETTINGS) {
+        window.unminimize()?;
+        window.show()?;
+        return window.set_focus();
+    }
+    let window = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
+        .title("Настройки — OurCamp")
+        .inner_size(SETTINGS_SIZE.0, SETTINGS_SIZE.1)
+        .min_inner_size(560.0, 420.0)
+        .decorations(false)
+        .background_color(tauri::window::Color(0x10, 0x10, 0x10, 0xff))
+        .visible(false)
+        .build()?;
+    place_beside_main(app, &window, SETTINGS_SIZE.0);
     window.show()?;
     window.set_focus()
 }
