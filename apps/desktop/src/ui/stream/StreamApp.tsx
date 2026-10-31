@@ -1,20 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
-import { avatarColor } from "../../domain/roster.ts";
 import {
   physicalRect,
   qualityText,
   readStreamVolume,
   saveStreamVolume,
+  streamerOf,
   viewersText,
   waitingText,
   type StreamView,
   type ViewStatus,
 } from "../../domain/stream-view.ts";
+import type { CampApi, CampState } from "../../engine/camp-api.ts";
+import { DemoCampApi } from "../../engine/demo-camp-api.ts";
+import { TauriCampApi } from "../../engine/tauri-camp-api.ts";
 import { isTauri } from "../../engine/tauri-engine.ts";
+import { Avatar } from "../Avatar.tsx";
+import { AvatarSourceContext, type AvatarSource } from "../avatar-url.ts";
 
 /** Must match `VIEW_EVENT` in `src-tauri/src/stream/view/mod.rs`. */
 const STREAM_VIEW_EVENT = "stream://view";
@@ -31,9 +36,34 @@ const DEMO_VIEW: StreamView = {
   status: { live: true, height: 1080, fps: 60, viewers: 3, sound: true },
 };
 
+const api: CampApi = isTauri() ? new TauriCampApi() : new DemoCampApi();
+
+/** The open camp and its latest snapshot, kept up by the camp's events. */
+function useCampNow(): { readonly id: string | null; readonly state: CampState | null } {
+  const [now, setNow] = useState<{ id: string | null; state: CampState | null }>({ id: null, state: null });
+  useEffect(() => {
+    let alive = true;
+    const stop = api.onLive((live) => setNow({ id: live.campId, state: live.state }));
+    void api.chatContext().then((context) => {
+      if (alive && context) setNow({ id: context.camp.id, state: context.live?.state ?? null });
+    });
+    return () => {
+      alive = false;
+      stop();
+    };
+  }, []);
+  return now;
+}
+
 /** The viewer's window (M6 step 3, ADR-0053): the mockup's screen 12. */
 export function StreamApp() {
   const [view, setView] = useState<StreamView | null>(isTauri() ? null : DEMO_VIEW);
+  const camp = useCampNow();
+  const campId = camp.id;
+  const avatars = useMemo<AvatarSource | null>(
+    () => (campId === null ? null : (userId, hash) => api.avatar(campId, userId, hash)),
+    [campId],
+  );
   const [seen, setSeen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [volume, setVolume] = useState(() => readStreamVolume(window.localStorage));
@@ -119,7 +149,8 @@ export function StreamApp() {
     if (isTauri()) void getCurrentWindow().close();
     else window.close();
   };
-  const title = view ? `Стрим · ${view.name}` : "Стрим";
+  const streamer = streamerOf(camp.state, view?.userId ?? "", view?.name ?? "?");
+  const title = view ? `Стрим · ${streamer.name}` : "Стрим";
   const quality = qualityText(status);
 
   return (
@@ -145,11 +176,11 @@ export function StreamApp() {
       </div>
       {!fullscreen && (
         <footer className="stream-panel">
-          <span className="stream-panel__avatar" style={{ background: avatarColor(view?.userId ?? "") }}>
-            {(view?.name ?? "?").slice(0, 1).toUpperCase()}
-          </span>
+          <AvatarSourceContext.Provider value={avatars}>
+            <Avatar member={streamer} size={32} speaking={false} />
+          </AvatarSourceContext.Provider>
           <span className="stream-panel__who">
-            <span className="stream-panel__name">{view?.name ?? ""}</span>
+            <span className="stream-panel__name">{view ? streamer.name : ""}</span>
             <span className="stream-panel__quality">{quality}</span>
           </span>
           {status.live && <span className="live-badge">LIVE</span>}
