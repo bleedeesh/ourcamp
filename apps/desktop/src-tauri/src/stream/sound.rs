@@ -84,10 +84,10 @@ impl Target {
 }
 
 /// COM for this thread, for as long as the value lives.
-struct Com;
+pub(super) struct Com;
 
 impl Com {
-    fn init() -> WinResult<Self> {
+    pub(super) fn init() -> WinResult<Self> {
         // SAFETY: paired with `CoUninitialize` in `drop`, on the same thread.
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
         Ok(Self)

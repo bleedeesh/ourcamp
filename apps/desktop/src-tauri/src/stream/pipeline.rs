@@ -28,7 +28,8 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
 
 use super::mf::{EncoderChoice, EncoderSettings, H264Encoder};
-use super::sound::StreamSound;
+use super::sound::{Com, StreamSound};
+use super::wgc::{Picture, WindowCapture};
 use super::{bitrate, SourceKind, StreamQuality, StreamSource};
 
 /// The first frame must come within this, or the source is not there to capture.
@@ -81,17 +82,30 @@ trait Frames {
 
 /// A frame from the capturer, at the chosen size.
 fn to_i420(frame: &DesktopFrame, quality: StreamQuality) -> Option<I420Buffer> {
-    let (width, height) = (frame.width(), frame.height());
+    picture_to_i420(
+        &Picture {
+            data: frame.data(),
+            stride: frame.stride().cast_signed(),
+            width: frame.width(),
+            height: frame.height(),
+        },
+        quality,
+    )
+}
+
+/// A picture in memory, at the chosen size.
+fn picture_to_i420(picture: &Picture<'_>, quality: StreamQuality) -> Option<I420Buffer> {
+    let (width, height) = (picture.width, picture.height);
     if width < 2 || height < 2 {
         return None;
     }
     let mut buffer = I420Buffer::new(width as u32, height as u32);
     let (stride_y, stride_u, stride_v) = buffer.strides();
     let (y, u, v) = buffer.data_mut();
-    // What libyuv calls ARGB is BGRA in memory: what the capturer gives.
+    // What libyuv calls ARGB is BGRA in memory: what the capturers give.
     yuv_helper::argb_to_i420(
-        frame.data(),
-        frame.stride(),
+        picture.data,
+        picture.stride.cast_unsigned(),
         y,
         stride_y,
         u,
@@ -109,9 +123,9 @@ fn to_i420(frame: &DesktopFrame, quality: StreamQuality) -> Option<I420Buffer> {
     })
 }
 
-/// The screen or window, through the SDK's capturer, on a thread of its own: a call to the
-/// capturer can take a whole frame's time on a window, more when a game keeps the video card
-/// busy, and the encoder must not wait through that (ADR-0058).
+/// The screen or window, captured on a thread of its own: a capture call can take a whole
+/// frame's time, more when a game keeps the video card busy, and the encoder must not wait
+/// through that (ADR-0058).
 struct Desktop {
     frames: mpsc::Receiver<I420Buffer>,
     gone: Arc<AtomicBool>,
@@ -156,8 +170,8 @@ impl Drop for Desktop {
     }
 }
 
-/// Asks the capturer for frames at the chosen pace until told to stop. The frames come back
-/// through the callback, inside the call, and are converted here too.
+/// Captures until told to stop: a window directly (ADR-0060), a screen, or a window where that
+/// did not work, through the SDK.
 fn capture_thread(
     kind: SourceKind,
     id: u64,
@@ -167,6 +181,26 @@ fn capture_thread(
     stop: &AtomicBool,
     opened: &mpsc::Sender<Result<(), String>>,
 ) {
+    let tick = Duration::from_secs_f64(1.0 / f64::from(quality.fps));
+    if kind == SourceKind::Window {
+        match Com::init().and_then(|com| Ok((com, WindowCapture::open(HWND(id as *mut _), tick)?)))
+        {
+            Ok((_com, mut capture)) => {
+                let _ = opened.send(Ok(()));
+                let result = capture.run(stop, |picture| {
+                    if let Some(buffer) = picture_to_i420(picture, quality) {
+                        let _ = sender.send(buffer);
+                    }
+                });
+                if let Err(e) = result {
+                    eprintln!("[oc-stream] capture: {e}");
+                    gone.store(true, Ordering::Relaxed);
+                }
+                return;
+            }
+            Err(e) => eprintln!("[oc-stream] direct capture: {e}; through the SDK"),
+        }
+    }
     let Some(mut capturer) = capturer(kind) else {
         let _ = opened.send(Err("Захват экрана на этом компьютере недоступен".to_owned()));
         return;
@@ -191,7 +225,6 @@ fn capture_thread(
         Err(CaptureError::Permanent) => gone.store(true, Ordering::Relaxed),
     });
     let _ = opened.send(Ok(()));
-    let tick = Duration::from_secs_f64(1.0 / f64::from(quality.fps));
     let mut next = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         capturer.capture_frame();
@@ -580,6 +613,9 @@ fn pump(
     let tick = Duration::from_secs_f64(1.0 / f64::from(quality.fps));
     let mut key = true;
     let mut next = Instant::now();
+    // A window that does not change gives no frames, and the stream goes on all the same: for
+    // a viewer's key frame and for the fps on their panel, as with the SDK's capturer.
+    let mut last: Option<I420Buffer> = None;
     let started = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         if frames.gone() {
@@ -587,6 +623,9 @@ fn pump(
             return;
         }
         if let Some(frame) = current.take().or_else(|| frames.next(tick)) {
+            last = Some(frame);
+        }
+        if let Some(frame) = &last {
             if (frame.width(), frame.height()) != (encoding.width, encoding.height) {
                 // A window changed size: a new encoder, starting with a key frame.
                 match Encoding::new(frame.width(), frame.height(), quality, choice) {
@@ -604,7 +643,7 @@ fn pump(
                     .max(MIN_BITRATE);
                 encoding.encoder.set_bitrate(target);
             }
-            encoding.fill(&frame);
+            encoding.fill(frame);
             let timestamp = started.elapsed().as_micros() as i64;
             match encoding.encoder.encode(&encoding.nv12, timestamp, key) {
                 Ok(encoded) => {
@@ -844,6 +883,144 @@ mod tests {
         })
         .await;
         (count, size)
+    }
+
+    /// One picture and then nothing, like a window that does not change.
+    struct Still {
+        stripes: Stripes,
+        given: bool,
+    }
+
+    impl Frames for Still {
+        fn next(&mut self, wait: Duration) -> Option<I420Buffer> {
+            if std::mem::replace(&mut self.given, true) {
+                std::thread::sleep(wait);
+                return None;
+            }
+            self.stripes.next(wait)
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_picture_that_does_not_change_still_reaches_a_viewer() {
+        tauri::async_runtime::block_on(async {
+            let mut room = Audience::gather("stream-still").await;
+            let stream = ScreenStream::run(
+                Arc::clone(&room.streamer),
+                q(720, 30),
+                EncoderChoice::Best,
+                || {
+                    Ok(Box::new(Still {
+                        stripes: Stripes {
+                            width: 1280,
+                            height: 720,
+                            frame: 0,
+                        },
+                        given: false,
+                    }) as Box<dyn Frames>)
+                },
+            )
+            .await
+            .unwrap();
+            let track = room.stream_track().await;
+            let _ = watch(&track, 1).await;
+            let (count, size) = watch(&track, 3).await;
+            assert_eq!(size, (1280, 720));
+            assert!(count > 45, "near 30 a second, got {count}");
+            stream.stop().await;
+            room.leave().await;
+        });
+    }
+
+    /// A real window of ours through the direct capture: its size, a new size, and its end.
+    /// Needs a desktop, so not in CI.
+    #[test]
+    #[ignore = "needs a desktop"]
+    fn a_real_window_is_captured_resized_and_lost() {
+        use windows::core::w;
+        use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+        use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostMessageW,
+            PostQuitMessage, RegisterClassW, SetWindowPos, CW_USEDEFAULT, MSG, SWP_NOMOVE,
+            SWP_NOZORDER, WINDOW_EX_STYLE, WM_CLOSE, WM_DESTROY, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE,
+        };
+
+        extern "system" fn procedure(w: HWND, m: u32, a: WPARAM, b: LPARAM) -> LRESULT {
+            if m == WM_DESTROY {
+                // SAFETY: called on the thread that owns the window.
+                unsafe { PostQuitMessage(0) };
+                return LRESULT(0);
+            }
+            // SAFETY: the system's own default for what it just sent us.
+            unsafe { DefWindowProcW(w, m, a, b) }
+        }
+        let frame_of = |capture: &mut Desktop, wanted: &dyn Fn(u32) -> bool| {
+            let begun = Instant::now();
+            while begun.elapsed() < Duration::from_secs(5) {
+                if let Some(frame) = capture.next(Duration::from_millis(50)) {
+                    if wanted(frame.height()) {
+                        return Some((frame.width(), frame.height()));
+                    }
+                }
+            }
+            None
+        };
+
+        let (handle_tx, handle_rx) = mpsc::channel();
+        let pump = std::thread::spawn(move || {
+            // SAFETY: the class and window live for this thread's message loop; `message`
+            // outlives each call.
+            unsafe {
+                let instance = GetModuleHandleW(None).unwrap();
+                let class = WNDCLASSW {
+                    lpfnWndProc: Some(procedure),
+                    hInstance: instance.into(),
+                    lpszClassName: w!("OcCaptureTest"),
+                    ..WNDCLASSW::default()
+                };
+                RegisterClassW(&raw const class);
+                let window = CreateWindowExW(
+                    WINDOW_EX_STYLE::default(),
+                    w!("OcCaptureTest"),
+                    w!("capture test"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                    CW_USEDEFAULT,
+                    CW_USEDEFAULT,
+                    640,
+                    480,
+                    None,
+                    None,
+                    Some(instance.into()),
+                    None,
+                )
+                .unwrap();
+                handle_tx.send(window.0 as u64).unwrap();
+                let mut message = MSG::default();
+                while GetMessageW(&raw mut message, None, 0, 0).as_bool() {
+                    DispatchMessageW(&raw const message);
+                }
+            }
+        });
+        let id = handle_rx.recv().unwrap();
+        let window = HWND(id as *mut _);
+        let mut capture = Desktop::open(SourceKind::Window, id, q(1080, 30)).unwrap();
+        let first = frame_of(&mut capture, &|_| true).expect("the first frame");
+        assert!((600..=640).contains(&first.0), "{first:?}");
+        assert!((440..=480).contains(&first.1), "{first:?}");
+
+        // SAFETY: the window is alive until the `WM_CLOSE` below.
+        unsafe { SetWindowPos(window, None, 0, 0, 800, 700, SWP_NOMOVE | SWP_NOZORDER) }.unwrap();
+        let bigger = frame_of(&mut capture, &|h| h > 600).expect("frames of the new size");
+        assert!((760..=800).contains(&bigger.0), "{bigger:?}");
+
+        assert!(!capture.gone());
+        // SAFETY: posting to a live window; its thread then closes it.
+        unsafe { PostMessageW(Some(window), WM_CLOSE, WPARAM(0), LPARAM(0)) }.unwrap();
+        pump.join().unwrap();
+        assert!(capture.gone());
     }
 
     /// A viewer's fps of the real first screen at 1080p60. Needs a desktop, so not in CI;

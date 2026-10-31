@@ -1,5 +1,5 @@
 //! Screen streams (M6, ADR-0049). A stream publishes into the voice room already joined:
-//! on Windows, the SDK's capture → H.264 through Media Foundation → the SDK's pre-encoded
+//! on Windows, capture (a window directly, ADR-0060; a screen through the SDK) → H.264 through Media Foundation → the SDK's pre-encoded
 //! path. Other systems come with step 6.
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ mod pipeline;
 mod sound;
 #[cfg(windows)]
 mod view;
+#[cfg(windows)]
+mod wgc;
 
 #[cfg(windows)]
 pub use pipeline::{list_sources, ScreenStream};
