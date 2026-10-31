@@ -29,6 +29,12 @@ pub enum ChatUpdate {
         camp_id: String,
         message: ChatMessage,
     },
+    /// A message was removed (ADR-0048).
+    Deleted {
+        camp_id: String,
+        channel_id: String,
+        seq: u64,
+    },
     /// This device has read the chat up to `seq`.
     Read {
         camp_id: String,
@@ -144,6 +150,37 @@ impl Camps {
             other => other,
         }
         .map_err(chat_error)
+    }
+
+    /// Removes a message: your own, or that of someone of a lower rank (ADR-0048).
+    ///
+    /// # Errors
+    /// No rights over it, unreachable camp.
+    pub async fn delete_message(
+        &self,
+        id: &str,
+        channel_id: &str,
+        seq: u64,
+    ) -> Result<(), CampError> {
+        let camp = self.camp(id)?;
+        let client = camp.client()?;
+        match client
+            .delete_message(&camp.session(), channel_id, seq)
+            .await
+        {
+            Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                let session = self.relogin(&camp, &client).await?;
+                client.delete_message(&session, channel_id, seq).await
+            }
+            other => other,
+        }
+        .map_err(|e| match e {
+            ClientError::Api(ErrorCode::Forbidden) => {
+                "Удалить можно своё сообщение или сообщение того, у кого роль ниже".to_owned()
+            }
+            ClientError::Api(ErrorCode::NotFound) => "Этого сообщения уже нет".to_owned(),
+            other => describe(other),
+        })
     }
 
     /// A photo by its hash, from the cache or the camp.

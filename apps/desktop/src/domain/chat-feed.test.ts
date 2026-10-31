@@ -60,6 +60,16 @@ test("one author talking on is one turn; a pause, a new day or someone else star
   );
 });
 
+test("a removed message leaves no trace in the feed, and its neighbours read on", () => {
+  const removed: ChatMessage = { ...msg(2, "max", at(2026, 9, 29, 21, 1)), text: "", deleted: true };
+  const feed = layoutFeed([msg(1, "lena", at(2026, 9, 29, 21, 0)), removed, msg(3, "lena", at(2026, 9, 29, 21, 2))], NOW, "me", 1);
+  assert.deepEqual(
+    feed.map((i) => (i.kind === "message" ? `${i.message.seq}${i.head ? "+" : ""}` : i.kind)),
+    ["day", "1+", "unread", "3+"],
+  );
+  assert.deepEqual(layoutFeed([removed], NOW, "me", null), [], "nothing at all");
+});
+
 test("the new line goes before the first unread message of someone else", () => {
   const messages = [
     msg(1, "lena", at(2026, 9, 29, 21, 0)),

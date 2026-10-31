@@ -200,6 +200,9 @@ pub struct ChatMessage {
     /// At most one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub photo: Option<Photo>,
+    /// Removed (ADR-0048): the text and the photo are gone, the number stays taken.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleted: bool,
 }
 
 /// `POST /api/v1/channels/{id}/messages`.
@@ -415,6 +418,14 @@ pub enum CampEvent {
     Kicked,
     /// Someone wrote in a chat (ADR-0044); everyone gets it.
     Message(ChatMessage),
+    /// A message was removed (ADR-0048); everyone gets it.
+    #[serde(rename_all = "camelCase")]
+    MessageDeleted {
+        /// The chat.
+        channel_id: String,
+        /// The message's number there.
+        seq: u64,
+    },
 }
 
 /// The camp as it is now: its name and channels, who is in it and who sits at which
@@ -504,6 +515,8 @@ pub enum ErrorCode {
     NotInVoice,
     /// Writing while forbidden to speak (ADR-0044): it covers the chats too.
     Silenced,
+    /// Writing faster than a person does (ADR-0048); a moment later it goes through.
+    TooFast,
     /// Server-side failure.
     Internal,
 }
@@ -691,6 +704,7 @@ mod tests {
             sent_at: 1_790_000_000_000,
             text: "Привет".into(),
             photo: None,
+            deleted: false,
         };
         let json = serde_json::to_value(CampEvent::Message(message.clone())).unwrap();
         assert_eq!(
@@ -703,6 +717,14 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<CampEvent>(json).unwrap(),
             CampEvent::Message(message)
+        );
+        assert_eq!(
+            serde_json::to_value(CampEvent::MessageDeleted {
+                channel_id: "c1".into(),
+                seq: 3,
+            })
+            .unwrap(),
+            serde_json::json!({ "type": "message_deleted", "channelId": "c1", "seq": 3 })
         );
         let old: CampState =
             serde_json::from_str(r#"{"name":"x","channels":[],"members":[],"presence":[]}"#)

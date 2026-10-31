@@ -149,6 +149,7 @@ pub fn run() {
             commands::chat_history,
             commands::chat_send,
             commands::chat_photo,
+            commands::chat_delete,
             commands::chat_mark_read,
             commands::chat_context,
             commands::chat_window_open,

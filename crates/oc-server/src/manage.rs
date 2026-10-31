@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 
 use crate::presence::Refresh;
 use crate::rooms::{RoomError, RoomService};
-use crate::store::{Author, Posted, Store, StoreError};
+use crate::store::{Author, Deleted, Posted, Store, StoreError};
 
 /// Longest camp name, in characters.
 pub const MAX_CAMP_NAME: usize = 48;
@@ -145,6 +145,33 @@ impl Manager {
     /// owner's next command sees it. Unbounded if the camp is stopping — add a timeout.
     pub async fn settled(&self) {
         self.refresh.settled().await;
+    }
+
+    /// Removes a message, if `actor` may (ADR-0048), and tells everyone.
+    ///
+    /// # Errors
+    /// [`ManageError::Store`].
+    pub async fn delete_message(
+        &self,
+        channel_id: &str,
+        seq: u64,
+        actor_id: &str,
+        actor_role: Role,
+    ) -> Result<Deleted, ManageError> {
+        let (chat, actor) = (channel_id.to_owned(), actor_id.to_owned());
+        let deleted = self
+            .change(move |s| Ok(s.delete_message(&chat, seq, &actor, actor_role)?))
+            .await?;
+        if deleted == Deleted::Done {
+            let _ = self.directives.send(Directive {
+                to: Audience::Everyone,
+                event: CampEvent::MessageDeleted {
+                    channel_id: channel_id.to_owned(),
+                    seq,
+                },
+            });
+        }
+        Ok(deleted)
     }
 
     /// Opens the camp to anyone with its address, or back to invites only (ADR-0040).

@@ -3,7 +3,8 @@ import type { ChatMessage } from "../engine/camp-api.ts";
 /**
  * Messages of one chat as the window lays them out (ADR-0046): oldest first, a line for
  * each day, the author's name only where they start talking, and a "new" line before
- * the first message that was unread when the chat opened.
+ * the first message that was unread when the chat opened. Removed messages (ADR-0048)
+ * do not show: nothing is left of them but their number.
  */
 export type FeedItem =
   | { readonly kind: "day"; readonly key: string; readonly label: string }
@@ -86,6 +87,7 @@ export function layoutFeed(
   let previous: ChatMessage | null = null;
   let unreadShown = false;
   for (const message of messages) {
+    if (message.deleted) continue;
     const newDay = previous === null || dayKey(previous.sentAt) !== dayKey(message.sentAt);
     if (newDay) items.push({ kind: "day", key: `day-${dayKey(message.sentAt)}`, label: dayLabel(message.sentAt, now) });
     const unread =

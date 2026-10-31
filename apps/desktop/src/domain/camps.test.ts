@@ -121,6 +121,9 @@ class FakeCampApi implements CampApi {
   photo(): Promise<Uint8Array> {
     return Promise.reject(new Error("not in these tests"));
   }
+  deleteMessage(): Promise<void> {
+    return Promise.resolve();
+  }
   markRead(id: string, channelId: string, seq: number): Promise<void> {
     this.calls.push(`read:${id}:${channelId}:${seq}`);
     return Promise.resolve();
