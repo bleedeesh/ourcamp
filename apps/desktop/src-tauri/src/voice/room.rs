@@ -166,6 +166,11 @@ impl VoiceRoom {
         })
     }
 
+    /// The room, for what else goes into it (a stream, ADR-0049).
+    pub fn room(&self) -> Arc<Room> {
+        Arc::clone(&self.room)
+    }
+
     /// Mutes the published microphone; others see it as muted. Callable from any
     /// thread.
     pub fn set_mic_muted(&self, muted: bool) {
@@ -417,7 +422,7 @@ async fn play(mut stream: NativeAudioStream, mut input: SourceInput) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use livekit::webrtc::audio_source::AudioSourceOptions;
     use oc_camp_client::transport::{install, PlainLoopback};
@@ -510,7 +515,9 @@ mod tests {
 
     /// A camp server in this process (LiveKit from `pnpm livekit`), a fresh device logged
     /// in, and the room parameters for channel `c0` — the real path, pinned TLS included.
-    async fn camp_room(name: &str) -> (oc_server::Running, std::path::PathBuf, RoomParams) {
+    pub(crate) async fn camp_room(
+        name: &str,
+    ) -> (oc_server::Running, std::path::PathBuf, RoomParams) {
         install(PlainLoopback::Deny);
         let data_dir = std::env::temp_dir().join(format!("oc-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_dir);
