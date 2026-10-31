@@ -65,7 +65,7 @@
   переключатель, «Скопировать приглашение»), `CampApi` (Tauri / демо для браузера), состав
   костра из движка (`domain/roster.ts`), 39 тестов. Вёрстку смотреть в браузере: `.claude/launch.json`
   (`desktop-ui`, Vite + демо-режим, окно 380×752).
-- Сборка на Windows: статический CRT (`.cargo/config.toml`), короткий путь (ADR-0012); там же `_HAS_EXCEPTIONS=1` для C++ `webrtc-sys`, иначе ошибки WebRTC читаются из свободной памяти (ADR-0050).
+- Сборка на Windows: статический CRT (`.cargo/config.toml`), короткий путь (ADR-0012); там же `_HAS_EXCEPTIONS=1` для C++ `webrtc-sys`, иначе ошибки WebRTC читаются из свободной памяти (ADR-0050). На macOS там же `-ObjC` (ADR-0052).
 - Node в среде агента — через nvs: `%LOCALAPPDATA%\nvs\node\24.21.0\x64` (не в PATH).
 - CI зелёный (8 задач, вкл. Miri, тесты с LiveKit в Docker и `managed` на Ubuntu + Windows). Linux-сборке нужен clang ≥ 21.
   Remote: github.com/bleedeesh/ourcamp (публичный). Известные пробелы M2: нет статуса «подключаемся /

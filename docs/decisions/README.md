@@ -56,5 +56,6 @@
 | [0049](0049-streams-plan.md) | Стримы: захват SDK без `scap`, H.264 через Media Foundation и готовый поток, без simulcast, подписка по запросу, окно на `wgpu`, звук через process loopback; M6 по шагам | принято |
 | [0050](0050-webrtc-error-use-after-free.md) | Ошибки WebRTC на Windows читались из освобождённой памяти: `_HAS_EXCEPTIONS=1` в `.cargo/config.toml` |
 | [0051](0051-websocket-closing-handshake.md) | Сигнальный WebSocket закрывается с ответом собеседника, иначе `Leave` теряется и место занято ещё 20 с |
+| [0052](0052-macos-objc-link-flag.md) | macOS: линковка с `-ObjC`, иначе фабрика libwebrtc завершает процесс |
 
 Шаблон: Контекст → Решение → Почему → Отвергнутые варианты → Последствия.
