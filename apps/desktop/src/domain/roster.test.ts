@@ -122,6 +122,31 @@ const state = (presence: Record<string, Array<[string, boolean]>>): CampState =>
   })),
 });
 
+test("the LIVE badge follows the snapshot everywhere, your own campfire and you included", () => {
+  const onAir = (ids: readonly string[]): CampState => ({
+    ...state({}),
+    presence: [
+      { channelId: "lobby", members: ["me", "artem"].map((userId) => ({ userId, micMuted: false, streaming: ids.includes(userId) })) },
+      { channelId: "katka", members: [{ userId: "zhenya", micMuted: false, streaming: ids.includes("zhenya") }] },
+    ],
+  });
+  // You sit in the lobby, whose list comes from the room, not from the snapshot.
+  const started = applyCampState(camp, onAir(["me", "artem", "zhenya"]), "lobby", "me");
+  assert.equal(started.members["me"]?.streaming, true);
+  assert.equal(started.members["artem"]?.streaming, true);
+  assert.equal(started.members["zhenya"]?.streaming, true);
+
+  const ended = applyCampState(started, onAir([]), "lobby", "me");
+  assert.equal(ended.members["me"]?.streaming, false);
+  assert.equal(ended.members["artem"]?.streaming, false);
+  assert.equal(ended.members["zhenya"]?.streaming, false);
+});
+
+test("a server older than streams says nothing: nobody is on air", () => {
+  const next = applyCampState(camp, state({ katka: [["zhenya", false]] }), null, "me");
+  assert.equal(next.members["zhenya"]?.streaming, false);
+});
+
 test("presence fills every campfire, with names and roles from the camp", () => {
   const next = applyCampState(camp, state({ katka: [["zhenya", true]], lobby: [["artem", false]] }), null, "me");
   assert.deepEqual(next.channels[0]?.memberIds, ["artem"]);

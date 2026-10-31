@@ -487,6 +487,9 @@ pub struct PresentMember {
     pub user_id: String,
     /// No microphone published, or it is muted.
     pub mic_muted: bool,
+    /// Showing their screen (ADR-0049). Absent from servers older than streams.
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 // ---- errors ----
@@ -657,6 +660,7 @@ mod tests {
                 members: vec![PresentMember {
                     user_id: "u".into(),
                     mic_muted: true,
+                    streaming: true,
                 }],
             }],
             open: true,
@@ -690,6 +694,7 @@ mod tests {
         );
         assert_eq!(json["presence"][0]["channelId"], "c0");
         assert_eq!(json["presence"][0]["members"][0]["micMuted"], true);
+        assert_eq!(json["presence"][0]["members"][0]["streaming"], true);
         assert_eq!(json["chats"]["c1"], 7);
         assert_eq!(serde_json::from_value::<CampEvent>(json).unwrap(), event);
     }

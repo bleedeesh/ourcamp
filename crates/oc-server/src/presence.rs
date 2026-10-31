@@ -73,19 +73,20 @@ fn snapshot(store: &Store, rooms: &HashMap<String, Vec<Participant>>) -> StoreRe
         .iter()
         .filter(|channel| channel.kind == ChannelKind::Voice)
         .filter_map(|channel| {
-            let people: BTreeMap<&str, bool> = rooms
+            let people: BTreeMap<&str, &Participant> = rooms
                 .get(&channel.id)?
                 .iter()
                 .filter(|p| known.contains(p.identity.as_str()))
-                .map(|p| (p.identity.as_str(), p.mic_muted()))
+                .map(|p| (p.identity.as_str(), p))
                 .collect();
             (!people.is_empty()).then(|| ChannelPresence {
                 channel_id: channel.id.clone(),
                 members: people
                     .into_iter()
-                    .map(|(user_id, mic_muted)| PresentMember {
+                    .map(|(user_id, p)| PresentMember {
                         user_id: user_id.to_owned(),
-                        mic_muted,
+                        mic_muted: p.mic_muted(),
+                        streaming: p.streaming(),
                     })
                     .collect(),
             })
@@ -219,6 +220,58 @@ mod tests {
             participant(r#"{"identity":"u4"}"#).mic_muted(),
             "no tracks at all"
         );
+    }
+
+    #[test]
+    fn streaming_means_a_screen_track_as_livekit_reports_it() {
+        let showing = participant(
+            r#"{"identity":"u1","tracks":[{"sid":"TR_1","type":"VIDEO","name":"screen",
+            "source":"SCREEN_SHARE","width":1280,"height":720}]}"#,
+        );
+        assert!(showing.streaming());
+        let camera = participant(
+            r#"{"identity":"u2","tracks":[{"type":"VIDEO","source":"CAMERA","muted":false}]}"#,
+        );
+        assert!(!camera.streaming(), "a camera is not a stream");
+        let sound_only = participant(
+            r#"{"identity":"u3","tracks":[{"type":"AUDIO","source":"SCREEN_SHARE_AUDIO"}]}"#,
+        );
+        assert!(!sound_only.streaming(), "stream audio without the picture");
+        let paused = participant(
+            r#"{"identity":"u4","tracks":[{"type":"VIDEO","source":"SCREEN_SHARE","muted":true}]}"#,
+        );
+        assert!(!paused.streaming());
+        assert!(!participant(r#"{"identity":"u5"}"#).streaming());
+    }
+
+    #[test]
+    fn snapshot_says_who_streams() {
+        let mut store = Store::open_in_memory("x").unwrap();
+        let join = store.join_token().unwrap().as_str().to_owned();
+        for id in ["ann", "bob"] {
+            let device = Device {
+                user_id: id,
+                public_key: id.as_bytes(),
+                name: id,
+            };
+            store.login(device, Some(&join)).unwrap().unwrap();
+        }
+        let rooms = HashMap::from([(
+            "c0".to_owned(),
+            vec![
+                participant(r#"{"identity":"bob"}"#),
+                participant(
+                    r#"{"identity":"ann","tracks":[{"type":"VIDEO","source":"SCREEN_SHARE"}]}"#,
+                ),
+            ],
+        )]);
+        let state = snapshot(&store, &rooms).unwrap();
+        let people: Vec<_> = state.presence[0]
+            .members
+            .iter()
+            .map(|m| (m.user_id.as_str(), m.streaming))
+            .collect();
+        assert_eq!(people, [("ann", true), ("bob", false)]);
     }
 
     #[test]
