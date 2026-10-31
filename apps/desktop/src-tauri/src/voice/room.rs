@@ -607,7 +607,11 @@ mod tests {
                 let oc_proto::CampEvent::State(state) = event else {
                     continue;
                 };
-                if !state.presence.is_empty() {
+                // The seat can show up before the microphone does: the camp polls a moment
+                // of LiveKit's state, and on a busy machine the track comes a little later.
+                let unmuted =
+                    |p: &oc_proto::ChannelPresence| p.members.iter().any(|m| !m.mic_muted);
+                if state.presence.iter().any(unmuted) {
                     break state;
                 }
             };
@@ -615,10 +619,6 @@ mod tests {
             let sitter = &state.presence[0].members[0].user_id;
             let profile = state.members.iter().find(|m| &m.user_id == sitter).unwrap();
             assert_eq!(profile.name, "presence", "the person who joined voice");
-            assert!(
-                !state.presence[0].members[0].mic_muted,
-                "published and unmuted"
-            );
 
             // A polite leave (what the app does on exit too) frees the seat at once;
             // without it LiveKit keeps the seat until it times the connection out.

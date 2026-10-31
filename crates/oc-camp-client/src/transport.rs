@@ -248,6 +248,10 @@ impl HttpClient for PinnedTransport {
 
 type WebSocket = WebSocketStream<Box<dyn Io>>;
 
+/// How long a closing connection waits for the peer's close frame. Less than the 3 s the
+/// SDK allows a closing writer, after which it cancels the whole close.
+const CLOSE_ANSWER: Duration = Duration::from_secs(1);
+
 /// One signalling WebSocket. Mirrors `livekit-net`'s native connection: binary frames
 /// cross the trait, control frames are handled here.
 struct Connection {
@@ -294,14 +298,100 @@ impl WsConnection for Connection {
         }
     }
 
+    /// The closing handshake: send our close frame, then wait for the peer's. Dropping the
+    /// socket right after the frame resets it while data is unread on either end, and a
+    /// reset throws away what the other side has not read yet: LiveKit then misses the
+    /// `Leave` sent just before, and the seat stays taken until it times out (ADR-0051).
     async fn close(&self) {
         let _ = self.writer.lock().await.close().await;
+        // Bounded, the lock too: on a dead link the reader may be parked and nothing comes.
+        let _ = tokio::time::timeout(CLOSE_ANSWER, async {
+            let mut reader = self.reader.lock().await;
+            while let Some(Ok(_)) = reader.next().await {}
+        })
+        .await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both ends of one signalling WebSocket over local TCP.
+    async fn socket_pair() -> (Connection, WebSocketStream<tokio::net::TcpStream>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            tokio_tungstenite::accept_async(tcp).await.unwrap()
+        });
+        let tcp = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (socket, _) = tokio_tungstenite::client_async(
+            format!("ws://{address}/"),
+            Box::new(tcp) as Box<dyn Io>,
+        )
+        .await
+        .unwrap();
+        let (writer, reader) = socket.split();
+        let connection = Connection {
+            writer: Mutex::new(writer),
+            reader: Mutex::new(reader),
+        };
+        (connection, accept.await.unwrap())
+    }
+
+    /// The way a `Leave` goes: a frame, then close at once, with data from the server still
+    /// unread on our side. The socket must live until the server has read it all.
+    #[tokio::test]
+    async fn close_waits_until_the_peer_has_read_everything() {
+        let (connection, mut server) = socket_pair().await;
+        server
+            .send(Message::Binary(vec![1; 64 * 1024].into()))
+            .await
+            .unwrap();
+        let busy = Duration::from_millis(300);
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(busy).await;
+            let mut frames = Vec::new();
+            while let Some(Ok(message)) = server.next().await {
+                if let Message::Binary(data) = message {
+                    frames.push(data.to_vec());
+                }
+            }
+            frames
+        });
+
+        let started = std::time::Instant::now();
+        connection.send(b"leave".to_vec()).await.unwrap();
+        connection.close().await;
+        assert!(
+            started.elapsed() >= busy,
+            "closed after {:?}",
+            started.elapsed()
+        );
+        assert_eq!(server.await.unwrap(), [b"leave".to_vec()]);
+    }
+
+    /// A peer that never answers, with the reader parked in `recv` as on a dead link.
+    #[tokio::test]
+    async fn close_does_not_wait_for_a_silent_peer() {
+        let (connection, _silent) = socket_pair().await;
+        let connection = std::sync::Arc::new(connection);
+        let parked = tokio::spawn({
+            let connection = std::sync::Arc::clone(&connection);
+            async move { connection.recv().await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let started = std::time::Instant::now();
+        connection.close().await;
+        assert!(
+            started.elapsed() < CLOSE_ANSWER * 2,
+            "took {:?}",
+            started.elapsed()
+        );
+        parked.abort();
+    }
 
     fn transport(plain: PlainLoopback) -> PinnedTransport {
         PinnedTransport {
