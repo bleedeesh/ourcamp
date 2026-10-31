@@ -1749,3 +1749,38 @@ async fn a_photo_goes_up_first_then_into_a_message() {
     ));
     camp.stop().await;
 }
+
+// ---- what the server window watches ----
+
+/// The window follows `camp_state` and `ports` until they close, which it takes for the
+/// camp stopping. Without a router `ports` closed at once, and the window froze on its
+/// first snapshot: nobody joining, nobody in voice.
+#[tokio::test]
+async fn the_ports_watch_stays_open_until_the_camp_stops() {
+    let camp = camp_with_upstream(&livekit_down()).await;
+    let mut ports = camp.running.ports();
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(200), ports.changed()).await;
+    assert!(quiet.is_err(), "no change and not closed: {quiet:?}");
+
+    let mut state = camp.running.camp_state();
+    camp.client()
+        .login(&DeviceKey::generate(), "Лена", Some(&camp.join()))
+        .await
+        .unwrap();
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            state.changed().await.unwrap();
+            if state.borrow_and_update().members.len() == 1 {
+                return;
+            }
+        }
+    });
+    joined.await.expect("the snapshot shows who came in");
+
+    camp.running.stop().await;
+    assert!(
+        ports.changed().await.is_err(),
+        "closed once the camp stopped"
+    );
+    let _ = std::fs::remove_dir_all(camp.dir);
+}

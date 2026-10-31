@@ -233,3 +233,51 @@ test("the window opens the chat shown last in this camp", async () => {
   const again = await setup(storage);
   assert.equal(again.chat.store.get().activeId, "t2");
 });
+
+test("an open empty chat shows its first message, sent here or by someone else", async () => {
+  const { api, chat } = await setup();
+  api.chats.set("t2", []);
+  await chat.select("t2");
+  assert.deepEqual(seqs(chat, "t2"), []);
+  chat.setDraft("Первое");
+  await chat.send();
+  assert.deepEqual(seqs(chat, "t2"), [1], "your own, at once");
+
+  api.chats.set("t1", []);
+  const other = new ChatController(api as unknown as CampApi, new MemoryStorage());
+  await other.start();
+  assert.deepEqual(seqs(other, "t1"), []);
+  api.add("t1", "lena", false);
+  assert.deepEqual(seqs(other, "t1"), [1], "someone else's, from the event");
+  assert.equal(other.store.get().threads["t1"]?.complete, true, "and it is the chat's beginning");
+});
+
+test("an empty chat catches up after a missed event; a message during the first fetch is not lost", async () => {
+  const { api, chat } = await setup();
+  api.chats.set("t2", []);
+  await chat.select("t2");
+  api.add("t2", "lena");
+  api.add("t2", "lena");
+  api.emitLive({ campId: "vk", online: true, state: api.state() });
+  await tick();
+  assert.deepEqual(seqs(chat, "t2"), [1, 2], "from the snapshot's number");
+
+  const late = new FakeChatApi();
+  const history = late.history.bind(late);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  // The first page is read, then held back while someone writes.
+  late.history = async (id, chatId, before, limit) => {
+    const page = await history(id, chatId, before, limit);
+    if (chatId === "t1" && before === null) await gate;
+    return page;
+  };
+  const racing = new ChatController(late as unknown as CampApi, new MemoryStorage());
+  const started = racing.start();
+  await tick();
+  late.add("t1", "lena", false);
+  release();
+  await started;
+  await tick();
+  assert.equal(seqs(racing, "t1").at(-1), 121, "fetched after the page came");
+});

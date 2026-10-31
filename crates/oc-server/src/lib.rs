@@ -424,19 +424,26 @@ pub async fn start(config: Config) -> Result<Running, StartError> {
     })
 }
 
-/// Keeps the ports open on the router, when one was given (ADR-0039).
+/// Keeps the ports open on the router, when one was given (ADR-0039). Either way the
+/// receiver closes only when the camp stops: whoever watches it takes a closed channel
+/// for that (the server window ends its updates), so without a router something still
+/// has to hold the sender.
 fn open_ports(
     router: Option<upnp::Gateway>,
     wanted: Vec<ports::Port>,
     shutdown: &watch::Receiver<bool>,
 ) -> (watch::Receiver<ports::PortsState>, Option<JoinHandle<()>>) {
-    match router {
-        Some(gateway) => {
-            let (ports, task) = ports::spawn(gateway, wanted, shutdown.clone());
-            (ports, Some(task))
-        }
-        None => (watch::channel(ports::PortsState::Off).1, None),
+    if let Some(gateway) = router {
+        let (ports, task) = ports::spawn(gateway, wanted, shutdown.clone());
+        return (ports, Some(task));
     }
+    let (sender, receiver) = watch::channel(ports::PortsState::Off);
+    let mut shutdown = shutdown.clone();
+    let task = tokio::spawn(async move {
+        let _ = shutdown.wait_for(|&stopping| stopping).await;
+        drop(sender);
+    });
+    (receiver, Some(task))
 }
 
 /// The owner's command line (ADR-0041). Without it the camp still serves friends.
