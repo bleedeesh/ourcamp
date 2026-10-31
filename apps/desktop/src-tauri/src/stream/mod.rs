@@ -55,6 +55,7 @@ pub use other::{list_sources, ScreenStream};
 /// Until step 6 of M6: everything but Windows says so and streams nothing.
 #[cfg(not(windows))]
 mod other {
+    use std::future::Future;
     use std::sync::Arc;
 
     use livekit::Room;
@@ -70,18 +71,19 @@ mod other {
         Vec::new()
     }
 
+    // Awaited like the `async fn`s on Windows; here there is nothing to wait for.
     impl ScreenStream {
-        #[allow(clippy::unused_async, reason = "the same signature as on Windows")]
-        pub async fn start(
+        pub fn start(
             _room: Arc<Room>,
             _kind: SourceKind,
             _id: u64,
             _quality: StreamQuality,
-        ) -> Result<Self, String> {
-            Err(LATER.to_owned())
+        ) -> impl Future<Output = Result<Self, String>> {
+            std::future::ready(Err(LATER.to_owned()))
         }
 
-        #[allow(clippy::unused_async, reason = "the same signature as on Windows")]
-        pub async fn stop(self) {}
+        pub fn stop(self) -> impl Future<Output = ()> {
+            std::future::ready(())
+        }
     }
 }
