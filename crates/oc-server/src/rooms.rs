@@ -47,6 +47,13 @@ impl Participant {
             .iter()
             .any(|t| t.kind == "AUDIO" && t.source == "MICROPHONE" && !t.muted)
     }
+
+    /// Showing their screen (ADR-0049). The sound of a stream alone does not count.
+    pub fn streaming(&self) -> bool {
+        self.tracks
+            .iter()
+            .any(|t| t.kind == "VIDEO" && t.source == "SCREEN_SHARE" && !t.muted)
+    }
 }
 
 #[derive(Debug, Deserialize)]

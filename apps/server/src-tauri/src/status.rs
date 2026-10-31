@@ -229,6 +229,7 @@ mod tests {
                 members: vec![PresentMember {
                     user_id: "u2".into(),
                     mic_muted: true,
+                    streaming: false,
                 }],
             }],
             open: false,

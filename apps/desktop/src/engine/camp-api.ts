@@ -168,7 +168,12 @@ export interface CampState {
   }>;
   readonly presence: ReadonlyArray<{
     readonly channelId: string;
-    readonly members: ReadonlyArray<{ readonly userId: UserId; readonly micMuted: boolean }>;
+    readonly members: ReadonlyArray<{
+      readonly userId: UserId;
+      readonly micMuted: boolean;
+      /** Showing their screen (ADR-0049); absent from servers older than streams. */
+      readonly streaming?: boolean;
+    }>;
   }>;
   /** Chat id → its last message, for chats with any (ADR-0044); absent: none at all. */
   readonly chats?: Readonly<Record<string, number>>;

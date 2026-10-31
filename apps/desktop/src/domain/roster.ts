@@ -109,10 +109,12 @@ export function applyRoster(camp: Camp, channelId: string, update: ParticipantsU
  * they are now (renames, new and removed campfires), profiles (names, roles) for
  * everyone, and who sits at every campfire — except the one you are in, whose room
  * reports it sooner and more precisely (`applyRoster`). You are never listed by
- * presence: the tree adds you to your own campfire itself.
+ * presence: the tree adds you to your own campfire itself. Who is on air comes only from
+ * here, for every campfire and you as well: the room does not say it (ADR-0049).
  */
 export function applyCampState(camp: Camp, state: CampState, currentChannelId: string | null, selfId: UserId): Camp {
   const members: Record<UserId, Member> = { ...camp.members };
+  const onAir = new Set(state.presence.flatMap((c) => c.members.filter((p) => p.streaming === true).map((p) => p.userId)));
   for (const info of state.members) {
     const known = members[info.userId] ?? newcomer(info.userId, info.name);
     members[info.userId] = {
@@ -121,6 +123,7 @@ export function applyCampState(camp: Camp, state: CampState, currentChannelId: s
       role: info.role,
       silenced: info.silenced,
       avatar: info.avatar ?? null,
+      streaming: onAir.has(info.userId),
     };
   }
   const presence = new Map(state.presence.map((p) => [p.channelId, p.members]));

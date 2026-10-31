@@ -3,6 +3,9 @@
 //! Publishes the local microphone with the ADR-0008 settings, turns every remote
 //! microphone track into a mixer source and reports who is in the room. The room knows
 //! nothing about the mixer or the UI: it talks to the engine through [`RoomHost`].
+//!
+//! Subscriptions are explicit (ADR-0049): every microphone at once, a stream only for
+//! whoever asks for it, so that a stream costs nothing to those not watching.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -125,10 +128,20 @@ impl VoiceRoom {
         mic_muted: bool,
         host: Arc<dyn RoomHost>,
     ) -> Result<Self, String> {
-        let (room, events) = Room::connect(&params.url, &params.token, RoomOptions::default())
+        // `#[non_exhaustive]` forbids a struct expression outside the SDK: only a change.
+        let mut options = RoomOptions::default();
+        options.auto_subscribe = false;
+        let (room, events) = Room::connect(&params.url, &params.token, options)
             .await
             .map_err(|e| format!("Не удалось подключиться к {}: {e}", params.url))?;
         let room = Arc::new(room);
+        // Microphones already in the room were announced before we subscribed to events;
+        // the later ones arrive as `TrackPublished` (`handle_events`).
+        for participant in room.remote_participants().into_values() {
+            for publication in participant.track_publications().into_values() {
+                listen_if_microphone(&publication);
+            }
+        }
 
         let track = LocalAudioTrack::create_audio_track("microphone", RtcAudioSource::Native(mic));
         if mic_muted {
@@ -264,6 +277,13 @@ async fn publish_mic(room: &Room, track: &LocalAudioTrack) -> Result<(), String>
         .map_err(|e| e.to_string())
 }
 
+/// Asks for a remote track if it is a voice. Needs a runtime: the SDK spawns the request.
+fn listen_if_microphone(publication: &RemoteTrackPublication) {
+    if publication.source() == TrackSource::Microphone {
+        publication.set_subscribed(true);
+    }
+}
+
 /// Aborts a task when dropped. Tokio's `JoinHandle` only detaches on drop, which
 /// would leave a voice task running after its room is gone.
 struct AbortOnDrop(JoinHandle<()>);
@@ -311,6 +331,7 @@ async fn handle_events(
 
     while let Some(event) = events.recv().await {
         match event {
+            RoomEvent::TrackPublished { publication, .. } => listen_if_microphone(&publication),
             RoomEvent::TrackSubscribed {
                 track: RemoteTrack::Audio(track),
                 publication,
@@ -692,6 +713,247 @@ pub(crate) mod tests {
                 .unwrap();
 
             room.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
+    /// Records whose voices arrive.
+    #[derive(Default)]
+    struct Ears(std::sync::Mutex<Vec<String>>);
+
+    impl Ears {
+        async fn wait_for(&self, user_id: &str) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !self.0.lock().unwrap().iter().any(|id| id == user_id) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the microphone arrives by itself");
+        }
+    }
+
+    impl RoomHost for Ears {
+        fn voice_started(&self, user_id: &str) -> Option<SourceInput> {
+            self.0.lock().unwrap().push(user_id.to_owned());
+            None
+        }
+        fn voice_stopped(&self, _: &str) {}
+        fn members_changed(&self, _: Vec<RemoteMember>) {}
+        fn disconnected(&self, _: String) {}
+        fn link_changed(&self, _: Link) {}
+    }
+
+    /// One more member of this camp, logged in.
+    async fn another_member(
+        camp: &oc_server::Running,
+        name: &str,
+    ) -> (CampClient, oc_camp_client::Session) {
+        let client = CampClient::new(&camp.links.join);
+        let session = client
+            .login(
+                &DeviceKey::generate(),
+                name,
+                Some(camp.links.join.token.as_str()),
+            )
+            .await
+            .unwrap();
+        (client, session)
+    }
+
+    /// Their way into `c0`, with the rights they have at this moment.
+    async fn way_in(client: &CampClient, session: &oc_camp_client::Session) -> RoomParams {
+        RoomParams {
+            url: client.voice_url(),
+            token: client.room_token(session, "c0").await.unwrap().token,
+            playback_rate: 48_000,
+        }
+    }
+
+    async fn listener(params: RoomParams, ears: &Arc<Ears>) -> VoiceRoom {
+        let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+        let host: Arc<dyn RoomHost> = ears.clone();
+        VoiceRoom::connect(params, source, false, host)
+            .await
+            .expect("voice through the camp (is `pnpm livekit` running?)")
+    }
+
+    /// The stream of `user_id` as this room sees it, once announced.
+    fn screen_of(room: &VoiceRoom, user_id: &str) -> Option<RemoteTrackPublication> {
+        let identity = ParticipantIdentity::from(user_id.to_owned());
+        room.room()
+            .remote_participants()
+            .get(&identity)?
+            .track_publications()
+            .into_values()
+            .find(|p| p.source() == TrackSource::Screenshare)
+    }
+
+    /// A publisher of black frames, for as long as the task lives.
+    fn black_screen() -> (LocalVideoTrack, AbortOnDrop) {
+        use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+        use livekit::webrtc::video_source::native::NativeVideoSource;
+        use livekit::webrtc::video_source::{RtcVideoSource, VideoResolution};
+
+        let (width, height) = (320, 180);
+        let source = NativeVideoSource::new(VideoResolution { width, height }, true);
+        let frames = AbortOnDrop(tauri::async_runtime::spawn({
+            let source = source.clone();
+            async move {
+                let buffer = I420Buffer::new_black(width, height);
+                let mut frame = VideoFrame::new(VideoRotation::VideoRotation0, buffer);
+                let mut tick = tokio::time::interval(Duration::from_millis(50));
+                loop {
+                    tick.tick().await;
+                    frame.timestamp_us += 50_000;
+                    source.capture_frame(&frame);
+                }
+            }
+        }));
+        let track = LocalVideoTrack::create_video_track("screen", RtcVideoSource::Native(source));
+        (track, frames)
+    }
+
+    /// ADR-0049 against the real LiveKit: microphones come by themselves to whoever was
+    /// here first and to whoever came later; a stream reaches only the one who asked; the
+    /// camp's snapshot tells everyone who is on air.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn microphones_come_by_themselves_and_a_stream_only_on_request() {
+        use livekit::webrtc::video_stream::native::NativeVideoStream;
+
+        tauri::async_runtime::block_on(async {
+            let deadline = Duration::from_secs(10);
+            let (camp, dir, params) = camp_room("on-demand").await;
+            let early_ears = Arc::new(Ears::default());
+            let early = listener(params, &early_ears).await;
+
+            let (client, session) = another_member(&camp, "Стример").await;
+            let access = way_in(&client, &session).await;
+            let (streamer, _) = Room::connect(&access.url, &access.token, RoomOptions::default())
+                .await
+                .unwrap();
+            let streamer_id = streamer.local_participant().identity().to_string();
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let mic =
+                LocalAudioTrack::create_audio_track("microphone", RtcAudioSource::Native(source));
+            publish_mic(&streamer, &mic).await.unwrap();
+            let (screen, frames) = black_screen();
+            let published = streamer
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Video(screen),
+                    TrackPublishOptions {
+                        source: TrackSource::Screenshare,
+                        ..TrackPublishOptions::default()
+                    },
+                )
+                .await
+                .unwrap();
+
+            let mut states = camp.camp_state();
+            let on_air = |want: bool, id: String| {
+                move |s: &Arc<oc_proto::CampState>| {
+                    s.presence
+                        .iter()
+                        .flat_map(|c| &c.members)
+                        .any(|m| m.user_id == id && m.streaming == want)
+                }
+            };
+            let state =
+                tokio::time::timeout(deadline, states.wait_for(on_air(true, streamer_id.clone())))
+                    .await
+                    .expect("the camp sees the stream")
+                    .unwrap()
+                    .clone();
+            let others_on_air = state
+                .presence
+                .iter()
+                .flat_map(|c| &c.members)
+                .filter(|m| m.user_id != streamer_id && m.streaming)
+                .count();
+            assert_eq!(others_on_air, 0, "only the one who shows their screen");
+
+            // Comes after the stream is up: both tracks are already in the room.
+            let (client, session) = another_member(&camp, "Опоздавший").await;
+            let late_ears = Arc::new(Ears::default());
+            let late = listener(way_in(&client, &session).await, &late_ears).await;
+
+            early_ears.wait_for(&streamer_id).await;
+            late_ears.wait_for(&streamer_id).await;
+            // Long enough for a stream sent without asking to have arrived alongside.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            for room in [&early, &late] {
+                let stream = screen_of(room, &streamer_id).expect("the stream is announced");
+                assert!(!stream.is_desired(), "nobody asked for it");
+                assert!(stream.track().is_none(), "nothing is delivered");
+            }
+
+            let asked = screen_of(&late, &streamer_id).unwrap();
+            asked.set_subscribed(true);
+            let track = tokio::time::timeout(deadline, async {
+                loop {
+                    if let Some(track) = asked.track() {
+                        return track;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("the stream comes when asked for");
+            let RemoteTrack::Video(video) = track else {
+                panic!("a screen is a video track");
+            };
+            let mut stream = NativeVideoStream::new(video.rtc_track());
+            tokio::time::timeout(Duration::from_secs(15), stream.next())
+                .await
+                .expect("frames of the stream")
+                .expect("the stream is open");
+            let untouched = screen_of(&early, &streamer_id).unwrap();
+            assert!(untouched.track().is_none(), "the other one did not ask");
+
+            drop(frames);
+            streamer
+                .local_participant()
+                .unpublish_track(&published.sid())
+                .await
+                .unwrap();
+            tokio::time::timeout(deadline, states.wait_for(on_air(false, streamer_id)))
+                .await
+                .expect("the camp sees the stream end")
+                .unwrap();
+
+            early.close().await;
+            late.close().await;
+            streamer.close().await.unwrap();
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
+    /// A silenced member publishes nothing and yet hears: subscribing does not depend on
+    /// having a track of one's own (ADR-0028, 0049).
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_silenced_member_still_hears_the_channel() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("silent-ears").await;
+            let speaker = connect(params).await;
+            let speaker_id = speaker.room().local_participant().identity().to_string();
+
+            let (client, session) = another_member(&camp, "Без голоса").await;
+            camp.manager()
+                .set_silenced(&session.user_id, true)
+                .await
+                .unwrap();
+            let ears = Arc::new(Ears::default());
+            let silent = listener(way_in(&client, &session).await, &ears).await;
+            assert!(!may_publish(&silent.room()), "the token came without it");
+            ears.wait_for(&speaker_id).await;
+
+            silent.close().await;
+            speaker.close().await;
             camp.stop().await;
             let _ = std::fs::remove_dir_all(dir);
         });
