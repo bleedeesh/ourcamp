@@ -178,7 +178,12 @@ struct SourceSlot {
 enum Command {
     Add(Box<SourceSlot>),
     Remove(SourceId),
-    Master { gain: f32, muted: bool },
+    Master {
+        gain: f32,
+        muted: bool,
+    },
+    /// Starts the cue at this place in what [`MixerCore::set_cues`] was given.
+    PlayCue(usize),
 }
 
 /// Producer end handed to whoever decodes a track (network/decoder thread).
@@ -277,7 +282,22 @@ pub struct MixerCore {
     master: GainRamp,
     limiter: Limiter,
     tap: Option<Producer>,
+    /// Short sounds, interleaved stereo. They stay here for the mixer's life: starting one
+    /// moves a number, so the audio thread never owns anything it would have to free.
+    cues: Vec<Vec<f32>>,
+    playing: Vec<PlayingCue>,
+    /// Cues play at their own level; the master volume and deafen still apply.
+    unity: GainRamp,
 }
+
+/// A cue on its way out: which, and how many samples of it have gone.
+struct PlayingCue {
+    cue: usize,
+    at: usize,
+}
+
+/// More at once than this and the newest is not heard: nobody would tell them apart anyway.
+const MAX_PLAYING_CUES: usize = 8;
 
 /// Creates a connected mixer pair.
 ///
@@ -313,6 +333,9 @@ pub fn mixer<K: Eq + Hash + Clone>(config: MixerConfig) -> (MixerControl<K>, Mix
             config.sample_rate,
         ),
         tap: None,
+        cues: Vec::new(),
+        playing: Vec::with_capacity(MAX_PLAYING_CUES),
+        unity: GainRamp::new(1.0, ramp_len),
     };
     let control = MixerControl {
         config,
@@ -451,6 +474,16 @@ impl<K: Eq + Hash + Clone> MixerControl<K> {
         Ok(())
     }
 
+    /// Plays a cue once, by its place in what [`MixerCore::set_cues`] was given. Mixed in
+    /// like a voice: the echo canceller knows it, and deafen silences it. A place that was
+    /// not given is not heard.
+    ///
+    /// # Errors
+    /// [`MixerError::QueueFull`].
+    pub fn play_cue(&self, cue: usize) -> Result<(), MixerError> {
+        self.send(Command::PlayCue(cue))
+    }
+
     /// Drops source slots the audio thread has released. Called automatically by
     /// add/remove; call it periodically if sources are removed rarely.
     pub fn collect_garbage(&mut self) {
@@ -501,6 +534,13 @@ impl MixerCore {
         }
     }
 
+    /// Gives the short sounds [`MixerControl::play_cue`] plays, interleaved stereo; replaces
+    /// the earlier ones. Call it before the core moves to the audio thread.
+    pub fn set_cues(&mut self, cues: Vec<Vec<f32>>) {
+        self.playing.clear();
+        self.cues = cues;
+    }
+
     /// Fills `out` (interleaved) with the next block of mixed audio.
     ///
     /// Real-time safe: no locks, no allocation, no deallocation.
@@ -538,6 +578,11 @@ impl MixerCore {
                 }
                 Ok(Command::Master { gain, muted }) => {
                     self.master.set_target(if muted { 0.0 } else { gain });
+                }
+                Ok(Command::PlayCue(cue)) => {
+                    if cue < self.cues.len() && self.playing.len() < MAX_PLAYING_CUES {
+                        self.playing.push(PlayingCue { cue, at: 0 });
+                    }
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
@@ -595,6 +640,15 @@ impl MixerCore {
 
             mix_into(out, self.channels, input, src_ch, &mut slot.ramp);
         }
+
+        let (cues, channels, unity) = (&self.cues, self.channels, &mut self.unity);
+        self.playing.retain_mut(|playing| {
+            let rest = &cues[playing.cue][playing.at..];
+            let take = rest.len().min(frames * 2);
+            mix_into(out, channels, &rest[..take], 2, unity);
+            playing.at += take;
+            playing.at < cues[playing.cue].len()
+        });
 
         for frame in out.chunks_mut(self.channels) {
             let g = self.master.next_gain();
@@ -660,6 +714,82 @@ mod tests {
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    /// A cue of ones, its two channels told apart.
+    fn cue_of(frames: usize) -> Vec<f32> {
+        [0.5, 0.25].repeat(frames)
+    }
+
+    #[test]
+    fn a_cue_plays_once_across_blocks() {
+        let (control, mut core) = mixer::<&str>(test_config());
+        core.set_cues(vec![cue_of(6)]);
+        control.play_cue(0).unwrap();
+        let mut out = [0.0_f32; 8];
+        core.process(&mut out);
+        assert_eq!(out, [0.5, 0.25, 0.5, 0.25, 0.5, 0.25, 0.5, 0.25]);
+        core.process(&mut out);
+        assert_eq!(out, [0.5, 0.25, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0]);
+        core.process(&mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert!(core.playing.is_empty());
+    }
+
+    #[test]
+    fn a_cue_folds_into_a_mono_output() {
+        let (control, mut core) = mixer::<&str>(MixerConfig {
+            output: Layout::Mono,
+            ..test_config()
+        });
+        core.set_cues(vec![cue_of(2)]);
+        control.play_cue(0).unwrap();
+        let mut out = [0.0_f32; 3];
+        core.process(&mut out);
+        assert_eq!(out, [0.375, 0.375, 0.0]);
+    }
+
+    #[test]
+    fn deafen_and_the_master_volume_reach_a_cue() {
+        let (mut control, mut core) = mixer::<&str>(test_config());
+        core.set_cues(vec![cue_of(4)]);
+        control.set_master_gain(0.5).unwrap();
+        control.play_cue(0).unwrap();
+        let mut out = [0.0_f32; 4];
+        core.process(&mut out);
+        assert!(approx(out[0], 0.25) && approx(out[1], 0.125));
+        control.set_master_muted(true).unwrap();
+        control.play_cue(0).unwrap();
+        core.process(&mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn the_echo_canceller_hears_a_cue() {
+        let (control, mut core) = mixer::<&str>(test_config());
+        let mut tap = core.tap_output(10);
+        core.set_cues(vec![cue_of(2)]);
+        control.play_cue(0).unwrap();
+        let mut out = [0.0_f32; 4];
+        core.process(&mut out);
+        let mut heard = [0.0_f32; 2];
+        tap.consumer.pop_slice(&mut heard);
+        assert!(approx(heard[0], 0.375) && approx(heard[1], 0.375));
+    }
+
+    #[test]
+    fn cues_overlap_up_to_a_limit_and_an_unknown_one_is_ignored() {
+        let (control, mut core) = mixer::<&str>(test_config());
+        core.set_cues(vec![[0.01, 0.01].repeat(2)]);
+        control.play_cue(1).unwrap();
+        for _ in 0..MAX_PLAYING_CUES + 3 {
+            control.play_cue(0).unwrap();
+        }
+        let mut out = [0.0_f32; 2];
+        core.process(&mut out);
+        let want = 0.01 * MAX_PLAYING_CUES as f32;
+        assert!(approx(out[0], want), "{} != {want}", out[0]);
+        assert_eq!(core.playing.capacity(), MAX_PLAYING_CUES);
     }
 
     #[test]

@@ -8,6 +8,15 @@ export interface TalkKey {
   readonly label: string;
 }
 
+/** Which event sounds are on (`CuePrefs` in `src-tauri/src/audio/devices.rs`). */
+export interface CueSettings {
+  readonly micOff: boolean;
+  readonly micOn: boolean;
+  readonly joined: boolean;
+  readonly left: boolean;
+  readonly streamStarted: boolean;
+}
+
 /** The sound settings as Rust has them (`SoundView` in `src-tauri/src/audio/engine.rs`). */
 export interface SoundSettings {
   readonly outputs: readonly string[];
@@ -27,6 +36,7 @@ export interface SoundSettings {
   readonly talkKeyWorks: boolean;
   readonly noiseSuppression: boolean;
   readonly echoCancellation: boolean;
+  readonly cues: CueSettings;
 }
 
 /** What the microphone hears now. */
@@ -48,6 +58,8 @@ export interface SoundApi {
   setThreshold(db: number, save: boolean): Promise<void>;
   setTalkKey(key: TalkKey | null): Promise<SoundSettings>;
   setProcessing(noiseSuppression: boolean, echoCancellation: boolean): Promise<SoundSettings>;
+  /** One just turned on plays, to show what it is (ADR-0075). */
+  setCues(cues: CueSettings): Promise<SoundSettings>;
   /** The level bar came on screen or left it; outside a channel it opens the microphone. */
   micCheck(on: boolean): Promise<void>;
   micInput(): Promise<MicInput>;

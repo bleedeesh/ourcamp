@@ -93,7 +93,7 @@ function MicMeter({ api, threshold, onProblem }: { api: SoundApi; threshold: num
   );
 }
 
-function Switch({ name, on, onChange }: { name: string; on: boolean; onChange: (on: boolean) => void }) {
+export function Switch({ name, on, onChange }: { name: string; on: boolean; onChange: (on: boolean) => void }) {
   return (
     <div className="settings-switch">
       <span className="settings-switch__name">{name}</span>

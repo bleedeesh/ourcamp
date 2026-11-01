@@ -190,6 +190,15 @@ pub async fn sound_set_processing(
         .await
 }
 
+/// Which event sounds are on (ADR-0075).
+#[tauri::command]
+pub async fn sound_set_cues(
+    state: State<'_, EngineState>,
+    cues: crate::audio::devices::CuePrefs,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?.set_cues(cues).await
+}
+
 /// The settings' bar came on screen or left it.
 #[tauri::command]
 pub async fn sound_mic_check(state: State<'_, EngineState>, on: bool) -> Result<(), String> {

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
-import type { MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
+import type { CueSettings, MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
 
 /** Event emitted by `src-tauri/src/lib.rs` (`SOUND_EVENT`). */
 const SOUND_EVENT = "sound://changed";
@@ -37,6 +37,10 @@ export class TauriSoundApi implements SoundApi {
 
   setProcessing(noiseSuppression: boolean, echoCancellation: boolean): Promise<SoundSettings> {
     return invoke("sound_set_processing", { noiseSuppression, echoCancellation });
+  }
+
+  setCues(cues: CueSettings): Promise<SoundSettings> {
+    return invoke("sound_set_cues", { cues });
   }
 
   micCheck(on: boolean): Promise<void> {

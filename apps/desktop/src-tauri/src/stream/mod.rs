@@ -76,7 +76,6 @@ pub const fn bitrate(quality: StreamQuality) -> u32 {
 
 /// The stream's two video tracks, by name (ADR-0065). LiveKit stops a video track that does not
 /// fit a viewer's line only if it is not `SCREEN_SHARE`, so they are published as a camera.
-#[cfg(windows)]
 pub(crate) const FULL_TRACK: &str = "screen";
 #[cfg(windows)]
 pub(crate) const LIGHT_TRACK: &str = "screen-light";
