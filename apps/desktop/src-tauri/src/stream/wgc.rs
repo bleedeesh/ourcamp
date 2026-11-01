@@ -8,7 +8,7 @@
 //! ```
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Once};
 use std::time::{Duration, Instant};
 
 use windows::core::{factory, IInspectable, Interface, Result as WinResult};
@@ -27,6 +27,7 @@ use windows::Win32::Graphics::Direct3D11::{
     D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
+use windows::Win32::System::Com::CoIncrementMTAUsage;
 use windows::Win32::System::WinRT::Direct3D11::{
     CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
 };
@@ -115,6 +116,7 @@ impl WindowCapture {
     /// Starts capturing `window`. An error means this way will not work here: the system is
     /// too old, there is no such window, the video card refused.
     pub(super) fn open(window: HWND, tick: Duration) -> WinResult<Self> {
+        keep_com_loaded();
         let (device, context) = device()?;
         let dxgi: IDXGIDevice = device.cast()?;
         // SAFETY: `dxgi` is a live device of ours; the call only wraps it.
@@ -290,6 +292,19 @@ impl WindowCapture {
 }
 
 /// A device on the video card, with what capture needs from it.
+/// When the last thread leaves COM, Windows unloads `GraphicsCapture.dll` while its own worker
+/// may still be finishing, and the whole process dies (ADR-0060). One usage of the
+/// multithreaded apartment, never given back, keeps it loaded until the process ends.
+fn keep_com_loaded() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: no arguments and no thread state; the cookie is only for giving it back.
+        if let Err(e) = unsafe { CoIncrementMTAUsage() } {
+            eprintln!("[oc-stream] keeping COM: {e}");
+        }
+    });
+}
+
 fn device() -> WinResult<(ID3D11Device, ID3D11DeviceContext)> {
     let (mut device, mut context) = (None, None);
     // SAFETY: the out parameters outlive the call, and the rest are plain values.
