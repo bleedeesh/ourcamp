@@ -1775,11 +1775,39 @@ async fn a_photo_goes_up_first_then_into_a_message() {
         client.upload_photo(&lena, too_big).await.is_err(),
         "over the limit"
     );
-    let gif = b"GIF89a....".to_vec();
+    let bitmap = b"BM....".to_vec();
     assert!(matches!(
-        client.upload_photo(&lena, gif).await,
+        client.upload_photo(&lena, bitmap).await,
         Err(ClientError::Protocol(_))
     ));
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn a_gif_comes_back_byte_for_byte_and_has_its_own_limit() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    // Larger than any other photo may be: nothing on the way refuses it.
+    let gif = [
+        b"GIF89a".as_slice(),
+        &vec![7; oc_proto::MAX_PHOTO_BYTES + 1024],
+    ]
+    .concat();
+    let hash = client.upload_photo(&lena, gif.clone()).await.unwrap();
+    assert_eq!(client.photo(&bob, &hash).await.unwrap(), gif);
+
+    let largest = [
+        b"GIF89a".as_slice(),
+        &vec![8; oc_proto::MAX_GIF_BYTES - b"GIF89a".len()],
+    ]
+    .concat();
+    let hash = client.upload_photo(&lena, largest.clone()).await.unwrap();
+    assert_eq!(client.photo(&bob, &hash).await.unwrap(), largest);
+
+    let too_big = [b"GIF89a".as_slice(), &vec![9; oc_proto::MAX_GIF_BYTES]].concat();
+    assert!(
+        client.upload_photo(&lena, too_big).await.is_err(),
+        "over the limit"
+    );
     camp.stop().await;
 }
 

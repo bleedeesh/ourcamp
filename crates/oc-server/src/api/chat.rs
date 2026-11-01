@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use oc_proto::{
     ErrorCode, History, NewMessage, Photo, PhotoFormat, PhotoUploaded, MAX_HISTORY,
-    MAX_MESSAGE_CHARS, MAX_PHOTO_BYTES, MAX_PHOTO_SIDE,
+    MAX_MESSAGE_CHARS, MAX_PHOTO_SIDE,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -146,8 +146,8 @@ pub(super) async fn delete_message(
 }
 
 /// `POST /api/v1/photos`: the photo itself as the body, before the message that shows
-/// it. WebP, PNG or JPEG by its signature, at most [`MAX_PHOTO_BYTES`]; the camp never
-/// decodes it, the apps' webviews do.
+/// it. WebP, PNG, JPEG or GIF by its signature, at most [`PhotoFormat::max_bytes`]; the
+/// camp never decodes it, the apps' webviews do.
 pub(super) async fn put_photo(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -160,9 +160,8 @@ pub(super) async fn put_photo(
     if !state.write_limit.allow(&member.user_id, Instant::now()) {
         return Err(ApiError(ErrorCode::TooFast));
     }
-    let format = (body.len() <= MAX_PHOTO_BYTES)
-        .then(|| PhotoFormat::sniff(&body))
-        .flatten()
+    let format = PhotoFormat::sniff(&body)
+        .filter(|format| body.len() <= format.max_bytes())
         .ok_or(ApiError(ErrorCode::BadRequest))?;
     let hash = state
         .with_store(move |s| s.put_photo(format, &body))

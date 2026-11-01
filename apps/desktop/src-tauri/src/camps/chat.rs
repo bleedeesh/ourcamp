@@ -57,10 +57,10 @@ pub struct ChatContext {
     pub live: Option<super::CampLive>,
 }
 
-/// A photo to send, as the window made it (at most 1600 px on its long side).
+/// A photo to send, as the window made it (at most 1600 px on its long side, a GIF as it is).
 #[derive(Debug, Clone)]
 pub struct OutgoingPhoto {
-    /// The encoded picture: WebP, PNG or JPEG.
+    /// The encoded picture: WebP, PNG, JPEG or GIF.
     pub bytes: Vec<u8>,
     /// Pixels.
     pub width: u32,
@@ -124,7 +124,7 @@ impl Camps {
             None => None,
             Some(photo) => {
                 if PhotoFormat::sniff(&photo.bytes).is_none() {
-                    return Err("Это не фото: подойдёт JPEG, PNG или WebP".into());
+                    return Err("Это не фото: подойдёт JPEG, PNG, WebP или GIF".into());
                 }
                 let hash = match client.upload_photo(&session, photo.bytes.clone()).await {
                     Err(ClientError::Api(ErrorCode::Unauthorized)) => {
@@ -316,7 +316,7 @@ fn chat_error(e: ClientError) -> CampError {
     match e {
         ClientError::Api(ErrorCode::NotFound) => "Этого чата на сервере уже нет".into(),
         ClientError::Api(ErrorCode::BadRequest) => {
-            "Сервер не принял сообщение: до 2000 символов, фото — до 2 МБ".into()
+            "Сервер не принял сообщение: до 2000 символов, фото — до 2 МБ, GIF — до 8 МБ".into()
         }
         other => describe(other),
     }
