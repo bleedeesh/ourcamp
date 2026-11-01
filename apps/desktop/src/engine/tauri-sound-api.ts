@@ -35,6 +35,10 @@ export class TauriSoundApi implements SoundApi {
     return invoke("sound_set_talk_key", { key });
   }
 
+  setProcessing(noiseSuppression: boolean, echoCancellation: boolean): Promise<SoundSettings> {
+    return invoke("sound_set_processing", { noiseSuppression, echoCancellation });
+  }
+
   micCheck(on: boolean): Promise<void> {
     return invoke("sound_mic_check", { on });
   }

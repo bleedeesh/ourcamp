@@ -112,6 +112,43 @@
   color: var(--accent-text);
 }
 
+/* A switch, as in the mockup's screen 13. */
+.settings-switch {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.settings-switch__name {
+  flex: 1;
+}
+
+.settings-switch__track {
+  flex: none;
+  width: 44px;
+  height: 26px;
+  padding: 3px;
+  border: 0;
+  border-radius: 13px;
+  background: var(--surface);
+  display: flex;
+  transition: background 0.15s;
+}
+
+.settings-switch__track[aria-checked="true"] {
+  background: var(--accent);
+  justify-content: flex-end;
+}
+
+.settings-switch__thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+}
+
 .settings-section__error {
   margin: 0;
   padding: 10px 12px;

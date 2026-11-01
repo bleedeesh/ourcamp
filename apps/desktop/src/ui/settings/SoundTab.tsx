@@ -93,6 +93,17 @@ function MicMeter({ api, threshold, onProblem }: { api: SoundApi; threshold: num
   );
 }
 
+function Switch({ name, on, onChange }: { name: string; on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <div className="settings-switch">
+      <span className="settings-switch__name">{name}</span>
+      <button type="button" role="switch" className="settings-switch__track" aria-checked={on} aria-label={name} onClick={() => onChange(!on)}>
+        <span className="settings-switch__thumb" />
+      </button>
+    </div>
+  );
+}
+
 /** Devices and the overall volume (ADR-0066): they change at once, in a channel too. */
 export function SoundTab({ api }: { api: SoundApi }) {
   const [sound, setSound] = useState<SoundSettings | null>(null);
@@ -215,6 +226,16 @@ export function SoundTab({ api }: { api: SoundApi }) {
               </p>
             </>
           )}
+          <Switch
+            name="Шумоподавление"
+            on={sound.noiseSuppression}
+            onChange={(on) => void choose(api.setProcessing(on, sound.echoCancellation))}
+          />
+          <Switch
+            name="Эхоподавление"
+            on={sound.echoCancellation}
+            onChange={(on) => void choose(api.setProcessing(sound.noiseSuppression, on))}
+          />
         </>
       )}
       {problem !== null && (

@@ -25,6 +25,9 @@ oc-audio = { path = "../../../crates/oc-audio" }
 # Voice (M2). The SDK downloads a prebuilt libwebrtc on first build; on Windows it
 # needs the static CRT (.cargo/config.toml, ADR-0012). Pinned: upgrade deliberately.
 livekit = "=0.9.7"
+# Not on crates.io past 0.2.5 of 2022; the tag is the release with `DeepFilterNet3` (ADR-0073).
+deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", tag = "v0.5.6", default-features = false, features = ["tract", "default-model"] }
+ndarray = "0.15"
 oc-camp-client = { path = "../../../crates/oc-camp-client" }
 oc-invite = { path = "../../../crates/oc-invite" }
 oc-proto = { path = "../../../crates/oc-proto" }

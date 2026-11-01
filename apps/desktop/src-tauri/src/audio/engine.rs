@@ -20,7 +20,7 @@ use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
 use crate::stream::{OwnStream, ScreenStream, SourceKind, StreamQuality, ViewStatus, Viewer};
-use crate::voice::mic::{install_tap, GateControl, LocalLevel, MicPipeline, TapSlot};
+use crate::voice::mic::{install_tap, LocalLevel, MicControl, MicPipeline, TapSlot};
 use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
 /// How often the watcher looks at the system's devices (ADR-0066).
@@ -96,6 +96,8 @@ pub struct SoundView {
     pub talk_key: Option<TalkKey>,
     /// A key can be read on this system.
     pub talk_key_works: bool,
+    pub noise_suppression: bool,
+    pub echo_cancellation: bool,
 }
 
 /// What the microphone hears now, for the settings' bar (ADR-0069).
@@ -189,7 +191,7 @@ struct Live {
     sound: SoundPrefs,
     sound_dir: Option<PathBuf>,
     /// One for the engine's life: every microphone opened reads it.
-    gate: Arc<GateControl>,
+    control: Arc<MicControl>,
     /// The settings' bar is on screen (ADR-0069). Outside a channel it needs a microphone of
     /// its own, `check`, which sends nothing; a channel's takes over while there is one.
     checking: bool,
@@ -256,14 +258,16 @@ impl Live {
             .or(self.check.as_ref())
     }
 
-    /// Hands the saved settings to the gate.
-    fn apply_gate(&self) {
+    /// Hands the saved settings to the microphone.
+    fn apply_mic(&self) {
         // A file copied from a system where a key works must not leave the microphone shut.
-        self.gate
+        self.control
             .set_key_mode(TALK_KEY_WORKS && self.sound.mic_mode == MicMode::Key);
-        self.gate
+        self.control
             .set_talk_key(self.sound.talk_key.as_ref().map(|key| key.code));
-        self.gate.set_threshold(self.sound.voice_threshold);
+        self.control.set_threshold(self.sound.voice_threshold);
+        self.control
+            .set_processing(self.sound.noise_suppression, self.sound.echo_cancellation);
     }
 }
 
@@ -375,7 +379,7 @@ impl Engine {
                 deafened: false,
                 sound: SoundPrefs::default(),
                 sound_dir: None,
-                gate: Arc::default(),
+                control: Arc::default(),
                 checking: false,
                 check: None,
                 alarm,
@@ -403,7 +407,7 @@ impl Engine {
             }
             live.sound = sound;
             live.sound_dir = Some(dir);
-            live.apply_gate();
+            live.apply_mic();
         }
         if elsewhere && self.needs_room() {
             if let Err(e) = self.replace_output() {
@@ -438,6 +442,8 @@ impl Engine {
             voice_threshold: live.sound.voice_threshold,
             talk_key: live.sound.talk_key.clone(),
             talk_key_works: TALK_KEY_WORKS,
+            noise_suppression: live.sound.noise_suppression,
+            echo_cancellation: live.sound.echo_cancellation,
         }
     }
 
@@ -536,7 +542,7 @@ impl Engine {
         {
             let mut live = self.lock();
             live.sound.mic_mode = mode;
-            live.apply_gate();
+            live.apply_mic();
         }
         self.save_sound();
         Ok(self.sound_view(listing))
@@ -551,7 +557,27 @@ impl Engine {
         {
             let mut live = self.lock();
             live.sound.talk_key = key;
-            live.apply_gate();
+            live.apply_mic();
+        }
+        self.save_sound();
+        Ok(self.sound_view(listing))
+    }
+
+    /// Turns the noise suppression and the echo cancellation on or off (ADR-0072).
+    ///
+    /// # Errors
+    /// If the task asking the system died.
+    pub async fn set_processing(
+        &self,
+        noise_suppression: bool,
+        echo_cancellation: bool,
+    ) -> Result<SoundView, EngineError> {
+        let listing = listing().await?;
+        {
+            let mut live = self.lock();
+            live.sound.noise_suppression = noise_suppression;
+            live.sound.echo_cancellation = echo_cancellation;
+            live.apply_mic();
         }
         self.save_sound();
         Ok(self.sound_view(listing))
@@ -562,7 +588,7 @@ impl Engine {
         {
             let mut live = self.lock();
             live.sound.voice_threshold = db;
-            live.apply_gate();
+            live.apply_mic();
         }
         if save {
             self.save_sound();
@@ -590,7 +616,7 @@ impl Engine {
 
     /// Opens the settings' microphone if it is wanted and no channel has one. Holds `transitions`.
     fn resume_check(&self) -> Result<(), EngineError> {
-        let (chosen, taps, latency, gate, alarm) = {
+        let (chosen, taps, latency, control, alarm) = {
             let live = self.lock();
             if !live.checking || live.open_mic().is_some() {
                 return Ok(());
@@ -599,12 +625,12 @@ impl Engine {
                 live.sound.microphone.clone(),
                 Arc::clone(&live.taps),
                 live.output_latency.clone(),
-                Arc::clone(&live.gate),
+                Arc::clone(&live.control),
                 Arc::clone(&live.alarm),
             )
         };
         // Muted for good: frames never leave it.
-        let mic = MicPipeline::start(chosen, &taps, latency, true, gate, alarm)
+        let mic = MicPipeline::start(chosen, &taps, latency, true, control, alarm)
             .map_err(|message| format!("Микрофон: {message}"))?;
         self.lock().check = Some(mic);
         Ok(())
@@ -682,7 +708,7 @@ impl Engine {
             self.end_check();
             return self.resume_check();
         }
-        let (chosen, taps, latency, muted, gate, alarm) = {
+        let (chosen, taps, latency, muted, control, alarm) = {
             let mut live = self.lock();
             let Some(session) = live.session.as_mut() else {
                 return Ok(());
@@ -693,11 +719,11 @@ impl Engine {
                 Arc::clone(&live.taps),
                 live.output_latency.clone(),
                 live.mic_muted,
-                Arc::clone(&live.gate),
+                Arc::clone(&live.control),
                 Arc::clone(&live.alarm),
             )
         };
-        let mic = MicPipeline::start(chosen, &taps, latency, muted, gate, alarm)
+        let mic = MicPipeline::start(chosen, &taps, latency, muted, control, alarm)
             .map_err(|message| format!("Микрофон: {message}"))?;
         let published = {
             let mut live = self.lock();
@@ -903,7 +929,7 @@ impl Engine {
     }
 
     async fn join_room(&self, access: RoomAccess) -> Result<(), EngineError> {
-        let (taps, output_latency, mic_muted, playback_rate, device, gate, alarm) = {
+        let (taps, output_latency, mic_muted, playback_rate, device, control, alarm) = {
             let live = self.lock();
             live.alarm.take_microphone();
             (
@@ -912,13 +938,13 @@ impl Engine {
                 live.mic_muted,
                 live.output_rate,
                 live.sound.microphone.clone(),
-                Arc::clone(&live.gate),
+                Arc::clone(&live.control),
                 Arc::clone(&live.alarm),
             )
         };
         // If anything below fails or this future is dropped, dropping `mic` returns the
         // tap to `taps` (see `TapSlot`).
-        let mic = MicPipeline::start(device, &taps, output_latency, mic_muted, gate, alarm)
+        let mic = MicPipeline::start(device, &taps, output_latency, mic_muted, control, alarm)
             .map_err(|message| format!("Микрофон: {message}"))?;
         let session_id = {
             let mut live = self.lock();
