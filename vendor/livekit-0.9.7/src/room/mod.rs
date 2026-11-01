@@ -1175,6 +1175,13 @@ impl RoomSession {
                 self.handle_subscribed_quality_update(update);
             }
             EngineEvent::RefreshPublishingLayers => {
+                // OurCamp: see `LocalVideoTrack::set_sending`.
+                for publication in self.local_participant.track_publications().values() {
+                    let Some(LocalTrack::Video(track)) = publication.track() else { continue };
+                    if let Err(e) = track.refresh_sending() {
+                        log::warn!("failed to keep a video stopped: {}", e);
+                    }
+                }
                 if self.options.dynacast {
                     for publication in self.local_participant.track_publications().values() {
                         let Some(LocalTrack::Video(track)) = publication.track() else { continue };

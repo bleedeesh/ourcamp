@@ -15,7 +15,10 @@
 use std::{
     fmt::{Debug, Display},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 
@@ -109,6 +112,8 @@ pub struct LocalVideoTrack {
     publish_timing_tx: Arc<Mutex<Option<broadcast::Sender<PublishTimingEvent>>>>,
     /// Last qualities requested by dynacast, re-applied after renegotiation.
     subscribed_qualities: Arc<Mutex<Option<Vec<proto::SubscribedQuality>>>>,
+    // OurCamp: see `set_sending`.
+    held: Arc<AtomicBool>,
 }
 
 impl Debug for LocalVideoTrack {
@@ -155,6 +160,7 @@ impl LocalVideoTrack {
             packet_trailer_handler: Arc::new(Mutex::new(None)),
             publish_timing_tx: Arc::new(Mutex::new(None)),
             subscribed_qualities: Arc::new(Mutex::new(None)),
+            held: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -335,6 +341,41 @@ impl LocalVideoTrack {
 
     pub(crate) fn update_info(&self, info: proto::TrackInfo) {
         super::update_info(&self.inner, &Track::LocalVideo(self.clone()), info);
+    }
+
+    /// OurCamp: stops or resumes sending while the track stays published. A published video
+    /// without frames takes a share of the connection for its first seconds; a stopped one takes
+    /// none. Stays
+    /// so across renegotiation, which turns encodings back on (ADR-0068).
+    pub fn set_sending(&self, sending: bool) -> RoomResult<()> {
+        self.held.store(!sending, Ordering::Relaxed);
+        self.apply_sending(sending)
+    }
+
+    /// OurCamp: renegotiation turned the encodings back on.
+    pub(crate) fn refresh_sending(&self) -> RoomResult<()> {
+        if self.held.load(Ordering::Relaxed) {
+            self.apply_sending(false)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn apply_sending(&self, sending: bool) -> RoomResult<()> {
+        let Some(transceiver) = self.transceiver() else {
+            return Ok(());
+        };
+        let sender = transceiver.sender();
+        let mut params = sender.parameters();
+        if params.encodings.iter().all(|e| e.active == sending) {
+            return Ok(());
+        }
+        for encoding in &mut params.encodings {
+            encoding.active = sending;
+        }
+        sender
+            .set_parameters(params)
+            .map_err(|e| RoomError::Internal(format!("failed to set sender parameters: {}", e)))
     }
 
     /// Returns a snapshot of each simulcast layer's RID, quality, and active state.

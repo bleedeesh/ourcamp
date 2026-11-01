@@ -371,19 +371,46 @@ async fn publish_layer(
     source: NativeVideoSource,
     max_bitrate: u32,
     fps: u32,
-) -> Result<LocalTrackPublication, String> {
+) -> Result<(LocalTrackPublication, LocalVideoTrack), String> {
     let track = LocalVideoTrack::create_video_track(name, RtcVideoSource::Native(source));
-    room.local_participant()
-        .publish_track(LocalTrack::Video(track), stream_options(max_bitrate, fps))
+    let publication = room
+        .local_participant()
+        .publish_track(
+            LocalTrack::Video(track.clone()),
+            stream_options(max_bitrate, fps),
+        )
         .await
-        .map_err(|e| format!("Не удалось начать стрим: {e}"))
+        .map_err(|e| format!("Не удалось начать стрим: {e}"))?;
+    Ok((publication, track))
 }
 
-/// Keeps `wanted` true while any viewer in the room asks for the light layer, and helps the
-/// connection over the start of either layer: `WebRTC` throws its estimate of the link away when
+/// Puts the light layer in the room, stopped until `follow_asks` finds someone asking.
+async fn publish_light(
+    room: &Room,
+    source: NativeVideoSource,
+    quality: StreamQuality,
+) -> Result<(LocalTrackPublication, LocalVideoTrack), String> {
+    let light = light_quality(quality);
+    let published =
+        publish_layer(room, LIGHT_TRACK, source, light_bitrate(quality), light.fps).await?;
+    if let Err(e) = published.1.set_sending(false) {
+        eprintln!("[oc-stream] light layer: {e}");
+    }
+    Ok(published)
+}
+
+/// Keeps `wanted` true while any viewer in the room asks for the light layer, with its sender on
+/// for just that long, so that unasked it takes nothing from the start of the full one
+/// (ADR-0068). Also helps
+/// the connection over the start of either layer: `WebRTC` throws its estimate of the link away when
 /// a video starts sending, and with a stream that uses all it is given only a probe brings it
 /// back soon. Without it the full layer spends half a minute climbing from 1 Mbit/s (ADR-0065).
-async fn follow_asks(room: Arc<Room>, wanted: Arc<AtomicBool>, video_began: Arc<Notify>) {
+async fn follow_asks(
+    room: Arc<Room>,
+    light: LocalVideoTrack,
+    wanted: Arc<AtomicBool>,
+    video_began: Arc<Notify>,
+) {
     let mut events = room.subscribe();
     let me = room.local_participant().identity();
     let look = || {
@@ -392,7 +419,18 @@ async fn follow_asks(room: Arc<Room>, wanted: Arc<AtomicBool>, video_began: Arc<
                 .get(ASK_LIGHT)
                 .is_some_and(|whose| whose == me.as_str())
         });
+        if asked == wanted.load(Ordering::Relaxed) {
+            return;
+        }
+        // The sender first: the first frames of the layer must not fall on a stopped one.
+        if let Err(e) = light.set_sending(asked) {
+            eprintln!("[oc-stream] light layer: {e}");
+        }
         wanted.store(asked, Ordering::Relaxed);
+        if asked {
+            // Its encoder may still be up, and then its thread sees no start.
+            video_began.notify_one();
+        }
     };
     look();
     loop {
@@ -519,23 +557,15 @@ impl ScreenStream {
         eprintln!("[oc-stream] encoder: {}", ready.encoder);
         // The light one first: the last video published sets the connection's send cap,
         // and it must be the full one's (ADR-0062).
-        let light = light_quality(quality);
-        let light_publication = match publish_layer(
-            &room,
-            LIGHT_TRACK,
-            ready.light,
-            light_bitrate(quality),
-            light.fps,
-        )
-        .await
-        {
-            Ok(publication) => publication,
-            Err(e) => {
-                halt(thread, &stop);
-                return Err(e);
-            }
-        };
-        let publication = match publish_layer(
+        let (light_publication, light_track) =
+            match publish_light(&room, ready.light, quality).await {
+                Ok(published) => published,
+                Err(e) => {
+                    halt(thread, &stop);
+                    return Err(e);
+                }
+            };
+        let (publication, _) = match publish_layer(
             &room,
             FULL_TRACK,
             ready.source,
@@ -557,6 +587,7 @@ impl ScreenStream {
         go.store(true, Ordering::Relaxed);
         let asks = AbortOnDrop(tauri::async_runtime::spawn(follow_asks(
             Arc::clone(&room),
+            light_track,
             wanted,
             video_began,
         )));
@@ -1230,6 +1261,19 @@ mod tests {
     fn the_light_layer_comes_when_asked_and_stops_when_not() {
         use std::collections::HashMap;
 
+        // Whether the light layer's sender is on.
+        fn light_sends(room: &Audience) -> bool {
+            let publications = room.streamer.local_participant().track_publications();
+            let light = publications.values().find(|p| p.name() == LIGHT_TRACK);
+            let Some(LocalTrack::Video(track)) = light.and_then(LocalTrackPublication::track)
+            else {
+                panic!("the light layer is published");
+            };
+            let layers = track.publishing_layers();
+            assert_ne!(layers.len(), 0);
+            layers.iter().all(|layer| layer.active)
+        }
+
         tauri::async_runtime::block_on(async {
             let mut room = Audience::gather("stream-light").await;
             let stream = ScreenStream::run(
@@ -1250,6 +1294,8 @@ mod tests {
             let light = room.track_named(LIGHT_TRACK).await;
             let (count, _) = watch(&light, 2).await;
             assert_eq!(count, 0, "nobody has asked");
+            // Past the full layer's renegotiation, which turns encodings back on.
+            assert!(!light_sends(&room), "unasked, it takes no share");
 
             let ask = |whose: String| {
                 let attributes = HashMap::from([(ASK_LIGHT.to_owned(), whose)]);
@@ -1264,6 +1310,7 @@ mod tests {
             };
             ask(room.streamer.local_participant().identity().to_string()).await;
             let _ = watch(&light, 2).await;
+            assert!(light_sends(&room), "asked");
             let (count, size) = watch(&light, 3).await;
             assert!((470..=480).contains(&size.1), "{size:?}");
             assert!(count > 45, "near 30 a second, got {count}");
@@ -1275,6 +1322,13 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let (count, _) = watch(&light, 2).await;
             assert_eq!(count, 0, "nobody asks any more");
+            assert!(!light_sends(&room), "nobody asks any more");
+
+            // Back before its encoder is let go: its thread sees no start then.
+            ask(room.streamer.local_participant().identity().to_string()).await;
+            let _ = watch(&light, 2).await;
+            let (count, _) = watch(&light, 2).await;
+            assert!(count > 30, "asked again, got {count}");
 
             stream.stop().await;
             room.leave().await;

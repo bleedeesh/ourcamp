@@ -11,6 +11,9 @@ The `livekit` crate 0.9.7 from crates.io (Apache-2.0, © LiveKit, Inc.), with ch
   the estimator probe up to it at once. Why: ADR-0062.
 - `src/rtc_engine/rtc_session.rs`: a pre-encoded track counts as a screen share for that. Why:
   ADR-0065.
+- `src/room/track/local_video_track.rs`, `src/room/mod.rs`: `LocalVideoTrack::set_sending` stops a
+  published video so that it takes no share of the connection, and keeps it so across
+  renegotiation. Why: `docs/decisions/0068-light-layer-share.md`.
 - `src/room/participant/local_participant.rs`, `src/rtc_engine/rtc_session.rs`,
   `src/rtc_engine/peer_transport.rs`: `probe_send_bandwidth`, the same probe on demand, and the
   cap grows a little each time, or the estimator would not probe. Why: ADR-0065.
