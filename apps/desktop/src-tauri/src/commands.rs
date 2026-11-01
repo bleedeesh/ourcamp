@@ -531,16 +531,6 @@ pub fn chat_mark_read(
     camps(&state)?.mark_read(&id, &channel_id, seq)
 }
 
-/// The key for an action; none takes it away (ADR-0071).
-#[tauri::command]
-pub async fn sound_set_hotkey(
-    state: State<'_, EngineState>,
-    action: crate::audio::hotkeys::Action,
-    key: Option<crate::audio::hotkeys::Hotkey>,
-) -> Result<crate::audio::engine::SoundView, String> {
-    engine(&state)?.set_hotkey(action, key).await
-}
-
 /// The open camp for the chat window: as opened, with its latest snapshot (ADR-0046).
 #[tauri::command]
 pub fn chat_context(

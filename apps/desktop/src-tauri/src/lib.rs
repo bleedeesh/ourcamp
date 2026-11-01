@@ -34,9 +34,6 @@ const CAMP_CHAT_EVENT: &str = "camp://chat";
 /// The system's sound devices changed (ADR-0066). Must match `SOUND_EVENT` in
 /// `src/engine/tauri-sound-api.ts`.
 const SOUND_EVENT: &str = "sound://changed";
-/// An assigned key was pressed (ADR-0071). Must match `HOTKEY_EVENT` in
-/// `src/engine/tauri-engine.ts`.
-const HOTKEY_EVENT: &str = "voice://hotkey";
 
 /// The main window's close button hides it into the tray: voice and the camp stay on, like
 /// in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031). The chat window
@@ -131,15 +128,6 @@ fn forward_sound(app: tauri::AppHandle, engine: &Engine) {
     }));
 }
 
-/// Tells the main window, which owns the state of the microphone and the sound, of a press.
-fn forward_hotkeys(app: tauri::AppHandle, engine: &Engine) {
-    engine.watch_hotkeys(move |action| {
-        if let Err(e) = tauri::Emitter::emit(&app, HOTKEY_EVENT, action) {
-            eprintln!("[ourcamp] key event: {e}");
-        }
-    });
-}
-
 /// Everything the pages may call.
 fn commands() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -157,7 +145,6 @@ fn commands() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         commands::sound_set_mic_mode,
         commands::sound_set_threshold,
         commands::sound_set_talk_key,
-        commands::sound_set_hotkey,
         commands::sound_mic_check,
         commands::sound_mic_input,
         commands::profile_set_name,
@@ -242,7 +229,6 @@ pub fn run() {
             if let Some(engine) = for_levels {
                 participants::forward(app.handle().clone(), &engine);
                 forward_sound(app.handle().clone(), &engine);
-                forward_hotkeys(app.handle().clone(), &engine);
                 levels::spawn(app.handle().clone(), engine);
             }
             tray(app)?;

@@ -1,7 +1,7 @@
 // The choices of a sound device and of how the microphone turns on, in the settings window
 // (ADR-0066, ADR-0069).
 
-import type { Hotkey, TalkKey } from "../engine/sound-api.ts";
+import type { TalkKey } from "../engine/sound-api.ts";
 
 /** The range of the threshold, dBFS; `MIN_THRESHOLD_DB` and `MAX_THRESHOLD_DB` in `oc-audio`. */
 export const MIN_THRESHOLD_DB = -70;
@@ -45,50 +45,9 @@ const KEY_NAMES: Readonly<Record<string, string>> = {
  */
 export function talkKeyFromPress(code: string, keyCode: number): TalkKey | null {
   if (keyCode === 0 || code === "MetaLeft" || code === "MetaRight") return null;
-  return { code: keyCode, label: keyName(code) };
-}
-
-function keyName(code: string): string {
-  return KEY_NAMES[code] ?? /^(?:Key|Digit)(.)$/.exec(code)?.[1] ?? code.replace(/^Numpad/, "Num ").replace(/^Arrow/, "Стрелка ");
-}
-
-export interface Modifiers {
-  readonly ctrl: boolean;
-  readonly shift: boolean;
-  readonly alt: boolean;
-}
-
-function hotkey(code: number, name: string, { ctrl, shift, alt }: Modifiers): Hotkey {
-  const label = [ctrl && "Ctrl", shift && "Shift", alt && "Alt", name].filter(Boolean).join("+");
-  return { code, ctrl, shift, alt, label };
-}
-
-/**
- * The key for a press, or `null` to go on waiting: a modifier alone is only the start of a
- * combination. A key that types needs a modifier: on its own it would turn the microphone off
- * in the middle of a word, since assigned keys keep working in other apps (ADR-0071).
- */
-export function hotkeyFromPress(code: string, keyCode: number, modifiers: Modifiers): Hotkey | null {
-  if (keyCode === 0 || /^(?:Shift|Control|Alt|Meta)(?:Left|Right)$/.test(code)) return null;
-  const free = /^F\d+$/.test(code) || /^(?:Media|Audio)/.test(code);
-  if (!free && !modifiers.ctrl && !modifiers.alt && !modifiers.shift) return null;
-  return hotkey(keyCode, keyName(code), modifiers);
-}
-
-/** The same for a mouse button: only the side ones, with or without modifiers. */
-export function hotkeyFromMouse(button: number, modifiers: Modifiers): Hotkey | null {
-  const side = talkKeyFromMouse(button);
-  return side === null ? null : hotkey(side.code, side.label, modifiers);
-}
-
-/** The talk key among the others, to compare them. */
-export function plainKey(key: TalkKey | null): Hotkey | null {
-  return key === null ? null : { ...key, ctrl: false, shift: false, alt: false };
-}
-
-/** Whether a key is already taken: two jobs on one press would undo each other. */
-export function sameKey(a: Hotkey, b: Hotkey | null): boolean {
-  return b !== null && a.code === b.code && a.ctrl === b.ctrl && a.shift === b.shift && a.alt === b.alt;
+  const label =
+    KEY_NAMES[code] ?? /^(?:Key|Digit)(.)$/.exec(code)?.[1] ?? code.replace(/^Numpad/, "Num ").replace(/^Arrow/, "Стрелка ");
+  return { code: keyCode, label };
 }
 
 /** The talk key for a mouse button; of them, only the side ones are free for this. */

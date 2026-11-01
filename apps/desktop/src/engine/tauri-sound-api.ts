@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
-import type { HotkeyAction } from "./engine.ts";
-import type { Hotkey, MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
+import type { MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
 
 /** Event emitted by `src-tauri/src/lib.rs` (`SOUND_EVENT`). */
 const SOUND_EVENT = "sound://changed";
@@ -34,10 +33,6 @@ export class TauriSoundApi implements SoundApi {
 
   setTalkKey(key: TalkKey | null): Promise<SoundSettings> {
     return invoke("sound_set_talk_key", { key });
-  }
-
-  setHotkey(action: HotkeyAction, key: Hotkey | null): Promise<SoundSettings> {
-    return invoke("sound_set_hotkey", { action, key });
   }
 
   micCheck(on: boolean): Promise<void> {

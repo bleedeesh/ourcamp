@@ -1,5 +1,3 @@
-import type { HotkeyAction } from "./engine.ts";
-
 /** How the microphone goes on the air (ADR-0069). */
 export type MicMode = "voice" | "key";
 
@@ -7,16 +5,6 @@ export type MicMode = "voice" | "key";
 export interface TalkKey {
   /** Windows virtual-key code. */
   readonly code: number;
-  readonly label: string;
-}
-
-/** A key with its modifiers (`Hotkey` in `src-tauri/src/audio/hotkeys.rs`). */
-export interface Hotkey {
-  /** Windows virtual-key code. */
-  readonly code: number;
-  readonly ctrl: boolean;
-  readonly shift: boolean;
-  readonly alt: boolean;
   readonly label: string;
 }
 
@@ -35,8 +23,6 @@ export interface SoundSettings {
   /** Where the voice opens the microphone, dBFS. */
   readonly voiceThreshold: number;
   readonly talkKey: TalkKey | null;
-  readonly muteKey: Hotkey | null;
-  readonly deafenKey: Hotkey | null;
   /** A key can be read on this system (ADR-0069). */
   readonly talkKeyWorks: boolean;
 }
@@ -59,8 +45,6 @@ export interface SoundApi {
   /** `save`: the hand is off the slider, keep the value. */
   setThreshold(db: number, save: boolean): Promise<void>;
   setTalkKey(key: TalkKey | null): Promise<SoundSettings>;
-  /** The key for an action; `null` takes it away (ADR-0071). */
-  setHotkey(action: HotkeyAction, key: Hotkey | null): Promise<SoundSettings>;
   /** The level bar came on screen or left it; outside a channel it opens the microphone. */
   micCheck(on: boolean): Promise<void>;
   micInput(): Promise<MicInput>;
