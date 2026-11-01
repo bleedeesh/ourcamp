@@ -12,7 +12,7 @@
 //! ```
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -21,11 +21,12 @@ use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::AudioSourceOptions;
 use livekit::webrtc::native::apm::AudioProcessingModule;
+use oc_audio::gate::{MicGate, Opener, DEFAULT_THRESHOLD_DB, MAX_THRESHOLD_DB, MIN_THRESHOLD_DB};
 use oc_audio::meter::{rms_dbfs, SpeechDetector, SpeechDetectorConfig, SILENCE_DB};
 use oc_audio::mixer::OutputTap;
 use oc_audio::pcm::{f32_to_i16, i16_to_f32};
 
-use crate::audio::devices::Alarm;
+use crate::audio::devices::{talk_key_down, Alarm};
 use crate::audio::input;
 use crate::audio::output::DeviceLatency;
 
@@ -42,6 +43,8 @@ const MAX_REFERENCE_BACKLOG_FRAMES: usize = 10;
 pub struct LocalLevel {
     level_db: AtomicU32,
     speaking: AtomicBool,
+    input_db: AtomicU32,
+    open: AtomicBool,
 }
 
 impl LocalLevel {
@@ -54,9 +57,79 @@ impl LocalLevel {
         )
     }
 
+    /// What the microphone hears in dBFS, gate or no gate, and whether the gate is open:
+    /// the settings' bar next to the threshold.
+    #[must_use]
+    pub fn input(&self) -> (f32, bool) {
+        (
+            f32::from_bits(self.input_db.load(Ordering::Relaxed)),
+            self.open.load(Ordering::Relaxed),
+        )
+    }
+
     fn set(&self, level_db: f32, speaking: bool) {
         self.level_db.store(level_db.to_bits(), Ordering::Relaxed);
         self.speaking.store(speaking, Ordering::Relaxed);
+    }
+
+    fn set_input(&self, input_db: f32, open: bool) {
+        self.input_db.store(input_db.to_bits(), Ordering::Relaxed);
+        self.open.store(open, Ordering::Relaxed);
+    }
+}
+
+/// How the gate is set, from the settings and the key. One for the engine's life: every
+/// microphone it opens reads it. Lock-free: the audio thread reads it each frame.
+#[derive(Debug)]
+pub struct GateControl {
+    key_mode: AtomicBool,
+    /// The talk key's code; 0 is none, no key has it.
+    talk_key: AtomicU16,
+    threshold_db: AtomicU32,
+}
+
+impl Default for GateControl {
+    fn default() -> Self {
+        Self {
+            key_mode: AtomicBool::new(false),
+            talk_key: AtomicU16::new(0),
+            threshold_db: AtomicU32::new(DEFAULT_THRESHOLD_DB.to_bits()),
+        }
+    }
+}
+
+impl GateControl {
+    pub fn set_key_mode(&self, key_mode: bool) {
+        self.key_mode.store(key_mode, Ordering::Relaxed);
+    }
+
+    pub fn set_talk_key(&self, code: Option<u16>) {
+        self.talk_key.store(code.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    /// The threshold, held to what is offered: it may come from an edited file.
+    pub fn set_threshold(&self, db: f32) {
+        // `clamp` keeps NaN, and NaN would keep the gate shut for good.
+        let db = if db.is_nan() {
+            DEFAULT_THRESHOLD_DB
+        } else {
+            db.clamp(MIN_THRESHOLD_DB, MAX_THRESHOLD_DB)
+        };
+        self.threshold_db.store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// What opens the gate now; `is_down` tells whether a key is held.
+    fn opener(&self, is_down: impl Fn(u16) -> bool) -> Opener {
+        if self.key_mode.load(Ordering::Relaxed) {
+            let key = self.talk_key.load(Ordering::Relaxed);
+            Opener::Key {
+                down: key != 0 && is_down(key),
+            }
+        } else {
+            Opener::Voice {
+                threshold_db: f32::from_bits(self.threshold_db.load(Ordering::Relaxed)),
+            }
+        }
     }
 }
 
@@ -134,6 +207,7 @@ struct Shared {
     muted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     level: Arc<LocalLevel>,
+    gate: Arc<GateControl>,
 }
 
 impl MicPipeline {
@@ -147,6 +221,7 @@ impl MicPipeline {
         taps: &TapSlot,
         output_latency: DeviceLatency,
         muted: bool,
+        gate: Arc<GateControl>,
         alarm: Arc<Alarm>,
     ) -> Result<Self, String> {
         let lease = TapLease::take(taps).ok_or("микрофон уже используется другим каналом")?;
@@ -154,6 +229,7 @@ impl MicPipeline {
             muted: Arc::new(AtomicBool::new(muted)),
             stop: Arc::new(AtomicBool::new(false)),
             level: Arc::new(LocalLevel::default()),
+            gate,
         };
         let (muted, stop, level) = (
             Arc::clone(&shared.muted),
@@ -324,6 +400,7 @@ fn run(
     // reference; everything else still works.
     let mut reference = reference_frame(lease.tap());
     let mut detector = SpeechDetector::new(SpeechDetectorConfig::voice(capture.sample_rate));
+    let mut gate = MicGate::new(capture.sample_rate);
     let mut reported_error = false;
     let mut report = |what: &str, e: &dyn std::fmt::Display| {
         if !reported_error {
@@ -367,15 +444,23 @@ fn run(
                 report("processing", &e.message);
             }
 
+            // Before the mute: the settings' bar shows the voice with the microphone off too.
+            i16_to_f32(&mic.i16, &mut mic.f32);
+            let input = rms_dbfs(&mic.f32);
+            let opener = shared.gate.opener(talk_key_down);
+            let open = gate.update(opener, input, mic.len() as u32);
+            shared.level.set_input(input, open);
+
             if shared.muted.load(Ordering::Relaxed) {
                 detector.reset();
                 shared.level.set(SILENCE_DB, false);
                 continue;
             }
-            i16_to_f32(&mic.i16, &mut mic.f32);
-            let level = rms_dbfs(&mic.f32);
+            // Others' rings go by what reaches them, so yours does too.
+            let level = if open { input } else { SILENCE_DB };
             let speaking = detector.update(level, mic.len() as u32);
             shared.level.set(level, speaking);
+            gate.apply(&mut mic.i16);
 
             let frame = AudioFrame {
                 data: Cow::Borrowed(&mic.i16),
@@ -413,6 +498,52 @@ mod tests {
     fn slot() -> TapSlot {
         let (_control, mut core) = mixer::<u8>(MixerConfig::default_48k_stereo());
         Arc::new(Mutex::new(Some(core.tap_output(10))))
+    }
+
+    #[test]
+    fn the_control_says_what_opens_the_gate() {
+        let control = GateControl::default();
+        control.set_threshold(-30.0);
+        assert_eq!(
+            control.opener(|_| true),
+            Opener::Voice {
+                threshold_db: -30.0
+            }
+        );
+
+        control.set_key_mode(true);
+        assert_eq!(
+            control.opener(|_| true),
+            Opener::Key { down: false },
+            "no key is assigned, and nothing opens it"
+        );
+        control.set_talk_key(Some(0x56));
+        assert_eq!(control.opener(|_| false), Opener::Key { down: false });
+        assert_eq!(
+            control.opener(|key| key == 0x56),
+            Opener::Key { down: true }
+        );
+        assert_eq!(
+            control.opener(|key| key == 0x57),
+            Opener::Key { down: false },
+            "another key"
+        );
+    }
+
+    #[test]
+    fn a_threshold_from_an_edited_file_stays_among_those_offered() {
+        let threshold = |db: f32| {
+            let control = GateControl::default();
+            control.set_threshold(db);
+            control.opener(|_| false)
+        };
+        for (given, kept) in [
+            (0.0, MAX_THRESHOLD_DB),
+            (-200.0, MIN_THRESHOLD_DB),
+            (f32::NAN, DEFAULT_THRESHOLD_DB),
+        ] {
+            assert_eq!(threshold(given), Opener::Voice { threshold_db: kept });
+        }
     }
 
     #[test]

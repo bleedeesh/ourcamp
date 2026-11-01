@@ -195,12 +195,22 @@ fn activate(target: Target) -> WinResult<IAudioClient> {
 }
 
 /// Whether process loopback works here: older systems refuse the activation. Blocks briefly.
+/// On a thread of its own, where nothing has chosen a COM mode yet: the answer is about the
+/// system, not about the thread that asked (ADR-0070).
 #[must_use]
 pub fn available() -> bool {
-    let Ok(_com) = Com::init() else {
-        return false;
+    let check = || -> WinResult<()> {
+        let _com = Com::init()?;
+        activate(Target::AllBut(std::process::id())).map(drop)
     };
-    activate(Target::AllBut(std::process::id())).is_ok()
+    match std::thread::spawn(check).join() {
+        Ok(Ok(())) => true,
+        Ok(Err(e)) => {
+            eprintln!("[oc-stream] sound of a stream is unavailable: {e}");
+            false
+        }
+        Err(_) => false,
+    }
 }
 
 /// `KSDATAFORMAT_SUBTYPE_PCM`.
