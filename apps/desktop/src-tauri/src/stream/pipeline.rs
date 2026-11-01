@@ -1294,7 +1294,7 @@ mod tests {
             let light = room.track_named(LIGHT_TRACK).await;
             let (count, _) = watch(&light, 2).await;
             assert_eq!(count, 0, "nobody has asked");
-            // Past the full layer's renegotiation, which turns encodings back on.
+            // Also past the full layer's renegotiation.
             assert!(!light_sends(&room), "unasked, it takes no share");
 
             let ask = |whose: String| {
