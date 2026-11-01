@@ -146,6 +146,7 @@ fn commands() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         commands::sound_set_threshold,
         commands::sound_set_talk_key,
         commands::sound_set_processing,
+        commands::sound_set_cues,
         commands::sound_mic_check,
         commands::sound_mic_input,
         commands::profile_set_name,

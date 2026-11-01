@@ -1,4 +1,4 @@
-import type { MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
+import type { CueSettings, MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
 
 /** Sound settings for looking at the layout in a browser: nothing plays. */
 export class DemoSoundApi implements SoundApi {
@@ -15,6 +15,7 @@ export class DemoSoundApi implements SoundApi {
     talkKey: null,
     talkKeyWorks: true,
     noiseSuppression: true,
+    cues: { micOff: true, micOn: true, joined: true, left: true, streamStarted: true },
     echoCancellation: true,
   };
 
@@ -54,6 +55,11 @@ export class DemoSoundApi implements SoundApi {
 
   setProcessing(noiseSuppression: boolean, echoCancellation: boolean): Promise<SoundSettings> {
     this.state = { ...this.state, noiseSuppression, echoCancellation };
+    return this.settings();
+  }
+
+  setCues(cues: CueSettings): Promise<SoundSettings> {
+    this.state = { ...this.state, cues };
     return this.settings();
   }
 

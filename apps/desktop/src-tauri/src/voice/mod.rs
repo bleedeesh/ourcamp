@@ -3,6 +3,7 @@
 //! Nothing here touches the mixer or Tauri state directly; [`crate::audio::engine`]
 //! wires the pieces together.
 
+pub mod cues;
 pub mod denoise;
 pub mod mic;
 pub mod room;

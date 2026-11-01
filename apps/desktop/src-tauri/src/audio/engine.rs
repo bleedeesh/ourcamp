@@ -11,11 +11,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
+use oc_audio::cue::Cue;
 use oc_audio::gain::percent_to_gain;
 use oc_audio::meter::SILENCE_DB;
 use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatus};
 
-use super::devices::{self, Alarm, Listing, MicMode, SoundPrefs, TalkKey, TALK_KEY_WORKS};
+use super::devices::{
+    self, Alarm, CuePrefs, Listing, MicMode, SoundPrefs, TalkKey, TALK_KEY_WORKS,
+};
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
@@ -98,6 +101,7 @@ pub struct SoundView {
     pub talk_key_works: bool,
     pub noise_suppression: bool,
     pub echo_cancellation: bool,
+    pub cues: CuePrefs,
 }
 
 /// What the microphone hears now, for the settings' bar (ADR-0069).
@@ -247,6 +251,15 @@ impl Live {
     fn announce_stream(&self, live: bool, note: Option<String>) {
         if let Some(listener) = &self.stream_listener {
             listener(OwnStream { live, note });
+        }
+    }
+
+    /// Plays an event sound, if the user keeps it on (ADR-0075).
+    fn play(&self, cue: Cue) {
+        if self.sound.cues.wants(cue) {
+            if let Err(e) = self.mixer.play_cue(cue as usize) {
+                eprintln!("[oc-audio] no sound of {cue:?}: {e}");
+            }
         }
     }
 
@@ -444,6 +457,7 @@ impl Engine {
             talk_key_works: TALK_KEY_WORKS,
             noise_suppression: live.sound.noise_suppression,
             echo_cancellation: live.sound.echo_cancellation,
+            cues: live.sound.cues,
         }
     }
 
@@ -578,6 +592,25 @@ impl Engine {
             live.sound.noise_suppression = noise_suppression;
             live.sound.echo_cancellation = echo_cancellation;
             live.apply_mic();
+        }
+        self.save_sound();
+        Ok(self.sound_view(listing))
+    }
+
+    /// Chooses which event sounds are on. One just turned on plays, to show what it is.
+    ///
+    /// # Errors
+    /// If the task asking the system died.
+    pub async fn set_cues(&self, cues: CuePrefs) -> Result<SoundView, EngineError> {
+        let listing = listing().await?;
+        {
+            let mut live = self.lock();
+            let before = std::mem::replace(&mut live.sound.cues, cues);
+            for cue in Cue::ALL {
+                if cues.wants(cue) && !before.wants(cue) {
+                    live.play(cue);
+                }
+            }
         }
         self.save_sound();
         Ok(self.sound_view(listing))
@@ -978,6 +1011,7 @@ impl Engine {
                 {
                     listener(link);
                 }
+                live.play(Cue::Joined);
                 Ok(())
             }
             Err(e) => {
@@ -993,7 +1027,11 @@ impl Engine {
     /// If the mixer command queue is full.
     pub async fn leave_channel(&self) -> Result<(), EngineError> {
         let _transition = self.transitions.lock().await;
+        let was_in = self.lock().session.is_some();
         let closed = self.close_session().await;
+        if was_in {
+            self.lock().play(Cue::Left);
+        }
         self.check_again();
         closed
     }
@@ -1053,6 +1091,7 @@ impl Engine {
                 session.stream = Some(Outgoing { serial, stream });
             }
             live.announce_stream(true, note);
+            live.play(Cue::StreamStarted);
             serial
         };
         let engine = self.clone();
@@ -1227,6 +1266,9 @@ impl Engine {
     /// Mutes the microphone; the room shows us as muted.
     pub fn set_mic_muted(&self, muted: bool) {
         let mut live = self.lock();
+        if live.mic_muted != muted {
+            live.play(if muted { Cue::MicOff } else { Cue::MicOn });
+        }
         live.mic_muted = muted;
         if let Some(session) = &live.session {
             session.mic.set_muted(muted);
@@ -1325,6 +1367,21 @@ struct Host {
 }
 
 impl RoomHost for Host {
+    fn cue(&self, cue: Cue) {
+        let Some(live) = self.live.upgrade() else {
+            return;
+        };
+        let live = lock(&live);
+        // Not while coming in or going out: a room reports everyone as gone when it closes.
+        if live
+            .session
+            .as_ref()
+            .is_some_and(|s| s.id == self.session_id)
+        {
+            live.play(cue);
+        }
+    }
+
     fn voice_started(&self, user_id: &str) -> Option<SourceInput> {
         let live = self.live.upgrade()?;
         let mut live = lock(&live);

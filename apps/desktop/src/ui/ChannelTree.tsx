@@ -2,7 +2,6 @@ import type { MouseEvent, PointerEvent } from "react";
 import { canMove } from "../domain/roster.ts";
 import type { Channel, UserId } from "../domain/types.ts";
 import { DEFAULT_VOLUME } from "../domain/volume.ts";
-import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { DROP_ATTRIBUTE, dropTarget } from "@ourcamp/ui/drag.ts";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { DragGhost, useDragMove, type Drag, type Draggable } from "@ourcamp/ui/useDragMove.tsx";
@@ -53,7 +52,7 @@ function ChannelNode({ channel, drag, grab }: { channel: Channel } & Dragging) {
         {channel.afk ? (
           <Icon name="moon" size={20} className="channel__afk" />
         ) : (
-          <Campfire size={20} simple={!lit} dim={!lit} />
+          <Icon name="mic" size={20} className={lit ? "channel__voice channel__voice--lit" : "channel__voice"} />
         )}
         <span className="channel__name">{channel.name}</span>
         {lit && <span className="channel__count">{memberIds.length}</span>}

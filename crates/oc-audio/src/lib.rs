@@ -30,6 +30,7 @@
 //! control.set_gain(&"lena".into(), percent_to_gain(80.0)).unwrap();
 //! ```
 
+pub mod cue;
 pub mod gain;
 pub mod gate;
 pub mod limiter;

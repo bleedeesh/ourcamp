@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use livekit::options::{AudioEncoding, TrackPublishOptions};
@@ -19,9 +19,13 @@ use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::RtcAudioSource;
 use livekit::webrtc::audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions};
 use livekit::webrtc::stats::RtcStats;
+use oc_audio::cue::Cue;
 use oc_audio::mixer::SourceInput;
 use oc_audio::pcm::i16_to_f32;
 use tauri::async_runtime::JoinHandle;
+
+use super::cues::RoomCues;
+use crate::stream::FULL_TRACK;
 
 /// Opus target for voice: 64 kbit/s VBR, mono (ADR-0008).
 const VOICE_BITRATE: u64 = 64_000;
@@ -85,6 +89,8 @@ pub trait RoomHost: Send + Sync + 'static {
     fn disconnected(&self, message: String);
     /// Quality or ping changed (checked every [`LINK_INTERVAL`]).
     fn link_changed(&self, link: Link);
+    /// Something happened in the room that has a sound (ADR-0075).
+    fn cue(&self, _cue: Cue) {}
 }
 
 /// Where and how to join one voice room, as the camp hands it out.
@@ -504,6 +510,51 @@ fn replay_voices(
     }
 }
 
+/// Who is in the room besides us.
+fn identities(room: &Room) -> Vec<String> {
+    room.remote_participants()
+        .into_keys()
+        .map(|identity| identity.to_string())
+        .collect()
+}
+
+/// Passes what deserves a sound to the host (ADR-0075).
+fn follow_cues(room: &Room, event: &RoomEvent, cues: &mut RoomCues, host: &dyn RoomHost) {
+    let cue = match event {
+        // The name, not the kind: a stream's light copy and its sound are the same stream.
+        RoomEvent::TrackPublished { publication, .. } if publication.name() == FULL_TRACK => {
+            cues.stream_started()
+        }
+        RoomEvent::ParticipantConnected(participant) => {
+            cues.joined(participant.identity().to_string())
+        }
+        RoomEvent::ParticipantDisconnected(participant) => {
+            cues.left(participant.identity().to_string(), Instant::now());
+            None
+        }
+        RoomEvent::Reconnecting => {
+            cues.reconnecting();
+            None
+        }
+        RoomEvent::Reconnected => {
+            cues.reconnected(identities(room));
+            None
+        }
+        _ => None,
+    };
+    if let Some(cue) = cue {
+        host.cue(cue);
+    }
+}
+
+/// Waits for the moment, or forever when there is none.
+async fn until(moment: Option<Instant>) {
+    match moment {
+        Some(moment) => tokio::time::sleep_until(moment.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn handle_events(
     room: Arc<Room>,
     mut events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
@@ -514,6 +565,7 @@ async fn handle_events(
 ) {
     let mut voices: HashMap<String, Voice> = HashMap::new();
     let mut last_members = members(&room);
+    let mut cues = RoomCues::new(identities(&room));
     let stop_voice = |voices: &mut HashMap<String, Voice>, user_id: &str| {
         if voices.remove(user_id).is_some() {
             host.voice_stopped(user_id);
@@ -523,6 +575,12 @@ async fn handle_events(
     loop {
         let event = tokio::select! {
             event = events.recv() => event,
+            () = until(cues.due()) => {
+                if let Some(cue) = cues.departures() {
+                    host.cue(cue);
+                }
+                continue;
+            }
             Some(control) = controls.recv() => {
                 match control {
                     Control::Replay { rate } => {
@@ -537,6 +595,7 @@ async fn handle_events(
             }
         };
         let Some(event) = event else { break };
+        follow_cues(&room, &event, &mut cues, host.as_ref());
         match event {
             RoomEvent::TrackPublished { publication, .. } => listen_if_microphone(&publication),
             RoomEvent::TrackSubscribed {
@@ -1472,6 +1531,93 @@ pub(crate) mod tests {
             self.0.lock().unwrap().push(message);
         }
         fn link_changed(&self, _: Link) {}
+    }
+
+    /// Records the sounds a room asks for.
+    #[derive(Default)]
+    struct CueEars(std::sync::Mutex<Vec<Cue>>);
+
+    impl RoomHost for CueEars {
+        fn voice_started(&self, _: &str) -> Option<SourceInput> {
+            None
+        }
+        fn voice_stopped(&self, _: &str) {}
+        fn members_changed(&self, _: Vec<RemoteMember>) {}
+        fn disconnected(&self, _: String) {}
+        fn link_changed(&self, _: Link) {}
+        fn cue(&self, cue: Cue) {
+            self.0.lock().unwrap().push(cue);
+        }
+    }
+
+    impl CueEars {
+        async fn wait_for(&self, want: &[Cue]) {
+            let seen = tokio::time::timeout(Duration::from_secs(10), async {
+                while self.0.lock().unwrap().as_slice() != want {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            });
+            let heard = seen.await;
+            assert!(
+                heard.is_ok(),
+                "wanted {want:?}, heard {:?}",
+                self.0.lock().unwrap()
+            );
+        }
+    }
+
+    /// ADR-0075 against the real LiveKit: someone coming, their microphone (no sound), their
+    /// stream, and their leaving, each once. Our own closing is silent.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_room_asks_for_its_sounds_once_each() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("cues").await;
+            let ears = Arc::new(CueEars::default());
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let host: Arc<dyn RoomHost> = ears.clone();
+            let room = VoiceRoom::connect(params, source, false, host)
+                .await
+                .unwrap();
+
+            let (client, session) = another_member(&camp, "Гость").await;
+            let access = way_in(&client, &session).await;
+            let (guest, _) = Room::connect(&access.url, &access.token, RoomOptions::default())
+                .await
+                .unwrap();
+            ears.wait_for(&[Cue::Joined]).await;
+
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let mic =
+                LocalAudioTrack::create_audio_track("microphone", RtcAudioSource::Native(source));
+            publish_mic(&guest, &mic).await.unwrap();
+            let (screen, frames) = black_screen();
+            guest
+                .local_participant()
+                .publish_track(
+                    LocalTrack::Video(screen),
+                    TrackPublishOptions {
+                        source: crate::stream::STREAM_SOURCE,
+                        ..TrackPublishOptions::default()
+                    },
+                )
+                .await
+                .unwrap();
+            ears.wait_for(&[Cue::Joined, Cue::StreamStarted]).await;
+
+            drop(frames);
+            guest.close().await.unwrap();
+            let all = [Cue::Joined, Cue::StreamStarted, Cue::Left];
+            ears.wait_for(&all).await;
+
+            // Nothing late, and nothing from our own closing.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            room.close().await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            assert_eq!(ears.0.lock().unwrap().as_slice(), all);
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
     }
 
     /// Records connection reports.

@@ -11,12 +11,14 @@ import { TauriCampApi } from "../../engine/tauri-camp-api.ts";
 import { isTauri } from "../../engine/tauri-engine.ts";
 import { TauriSoundApi } from "../../engine/tauri-sound-api.ts";
 import { AvatarPicker } from "../AvatarPicker.tsx";
+import { NotificationsTab } from "./NotificationsTab.tsx";
 import { SoundTab } from "./SoundTab.tsx";
 
-type Tab = "sound" | "profile";
+type Tab = "sound" | "notifications" | "profile";
 
 const TABS: readonly { readonly id: Tab; readonly title: string; readonly icon: IconName }[] = [
   { id: "sound", title: "Звук", icon: "headphones" },
+  { id: "notifications", title: "Уведомления", icon: "bell" },
   { id: "profile", title: "Профиль", icon: "user" },
 ];
 
@@ -149,6 +151,7 @@ export function SettingsApp() {
         <main className="settings-app__body">
           {tab === "profile" && <ProfileTab api={api} />}
           {tab === "sound" && <SoundTab api={sound} />}
+          {tab === "notifications" && <NotificationsTab api={sound} />}
         </main>
       </div>
     </div>

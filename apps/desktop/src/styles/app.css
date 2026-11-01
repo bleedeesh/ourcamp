@@ -1073,6 +1073,20 @@
   color: var(--accent-text);
 }
 
+.channel__voice {
+  flex-shrink: 0;
+  color: var(--text-faint);
+}
+
+/* Someone is here. */
+.channel__voice--lit {
+  color: var(--text);
+}
+
+.channel__row[aria-current="true"] .channel__voice {
+  color: var(--accent-text);
+}
+
 /* Moderator (ADR-0026): a shield, next to the admin's crown. */
 .member__moderator {
   color: var(--accent-text);

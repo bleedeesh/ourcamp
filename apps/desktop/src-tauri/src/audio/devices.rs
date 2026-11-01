@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use oc_audio::cue::Cue;
 use oc_audio::gate::DEFAULT_THRESHOLD_DB;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -113,6 +114,46 @@ pub fn talk_key_down(_code: u16) -> bool {
     false
 }
 
+/// Which event sounds are on (ADR-0075).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent switches, one per sound"
+)]
+pub struct CuePrefs {
+    pub mic_off: bool,
+    pub mic_on: bool,
+    pub joined: bool,
+    pub left: bool,
+    pub stream_started: bool,
+}
+
+impl Default for CuePrefs {
+    fn default() -> Self {
+        Self {
+            mic_off: true,
+            mic_on: true,
+            joined: true,
+            left: true,
+            stream_started: true,
+        }
+    }
+}
+
+impl CuePrefs {
+    #[must_use]
+    pub fn wants(self, cue: Cue) -> bool {
+        match cue {
+            Cue::MicOff => self.mic_off,
+            Cue::MicOn => self.mic_on,
+            Cue::Joined => self.joined,
+            Cue::Left => self.left,
+            Cue::StreamStarted => self.stream_started,
+        }
+    }
+}
+
 /// What the user chose; `None` follows the system. Kept on this device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -127,6 +168,7 @@ pub struct SoundPrefs {
     pub talk_key: Option<TalkKey>,
     pub noise_suppression: bool,
     pub echo_cancellation: bool,
+    pub cues: CuePrefs,
 }
 
 impl Default for SoundPrefs {
@@ -140,6 +182,7 @@ impl Default for SoundPrefs {
             talk_key: None,
             noise_suppression: true,
             echo_cancellation: true,
+            cues: CuePrefs::default(),
         }
     }
 }
@@ -276,9 +319,50 @@ mod tests {
             }),
             noise_suppression: false,
             echo_cancellation: true,
+            cues: CuePrefs {
+                joined: false,
+                ..CuePrefs::default()
+            },
         };
         prefs.save(&dir).unwrap();
         assert_eq!(SoundPrefs::load(&dir), prefs);
+    }
+
+    #[test]
+    fn every_switch_answers_for_its_own_sound() {
+        for cue in Cue::ALL {
+            let all = CuePrefs::default();
+            assert!(all.wants(cue), "{cue:?} starts on");
+            let without = match cue {
+                Cue::MicOff => CuePrefs {
+                    mic_off: false,
+                    ..all
+                },
+                Cue::MicOn => CuePrefs {
+                    mic_on: false,
+                    ..all
+                },
+                Cue::Joined => CuePrefs {
+                    joined: false,
+                    ..all
+                },
+                Cue::Left => CuePrefs { left: false, ..all },
+                Cue::StreamStarted => CuePrefs {
+                    stream_started: false,
+                    ..all
+                },
+            };
+            for other in Cue::ALL {
+                assert_eq!(without.wants(other), other != cue, "{cue:?}, {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_from_before_the_sounds_has_them_all_on() {
+        let dir = temp_dir("before-cues");
+        fs::write(dir.join(SOUND_FILE), r#"{"volume":40.0}"#).unwrap();
+        assert_eq!(SoundPrefs::load(&dir).cues, CuePrefs::default());
     }
 
     #[test]

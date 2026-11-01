@@ -218,6 +218,7 @@ fn start_stream<K: Eq + Hash + Clone>(
     let (control, mut core) = mixer::<K>(mixer_config);
     // Installed before the core moves into the callback: the tap allocates.
     let tap = core.tap_output(TAP_CAPACITY_MS);
+    core.set_cues(oc_audio::cue::bank(rate));
 
     let stream = device
         .build_output_stream(

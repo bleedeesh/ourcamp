@@ -1,5 +1,4 @@
 import { useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
-import { Campfire } from "@ourcamp/ui/Campfire.tsx";
 import { DROP_ATTRIBUTE, dropTarget } from "@ourcamp/ui/drag.ts";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import type { Drag, Draggable } from "@ourcamp/ui/useDragMove.tsx";
@@ -103,7 +102,7 @@ export function CampName({ name, api }: { name: string; api: ServerApi }) {
 function ChannelIcon({ channel }: { channel: Channel }) {
   if (channel.afk) return <Icon name="moon" size={16} />;
   if (channel.kind === "text") return <Icon name="hash" size={16} />;
-  return <Campfire size={16} simple />;
+  return <Icon name="mic" size={16} />;
 }
 
 /** Someone sitting in a campfire; drag them onto another one to move them (ADR-0029). */
