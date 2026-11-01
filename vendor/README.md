@@ -9,6 +9,11 @@ The `livekit` crate 0.9.7 from crates.io (Apache-2.0, © LiveKit, Inc.), with ch
   with `TF_STEREO`. Why: ADR-0055.
 - `src/rtc_engine/peer_transport.rs`: a screen share sets a send cap for its connection, which makes
   the estimator probe up to it at once. Why: ADR-0062.
+- `src/rtc_engine/rtc_session.rs`: a pre-encoded track counts as a screen share for that. Why:
+  ADR-0065.
+- `src/room/participant/local_participant.rs`, `src/rtc_engine/rtc_session.rs`,
+  `src/rtc_engine/peer_transport.rs`: `probe_send_bandwidth`, the same probe on demand, and the
+  cap grows a little each time, or the estimator would not probe. Why: ADR-0065.
 
 The first is the fix proposed upstream in https://github.com/livekit/rust-sdks/pull/1023; the second
 has no such proposal yet, so a release with the first is not enough. **Remove this

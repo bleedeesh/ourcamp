@@ -48,6 +48,8 @@ struct TransportInner {
     start_bitrate_applied: bool,
     // OurCamp: a screen share was added and its answer has not come yet (ADR-0062).
     bandwidth_probe_pending: bool,
+    // OurCamp: how many times the send cap was set; see `probe_send_cap`.
+    send_cap_raises: u64,
     pending_initial_offer: Option<SessionDescription>,
 }
 
@@ -90,6 +92,7 @@ impl PeerTransport {
                 connection_setup_time: None,
                 start_bitrate_applied: false,
                 bandwidth_probe_pending: false,
+                send_cap_raises: 0,
                 pending_initial_offer: None,
             })),
             connected_generation: AtomicU32::new(0),
@@ -175,15 +178,7 @@ impl PeerTransport {
         // published later ends up with little and climbs slowly. A new cap makes it probe up
         // to that cap, and what the link really carries decides the rest (ADR-0062).
         if std::mem::take(&mut inner.bandwidth_probe_pending) {
-            if let Some(target) = inner.max_send_bitrate_bps {
-                let settings = BitrateSettings {
-                    max_bitrate_bps: Some(Self::send_cap_bps(target)),
-                    ..BitrateSettings::default()
-                };
-                if let Err(err) = self.peer_connection.set_bitrate(settings) {
-                    log::warn!("failed to set the send cap: {err:?}");
-                }
-            }
+            self.raise_send_cap(&mut inner);
         }
 
         // Apply every queued candidate, even if one fails. A candidate can be rejected on its
@@ -280,6 +275,28 @@ impl PeerTransport {
         inner.max_send_bitrate_bps = bps;
         inner.max_send_bitrate_is_screen_share = is_screen_share;
         inner.bandwidth_probe_pending = is_screen_share;
+    }
+
+    /// OurCamp: makes the estimator probe up to the send cap, now (ADR-0062, ADR-0065).
+    pub async fn probe_send_cap(&self) {
+        let mut inner = self.inner.lock().await;
+        self.raise_send_cap(&mut inner);
+    }
+
+    /// The estimator probes only when the cap has grown, and a stream started after another
+    /// of the same size would get none. A kilobit means nothing to the link.
+    fn raise_send_cap(&self, inner: &mut TransportInner) {
+        let Some(target) = inner.max_send_bitrate_bps else {
+            return;
+        };
+        inner.send_cap_raises += 1;
+        let settings = BitrateSettings {
+            max_bitrate_bps: Some(Self::send_cap_bps(target) + inner.send_cap_raises * 1000),
+            ..BitrateSettings::default()
+        };
+        if let Err(err) = self.peer_connection.set_bitrate(settings) {
+            log::warn!("failed to set the send cap: {err:?}");
+        }
     }
 
     /// OurCamp: the cap for a whole connection, above the screen share's own: its sound and

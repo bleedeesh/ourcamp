@@ -787,7 +787,7 @@ pub(crate) mod tests {
             .get(&identity)?
             .track_publications()
             .into_values()
-            .find(|p| p.source() == TrackSource::Screenshare)
+            .find(|p| p.source() == crate::stream::STREAM_SOURCE)
     }
 
     /// A publisher of black frames, for as long as the task lives.
@@ -845,7 +845,7 @@ pub(crate) mod tests {
                 .publish_track(
                     LocalTrack::Video(screen),
                     TrackPublishOptions {
-                        source: TrackSource::Screenshare,
+                        source: crate::stream::STREAM_SOURCE,
                         ..TrackPublishOptions::default()
                     },
                 )
@@ -956,7 +956,7 @@ pub(crate) mod tests {
                 .publish_track(
                     LocalTrack::Video(screen),
                     TrackPublishOptions {
-                        source: TrackSource::Screenshare,
+                        source: crate::stream::STREAM_SOURCE,
                         ..TrackPublishOptions::default()
                     },
                 )

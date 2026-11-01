@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 import {
+  MAX_STREAM_VOLUME,
   physicalRect,
   qualityText,
   readStreamVolume,
@@ -14,6 +15,7 @@ import {
   type StreamView,
   type ViewStatus,
 } from "../../domain/stream-view.ts";
+import { VOLUME_STEP } from "../../domain/volume.ts";
 import type { CampApi, CampState } from "../../engine/camp-api.ts";
 import { DemoCampApi } from "../../engine/demo-camp-api.ts";
 import { TauriCampApi } from "../../engine/tauri-camp-api.ts";
@@ -28,12 +30,12 @@ const STREAM_INPUT_EVENT = "stream://input";
 /** Must match `READY_EVENT` there. */
 const STREAM_READY_EVENT = "stream://ready";
 
-const NOTHING_YET: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false };
+const NOTHING_YET: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false, reduced: false };
 /** The demo in a browser has no stream: for the layout only. */
 const DEMO_VIEW: StreamView = {
   userId: "lena",
   name: "Лена",
-  status: { live: true, height: 1080, fps: 60, viewers: 3, sound: true },
+  status: { live: true, height: 1080, fps: 60, viewers: 3, sound: true, reduced: false },
 };
 
 const api: CampApi = isTauri() ? new TauriCampApi() : new DemoCampApi();
@@ -152,60 +154,67 @@ export function StreamApp() {
   const streamer = streamerOf(camp.state, view?.userId ?? "", view?.name ?? "?");
   const title = view ? `Стрим · ${streamer.name}` : "Стрим";
   const quality = qualityText(status);
+  // A full screen window has nowhere to be dragged to.
+  const drag = fullscreen ? {} : { "data-tauri-drag-region": true };
 
   return (
     <div className="stream-app" data-fullscreen={fullscreen || undefined}>
-      {!fullscreen && (
-        <header className="titlebar" data-tauri-drag-region>
-          <span className="titlebar__brand titlebar__brand--chat" data-tauri-drag-region>
-            <Icon name="screen" size={14} />
-            <span className="titlebar__title" data-tauri-drag-region>
-              {title}
-            </span>
+      <header className="titlebar" {...drag}>
+        <span className="titlebar__brand titlebar__brand--chat" {...drag}>
+          <Icon name="screen" size={14} />
+          <span className="titlebar__title" {...drag}>
+            {title}
           </span>
-          <button type="button" className="titlebar__button" aria-label="Свернуть" onClick={minimize}>
-            <Icon name="minimize" size={14} />
-          </button>
-          <button type="button" className="titlebar__button titlebar__button--close" aria-label="Закрыть окно" onClick={close}>
-            <Icon name="close" size={14} />
-          </button>
-        </header>
-      )}
+        </span>
+        <button type="button" className="titlebar__button" aria-label="Свернуть" onClick={minimize}>
+          <Icon name="minimize" size={14} />
+        </button>
+        <button type="button" className="titlebar__button titlebar__button--close" aria-label="Закрыть окно" onClick={close}>
+          <Icon name="close" size={14} />
+        </button>
+      </header>
       <div className="stream-app__picture" ref={picture} data-demo={!isTauri() || undefined}>
         {!status.live && <p className="stream-app__waiting">{waitingText(status, seen)}</p>}
       </div>
-      {!fullscreen && (
-        <footer className="stream-panel">
-          <AvatarSourceContext.Provider value={avatars}>
-            <Avatar member={streamer} size={32} speaking={false} />
-          </AvatarSourceContext.Provider>
-          <span className="stream-panel__who">
-            <span className="stream-panel__name">{view ? streamer.name : ""}</span>
-            <span className="stream-panel__quality">{quality}</span>
-          </span>
-          {status.live && <span className="live-badge">LIVE</span>}
-          <span className="stream-panel__viewers">
-            <Icon name="users" size={14} />
-            {viewersText(status.viewers)}
-          </span>
-          <span className="stream-panel__spacer" />
-          <span className="stream-panel__volume" data-off={!status.sound || undefined} title={status.sound ? undefined : "Этот стрим идёт без звука"}>
-            <Icon name="speaker" size={16} />
-            <input
-              type="range"
-              min="0"
-              max="100"
-              value={volume}
-              aria-label="Громкость стрима"
-              disabled={!status.sound}
-              onChange={(e) => setVolume(Number(e.target.value))}
-            />
-          </span>
-          <button type="button" className="stream-panel__button" aria-label="Во весь экран" onClick={() => setWindowFullscreen(true)}>
-            <Icon name="fullscreen" size={18} />
-          </button>
-        </footer>
-      )}
+      <footer className="stream-panel">
+        <AvatarSourceContext.Provider value={avatars}>
+          <Avatar member={streamer} size={fullscreen ? 22 : 32} speaking={false} />
+        </AvatarSourceContext.Provider>
+        <span className="stream-panel__who">
+          <span className="stream-panel__name">{view ? streamer.name : ""}</span>
+          <span className="stream-panel__quality">{quality}</span>
+        </span>
+        {status.live && <span className="live-badge">LIVE</span>}
+        <span className="stream-panel__viewers">
+          <Icon name="users" size={14} />
+          {viewersText(status.viewers)}
+        </span>
+        <span className="stream-panel__spacer" />
+        <span className="stream-panel__volume" data-off={!status.sound || undefined} title={status.sound ? undefined : "Этот стрим идёт без звука"}>
+          <Icon name="speaker" size={16} />
+          <input
+            className="volume-slider"
+            type="range"
+            min="0"
+            max={MAX_STREAM_VOLUME}
+            step={VOLUME_STEP}
+            value={volume}
+            aria-label="Громкость стрима"
+            disabled={!status.sound}
+            style={{ "--fill": `${(volume / MAX_STREAM_VOLUME) * 100}%` } as CSSProperties}
+            onChange={(e) => setVolume(Number(e.target.value))}
+          />
+          <span className="stream-panel__percent">{volume} %</span>
+        </span>
+        <button
+          type="button"
+          className="stream-panel__button"
+          aria-label={fullscreen ? "Выйти из полноэкранного режима" : "Во весь экран"}
+          onClick={() => setWindowFullscreen(!fullscreen)}
+        >
+          <Icon name={fullscreen ? "fullscreenExit" : "fullscreen"} size={fullscreen ? 16 : 18} />
+        </button>
+      </footer>
     </div>
   );
 }

@@ -823,6 +823,11 @@ impl RtcSession {
         self.inner.create_sender(track, options, encodings).await
     }
 
+    /// OurCamp: see `PeerTransport::probe_send_cap`.
+    pub async fn probe_send_bandwidth(&self) {
+        self.inner.publisher_pc.probe_send_cap().await;
+    }
+
     /// Close the PeerConnections and the SignalClient
     pub async fn close(&self, reason: DisconnectReason) {
         // Close the tasks
@@ -1999,7 +2004,10 @@ impl SessionInner {
                 let sum: u64 = encodings.iter().filter_map(|e| e.max_bitrate).sum();
                 (sum > 0).then_some(sum)
             };
-            let is_screen_share = options.source == TrackSource::Screenshare;
+            // OurCamp: a stream is published as a camera so that the server can stop it for a
+            // viewer's sake (ADR-0065), and it is still no camera.
+            let is_screen_share = options.source == TrackSource::Screenshare
+                || options.video_encoder == VideoEncoderBackend::PreEncoded;
             self.publisher_pc.set_max_send_bitrate_bps(ultimate_bps, is_screen_share).await;
         }
 

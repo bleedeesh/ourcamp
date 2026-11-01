@@ -1,6 +1,7 @@
 import type { CampState } from "../engine/camp-api.ts";
 import { avatarColor } from "./roster.ts";
 import type { AvatarPerson, UserId } from "./types.ts";
+import { MAX_VOLUME } from "./volume.ts";
 
 /** The numbers of the viewer's panel, as Rust reports them (ADR-0053). */
 export interface ViewStatus {
@@ -14,6 +15,8 @@ export interface ViewStatus {
   readonly viewers: number;
   /** The stream comes with sound. */
   readonly sound: boolean;
+  /** Your line cannot carry the stream, so a lighter picture comes (ADR-0065). */
+  readonly reduced: boolean;
 }
 
 /** Who the window shows, and how it is going. */
@@ -35,7 +38,8 @@ export function streamerOf(state: CampState | null, userId: UserId, name: string
 /** "1080p · 60 fps"; empty until there is a picture to speak of. */
 export function qualityText(status: ViewStatus): string {
   if (!status.live || status.height === 0) return "";
-  return `${status.height}p · ${status.fps} fps`;
+  const numbers = `${status.height}p · ${status.fps} fps`;
+  return status.reduced ? `${numbers} · слабый канал` : numbers;
 }
 
 /** "1 смотрит", "2 смотрят", "21 смотрит": the verb agrees with the number. */
@@ -53,6 +57,9 @@ export function waitingText(status: ViewStatus, seen: boolean): string {
 /** What the volume of streams starts at, as in the mockup. */
 export const DEFAULT_STREAM_VOLUME = 70;
 
+/** As loud as a person's own volume goes (ADR-0064). */
+export const MAX_STREAM_VOLUME = MAX_VOLUME;
+
 const STREAM_VOLUME_KEY = "ourcamp.streamVolume";
 
 /** The volume of streams as last set on this device; browser storage may fail, or lie. */
@@ -60,7 +67,7 @@ export function readStreamVolume(storage: Pick<Storage, "getItem">): number {
   try {
     const stored = storage.getItem(STREAM_VOLUME_KEY);
     const volume = stored === null ? Number.NaN : Number(stored);
-    return Number.isFinite(volume) && volume >= 0 && volume <= 100 ? volume : DEFAULT_STREAM_VOLUME;
+    return Number.isFinite(volume) && volume >= 0 && volume <= MAX_STREAM_VOLUME ? volume : DEFAULT_STREAM_VOLUME;
   } catch {
     return DEFAULT_STREAM_VOLUME;
   }

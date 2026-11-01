@@ -81,7 +81,14 @@
 }
 
 .stream-panel__volume input {
-  width: 96px;
+  width: 120px;
+}
+
+.stream-panel__percent {
+  width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .stream-panel__button {
@@ -100,6 +107,40 @@
 
 .stream-panel__button:hover {
   background: var(--surface-2);
+}
+
+/* Full screen: the same panels, small, around as much picture as possible. They stay in the
+   layout: nothing of the page can lie over the picture's native window. */
+.stream-app[data-fullscreen] .titlebar {
+  height: 24px;
+}
+
+.stream-app[data-fullscreen] .titlebar__button {
+  height: 24px;
+  width: 36px;
+}
+
+.stream-app[data-fullscreen] .stream-panel {
+  height: 34px;
+  padding: 0 8px;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.stream-app[data-fullscreen] .stream-panel__who {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.stream-app[data-fullscreen] .stream-panel__name {
+  font-size: 12px;
+}
+
+.stream-app[data-fullscreen] .stream-panel__button {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
 }
 
 /* The LIVE of the tree opens the stream, unless it is your own. */
