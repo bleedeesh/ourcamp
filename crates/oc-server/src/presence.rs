@@ -226,7 +226,7 @@ mod tests {
     fn streaming_means_a_screen_track_as_livekit_reports_it() {
         let showing = participant(
             r#"{"identity":"u1","tracks":[{"sid":"TR_1","type":"VIDEO","name":"screen",
-            "source":"SCREEN_SHARE","width":1280,"height":720}]}"#,
+            "source":"CAMERA","width":1280,"height":720}]}"#,
         );
         assert!(showing.streaming());
         let camera = participant(
@@ -238,7 +238,7 @@ mod tests {
         );
         assert!(!sound_only.streaming(), "stream audio without the picture");
         let paused = participant(
-            r#"{"identity":"u4","tracks":[{"type":"VIDEO","source":"SCREEN_SHARE","muted":true}]}"#,
+            r#"{"identity":"u4","tracks":[{"type":"VIDEO","name":"screen","source":"CAMERA","muted":true}]}"#,
         );
         assert!(!paused.streaming());
         assert!(!participant(r#"{"identity":"u5"}"#).streaming());
@@ -261,7 +261,7 @@ mod tests {
             vec![
                 participant(r#"{"identity":"bob"}"#),
                 participant(
-                    r#"{"identity":"ann","tracks":[{"type":"VIDEO","source":"SCREEN_SHARE"}]}"#,
+                    r#"{"identity":"ann","tracks":[{"type":"VIDEO","name":"screen","source":"CAMERA"}]}"#,
                 ),
             ],
         )]);

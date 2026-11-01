@@ -146,7 +146,8 @@ fn config_body(signal_port: u16, managed: &ManagedLiveKit, node_ip: Option<Ipv4A
     let mut yaml = format!(
         "port: {signal_port}\n\
          bind_addresses: [127.0.0.1]\n\
-         rtc:\n  tcp_port: {}\n  udp_port: {}\n  use_external_ip: false\n",
+         rtc:\n  tcp_port: {}\n  udp_port: {}\n  use_external_ip: false\n  \
+         congestion_control:\n    allow_pause: true\n",
         managed.rtc_tcp_port, managed.rtc_udp_port
     );
     // The address put into ICE candidates: the one friends use for the camp. A domain
@@ -361,7 +362,8 @@ mod tests {
         assert_eq!(
             yaml,
             "port: 50123\nbind_addresses: [127.0.0.1]\n\
-             rtc:\n  tcp_port: 7881\n  udp_port: 7882\n  use_external_ip: false\n  node_ip: 192.168.1.2\n\
+             rtc:\n  tcp_port: 7881\n  udp_port: 7882\n  use_external_ip: false\n  \
+             congestion_control:\n    allow_pause: true\n  node_ip: 192.168.1.2\n\
              logging:\n  level: info\n"
         );
         let unknown = config_body(1, &managed, None);

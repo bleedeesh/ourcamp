@@ -46,6 +46,10 @@ struct TransportInner {
     // Whether an offer carrying `x-google-start-bitrate` has been accepted locally. The
     // hint is written once per peer connection; see `compute_start_bitrate_kbps`.
     start_bitrate_applied: bool,
+    // OurCamp: a screen share was added and its answer has not come yet (ADR-0062).
+    bandwidth_probe_pending: bool,
+    // OurCamp: how many times the send cap was set; see `probe_send_cap`.
+    send_cap_raises: u64,
     pending_initial_offer: Option<SessionDescription>,
 }
 
@@ -87,6 +91,8 @@ impl PeerTransport {
                 max_send_bitrate_is_screen_share: false,
                 connection_setup_time: None,
                 start_bitrate_applied: false,
+                bandwidth_probe_pending: false,
+                send_cap_raises: 0,
                 pending_initial_offer: None,
             })),
             connected_generation: AtomicU32::new(0),
@@ -167,6 +173,13 @@ impl PeerTransport {
         }
 
         self.peer_connection.set_remote_description(remote_description).await?;
+
+        // OurCamp: the estimator's own first probes date from the connection, so a stream
+        // published later ends up with little and climbs slowly. A new cap makes it probe up
+        // to that cap, and what the link really carries decides the rest (ADR-0062).
+        if std::mem::take(&mut inner.bandwidth_probe_pending) {
+            self.raise_send_cap(&mut inner);
+        }
 
         // Apply every queued candidate, even if one fails. A candidate can be rejected on its
         // own merits — a malformed or stale line from the server — and that must not abort the
@@ -261,6 +274,35 @@ impl PeerTransport {
         let mut inner = self.inner.lock().await;
         inner.max_send_bitrate_bps = bps;
         inner.max_send_bitrate_is_screen_share = is_screen_share;
+        inner.bandwidth_probe_pending = is_screen_share;
+    }
+
+    /// OurCamp: makes the estimator probe up to the send cap, now (ADR-0062, ADR-0065).
+    pub async fn probe_send_cap(&self) {
+        let mut inner = self.inner.lock().await;
+        self.raise_send_cap(&mut inner);
+    }
+
+    /// The estimator probes only when the cap has grown, and a stream started after another
+    /// of the same size would get none. A kilobit means nothing to the link.
+    fn raise_send_cap(&self, inner: &mut TransportInner) {
+        let Some(target) = inner.max_send_bitrate_bps else {
+            return;
+        };
+        inner.send_cap_raises += 1;
+        let settings = BitrateSettings {
+            max_bitrate_bps: Some(Self::send_cap_bps(target) + inner.send_cap_raises * 1000),
+            ..BitrateSettings::default()
+        };
+        if let Err(err) = self.peer_connection.set_bitrate(settings) {
+            log::warn!("failed to set the send cap: {err:?}");
+        }
+    }
+
+    /// OurCamp: the cap for a whole connection, above the screen share's own: its sound and
+    /// the voice share the same estimate, and the track's encoding limits the video anyway.
+    const fn send_cap_bps(target_bps: u64) -> u64 {
+        target_bps + target_bps / 4
     }
 
     /// Maximum x-google-start-bitrate (kbps).
@@ -831,6 +873,11 @@ a=rtpmap:111 opus/48000/2\n\
 a=fmtp:111 minptime=10;useinbandfec=1\n";
         let out = PeerTransport::munge_x_google_start_bitrate(sdp, 3200);
         assert_eq!(out, sdp, "should not change SDP if no video codec present");
+    }
+
+    #[test]
+    fn the_send_cap_leaves_room_above_the_track() {
+        assert_eq!(PeerTransport::send_cap_bps(12_000_000), 15_000_000);
     }
 
     #[test]

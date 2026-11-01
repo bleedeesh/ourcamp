@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use windows::core::{w, Interface, GUID};
 use windows::Win32::Media::MediaFoundation::{
-    eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_ConstrainedBase,
-    CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize,
+    eAVEncCommonRateControlMode_CBR, eAVEncH264VProfile_High, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize,
     CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate,
     IMFMediaEventGenerator, IMFMediaType, IMFSample, IMFTransform, METransformHaveOutput,
     METransformNeedInput, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
@@ -245,10 +245,8 @@ impl H264Encoder {
 
             let output = media_type(&MFVideoFormat_H264, settings)?;
             output.SetUINT32(&MF_MT_AVG_BITRATE, settings.bitrate)?;
-            output.SetUINT32(
-                &MF_MT_MPEG2_PROFILE,
-                eAVEncH264VProfile_ConstrainedBase.0 as u32,
-            )?;
+            // High, not Baseline: more picture for the same bits (ADR-0061).
+            output.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
             transform.SetOutputType(0, &output, 0)?;
             let input = media_type(&MFVideoFormat_NV12, settings)?;
             transform.SetInputType(0, &input, 0)?;
@@ -666,6 +664,59 @@ mod tests {
                 .any(|f| f.key && f.timestamp_us >= 20 * 1_000_000 / 30),
             "the requested key frame"
         );
+    }
+
+    /// The byte after an SPS's header is its profile: 100 is High.
+    fn sps_profile(frame: &Encoded) -> Option<u8> {
+        frame
+            .data
+            .windows(5)
+            .find(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 7)
+            .map(|w| w[4])
+    }
+
+    #[test]
+    fn the_stream_is_high_profile() {
+        if skip_without_media_foundation() {
+            return;
+        }
+        let frames = encode_frames(SMALL, EncoderChoice::Software);
+        assert_eq!(sps_profile(&frames[0]), Some(100));
+    }
+
+    /// Brightness only: fine detail in colour costs more than any bitrate allows, whatever
+    /// the setting (ADR-0061), and would say nothing about rate control.
+    #[test]
+    fn the_encoder_keeps_to_the_set_bitrate() {
+        if skip_without_media_foundation() {
+            return;
+        }
+        let settings = EncoderSettings {
+            bitrate: 500_000,
+            ..SMALL
+        };
+        let mut encoder = H264Encoder::new(settings, EncoderChoice::Best).unwrap();
+        let (w, h) = (settings.width as usize, settings.height as usize);
+        let (mut bytes, settled, frames) = (0usize, 60u32, 240u32);
+        for i in 0..frames {
+            let mut nv12 = vec![128u8; w * h * 3 / 2];
+            for (n, p) in nv12[..w * h].iter_mut().enumerate() {
+                let (x, y) = (n % w, n / w);
+                let cell = (x + i as usize * 7) / 32 + (y + i as usize * 3) / 32;
+                *p = (cell % 2 * 120 + 60 + (x ^ y) % 16) as u8;
+            }
+            let time = i64::from(i) * 1_000_000 / i64::from(settings.fps);
+            for frame in encoder.encode(&nv12, time, false).unwrap() {
+                if i >= settled {
+                    bytes += frame.data.len();
+                }
+            }
+        }
+        let seconds = f64::from(frames - settled) / f64::from(settings.fps);
+        let got = bytes as f64 * 8.0 / seconds;
+        let set = f64::from(settings.bitrate);
+        eprintln!("{}: set {set}, got {got}", encoder.name());
+        assert!(got > set * 0.5 && got < set * 1.5, "set {set}, got {got}");
     }
 
     /// Whatever this machine has. On a machine without a video card it is the same as above.

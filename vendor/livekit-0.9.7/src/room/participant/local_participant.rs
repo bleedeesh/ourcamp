@@ -554,6 +554,12 @@ impl LocalParticipant {
         }
     }
 
+    /// OurCamp: makes the bandwidth estimator look for the room up to the send cap at once
+    /// (ADR-0065).
+    pub async fn probe_send_bandwidth(&self) {
+        self.inner.rtc_engine.session().probe_send_bandwidth().await;
+    }
+
     pub async fn set_attributes(&self, attributes: HashMap<String, String>) -> RoomResult<()> {
         if let Ok(response) = timeout(REQUEST_TIMEOUT, {
             let request_id = self.inner.rtc_engine.session().signal_client().next_request_id();

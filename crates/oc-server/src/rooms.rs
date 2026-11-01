@@ -36,6 +36,8 @@ struct Track {
     #[serde(default)]
     source: String,
     #[serde(default)]
+    name: String,
+    #[serde(default)]
     muted: bool,
 }
 
@@ -48,11 +50,12 @@ impl Participant {
             .any(|t| t.kind == "AUDIO" && t.source == "MICROPHONE" && !t.muted)
     }
 
-    /// Showing their screen (ADR-0049). The sound of a stream alone does not count.
+    /// Showing their screen (ADR-0049), which is published as a camera (ADR-0065). The sound of
+    /// a stream alone does not count.
     pub fn streaming(&self) -> bool {
         self.tracks
             .iter()
-            .any(|t| t.kind == "VIDEO" && t.source == "SCREEN_SHARE" && !t.muted)
+            .any(|t| t.kind == "VIDEO" && t.source == "CAMERA" && t.name == "screen" && !t.muted)
     }
 }
 

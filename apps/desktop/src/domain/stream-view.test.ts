@@ -13,8 +13,8 @@ import {
 } from "./stream-view.ts";
 import type { CampState } from "../engine/camp-api.ts";
 
-const live: ViewStatus = { live: true, height: 1080, fps: 60, viewers: 3, sound: true };
-const off: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false };
+const live: ViewStatus = { live: true, height: 1080, fps: 60, viewers: 3, sound: true, reduced: false };
+const off: ViewStatus = { live: false, height: 0, fps: 0, viewers: 1, sound: false, reduced: false };
 
 test("the volume of streams is remembered, and a bad memory gives the default", () => {
   const stored = new Map<string, string>();
@@ -26,6 +26,8 @@ test("the volume of streams is remembered, and a bad memory gives the default", 
   assert.equal(readStreamVolume(storage), 0, "silence is a real choice");
   stored.set("ourcamp.streamVolume", "громко");
   assert.equal(readStreamVolume(storage), DEFAULT_STREAM_VOLUME);
+  saveStreamVolume(storage, 200);
+  assert.equal(readStreamVolume(storage), 200, "louder than the stream itself");
   stored.set("ourcamp.streamVolume", "900");
   assert.equal(readStreamVolume(storage), DEFAULT_STREAM_VOLUME);
   const broken = {
@@ -43,6 +45,7 @@ test("the volume of streams is remembered, and a bad memory gives the default", 
 test("the quality shows only while there is a picture", () => {
   assert.equal(qualityText(live), "1080p · 60 fps");
   assert.equal(qualityText(off), "");
+  assert.equal(qualityText({ ...live, height: 720, fps: 30, reduced: true }), "720p · 30 fps · слабый канал");
 });
 
 test("the verb agrees with the number of viewers", () => {

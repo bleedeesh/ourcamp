@@ -1,5 +1,5 @@
 //! Screen streams (M6, ADR-0049). A stream publishes into the voice room already joined:
-//! on Windows, the SDK's capture → H.264 through Media Foundation → the SDK's pre-encoded
+//! on Windows, capture (a window directly, ADR-0060; a screen through the SDK) → H.264 through Media Foundation → the SDK's pre-encoded
 //! path. Other systems come with step 6.
 
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ mod pipeline;
 mod sound;
 #[cfg(windows)]
 mod view;
+#[cfg(windows)]
+mod wgc;
 
 #[cfg(windows)]
 pub use pipeline::{list_sources, ScreenStream};
@@ -58,16 +60,54 @@ pub struct StreamQuality {
     pub fps: u32,
 }
 
-/// Bits per second for a quality (ADR-0049, 1440p: ADR-0054).
+/// The most bits per second for a quality: the same picture quality in every row. Less goes
+/// out when the picture needs less or `WebRTC` finds less room on the link (ADR-0063).
 #[must_use]
 pub const fn bitrate(quality: StreamQuality) -> u32 {
     let high_rate = quality.fps >= 60;
     match (quality.height, high_rate) {
-        (1440.., true) => 10_000_000,
-        (1440.., false) => 7_000_000,
-        (1080.., true) => 6_000_000,
-        (1080.., false) | (_, true) => 4_000_000,
-        (_, false) => 2_500_000,
+        (1440.., true) => 40_000_000,
+        (1440.., false) | (1080.., true) => 20_000_000,
+        (1080.., false) => 12_000_000,
+        (_, true) => 10_000_000,
+        (_, false) => 6_000_000,
+    }
+}
+
+/// The stream's two video tracks, by name (ADR-0065). LiveKit stops a video track that does not
+/// fit a viewer's line only if it is not `SCREEN_SHARE`, so they are published as a camera.
+#[cfg(windows)]
+pub(crate) const FULL_TRACK: &str = "screen";
+#[cfg(windows)]
+pub(crate) const LIGHT_TRACK: &str = "screen-light";
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "for the tests of the room; streams come with step 6"
+    )
+)]
+pub(crate) const STREAM_SOURCE: livekit::track::TrackSource = livekit::track::TrackSource::Camera;
+/// A member's attribute: whose light layer they need. The streamer encodes it only then.
+#[cfg(windows)]
+pub(crate) const ASK_LIGHT: &str = "oc.light";
+
+/// What a viewer gets when their line cannot carry the stream (ADR-0065).
+#[cfg(windows)]
+pub(crate) const fn light_quality(quality: StreamQuality) -> StreamQuality {
+    StreamQuality {
+        height: if quality.height > 720 { 720 } else { 480 },
+        fps: 30,
+    }
+}
+
+/// The most bits per second of the light layer.
+#[cfg(windows)]
+pub(crate) const fn light_bitrate(quality: StreamQuality) -> u32 {
+    if quality.height > 720 {
+        3_000_000
+    } else {
+        1_500_000
     }
 }
 
@@ -121,6 +161,8 @@ pub struct ViewStatus {
     pub viewers: u32,
     /// The stream comes with sound.
     pub sound: bool,
+    /// Your line cannot carry the stream, so a lighter picture comes (ADR-0065).
+    pub reduced: bool,
 }
 
 /// Until step 6 of M6: everything but Windows says so and streams nothing.

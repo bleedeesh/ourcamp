@@ -47,6 +47,18 @@ windows = { version = "0.62", features = [
   "Win32_System_Variant",
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_WinRT",
+  "Win32_System_WinRT_Direct3D11",
+  "Win32_System_WinRT_Graphics_Capture",
+  "Foundation",
+  "Graphics",
+  "Graphics_Capture",
+  "Graphics_DirectX",
+  "Graphics_DirectX_Direct3D11",
 ] }
 # The picture of a stream, in its own surface inside the viewer's window (ADR-0049).
 wgpu = { version = "30", default-features = false, features = ["dx12", "wgsl"] }
