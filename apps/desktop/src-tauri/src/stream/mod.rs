@@ -60,17 +60,17 @@ pub struct StreamQuality {
     pub fps: u32,
 }
 
-/// Bits per second for a quality (ADR-0061).
+/// The most bits per second for a quality: the same picture quality in every row. Less goes
+/// out when the picture needs less or `WebRTC` finds less room on the link (ADR-0063).
 #[must_use]
 pub const fn bitrate(quality: StreamQuality) -> u32 {
     let high_rate = quality.fps >= 60;
     match (quality.height, high_rate) {
-        (1440.., true) => 20_000_000,
-        (1440.., false) => 14_000_000,
-        (1080.., true) => 12_000_000,
-        (1080.., false) => 8_000_000,
-        (_, true) => 6_000_000,
-        (_, false) => 4_000_000,
+        (1440.., true) => 40_000_000,
+        (1440.., false) | (1080.., true) => 20_000_000,
+        (1080.., false) => 12_000_000,
+        (_, true) => 10_000_000,
+        (_, false) => 6_000_000,
     }
 }
 

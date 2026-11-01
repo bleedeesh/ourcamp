@@ -735,21 +735,21 @@ mod tests {
 
     #[test]
     fn quality_sets_the_bitrate() {
-        assert_eq!(bitrate(q(1080, 60)), 12_000_000);
-        assert_eq!(bitrate(q(1080, 30)), 8_000_000);
-        assert_eq!(bitrate(q(720, 60)), 6_000_000);
-        assert_eq!(bitrate(q(720, 30)), 4_000_000);
-        assert_eq!(bitrate(q(1440, 60)), 20_000_000);
-        assert_eq!(bitrate(q(1440, 30)), 14_000_000);
+        assert_eq!(bitrate(q(1080, 60)), 20_000_000);
+        assert_eq!(bitrate(q(1080, 30)), 12_000_000);
+        assert_eq!(bitrate(q(720, 60)), 10_000_000);
+        assert_eq!(bitrate(q(720, 30)), 6_000_000);
+        assert_eq!(bitrate(q(1440, 60)), 40_000_000);
+        assert_eq!(bitrate(q(1440, 30)), 20_000_000);
     }
 
     #[test]
     fn a_small_picture_takes_no_more_than_its_size_asks() {
-        assert_eq!(rate_for(q(1440, 60), 1440), 20_000_000);
-        assert_eq!(rate_for(q(1440, 60), 1080), 12_000_000, "a 1080p screen");
-        assert_eq!(rate_for(q(1440, 30), 600), 4_000_000, "a small window");
-        assert_eq!(rate_for(q(1080, 60), 1000), 12_000_000, "just under 1080");
-        assert_eq!(rate_for(q(720, 60), 720), 6_000_000);
+        assert_eq!(rate_for(q(1440, 60), 1440), 40_000_000);
+        assert_eq!(rate_for(q(1440, 60), 1080), 20_000_000, "a 1080p screen");
+        assert_eq!(rate_for(q(1440, 30), 600), 6_000_000, "a small window");
+        assert_eq!(rate_for(q(1080, 60), 1000), 20_000_000, "just under 1080");
+        assert_eq!(rate_for(q(720, 60), 720), 10_000_000);
     }
 
     /// Moving stripes at a fixed size.
@@ -928,6 +928,58 @@ mod tests {
             let (count, size) = watch(&track, 3).await;
             assert_eq!(size, (1280, 720));
             assert!(count > 45, "near 30 a second, got {count}");
+            stream.stop().await;
+            room.leave().await;
+        });
+    }
+
+    /// The connection is already up when a stream starts, as with a voice call, so the
+    /// bandwidth estimator has to find the room for it at once (ADR-0062).
+    #[test]
+    #[ignore = "needs LiveKit: pnpm livekit"]
+    fn a_stream_gets_its_bitrate_at_once() {
+        use livekit::track::LocalTrack;
+        use livekit::webrtc::stats::RtcStats;
+
+        tauri::async_runtime::block_on(async {
+            let mut room = Audience::gather("stream-ramp").await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let stream = ScreenStream::run(
+                Arc::clone(&room.streamer),
+                q(720, 60),
+                EncoderChoice::Best,
+                || {
+                    Ok(Box::new(Stripes {
+                        width: 1280,
+                        height: 720,
+                        frame: 0,
+                    }) as Box<dyn Frames>)
+                },
+            )
+            .await
+            .unwrap();
+            let track = room.stream_track().await;
+            let _ = watch(&track, 2).await;
+            let publications = room.streamer.local_participant().track_publications();
+            let published = publications
+                .values()
+                .find_map(|p| match p.track() {
+                    Some(LocalTrack::Video(track)) => Some(track),
+                    _ => None,
+                })
+                .unwrap();
+            let target = published
+                .get_stats()
+                .await
+                .unwrap()
+                .into_iter()
+                .find_map(|s| match s {
+                    RtcStats::OutboundRtp(rtp) => Some(rtp.outbound.target_bitrate),
+                    _ => None,
+                })
+                .unwrap();
+            let ceiling = f64::from(bitrate(q(720, 60)));
+            assert!(target > ceiling * 0.8, "target {target} of {ceiling}");
             stream.stop().await;
             room.leave().await;
         });
