@@ -8,7 +8,8 @@
 //! whoever asks for it, so that a stream costs nothing to those not watching.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::future::Future;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -105,10 +106,34 @@ pub struct RoomParams {
     pub playback_rate: u32,
 }
 
+/// The microphone track as it is now, and whether it should be muted: a new track takes that
+/// over, whenever the two happen together (ADR-0066).
+struct MicState {
+    track: LocalAudioTrack,
+    muted: bool,
+}
+
+fn lock_mic(mic: &Mutex<MicState>) -> MutexGuard<'_, MicState> {
+    // Two plain fields, each set in one step: a panic cannot leave them half-done.
+    mic.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// What the room is told to do while it runs, in turn with its events.
+enum Control {
+    /// There is a new mixer: play every voice into it, at this rate.
+    Replay { rate: u32 },
+    /// There is a new microphone: put it in the room instead of the old one.
+    Microphone {
+        source: NativeAudioSource,
+        done: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
+}
+
 /// A connected room with the microphone published.
 pub struct VoiceRoom {
     room: Arc<Room>,
-    mic: LocalAudioTrack,
+    mic: Arc<Mutex<MicState>>,
+    control: tokio::sync::mpsc::UnboundedSender<Control>,
     events: JoinHandle<()>,
     link: AbortOnDrop,
     /// The runtime the room was connected on. Some synchronous SDK calls (`mute`)
@@ -163,16 +188,23 @@ impl VoiceRoom {
             Arc::clone(&room),
             Arc::clone(&host),
         )));
+        let mic = Arc::new(Mutex::new(MicState {
+            track,
+            muted: mic_muted,
+        }));
+        let (control, controls) = tokio::sync::mpsc::unbounded_channel();
         let events = tauri::async_runtime::spawn(handle_events(
             Arc::clone(&room),
             events,
+            controls,
             host,
             params.playback_rate,
-            track.clone(),
+            Arc::clone(&mic),
         ));
         Ok(Self {
             room,
-            mic: track,
+            mic,
+            control,
             events,
             link,
             runtime: tokio::runtime::Handle::current(),
@@ -188,10 +220,40 @@ impl VoiceRoom {
     /// thread.
     pub fn set_mic_muted(&self, muted: bool) {
         let _runtime = self.runtime.enter();
+        let mut mic = lock_mic(&self.mic);
+        mic.muted = muted;
         if muted {
-            self.mic.mute();
+            mic.track.mute();
         } else {
-            self.mic.unmute();
+            mic.track.unmute();
+        }
+    }
+
+    /// The mixer was replaced: every voice starts over in the new one, at its rate. The
+    /// engine has already forgotten the old sources, so no `voice_stopped` comes.
+    pub fn replay(&self, rate: u32) {
+        let _ = self.control.send(Control::Replay { rate });
+    }
+
+    /// Puts another microphone in the room. Others lose this person for as long as that takes.
+    ///
+    /// # Errors
+    /// If it could not be published, as text for the UI.
+    pub fn replace_mic(
+        &self,
+        source: NativeAudioSource,
+    ) -> impl Future<Output = Result<(), String>> {
+        let (done, answer) = tokio::sync::oneshot::channel();
+        let sent = self
+            .control
+            .send(Control::Microphone { source, done })
+            .is_ok();
+        async move {
+            let closed = || "Комната уже закрыта".to_owned();
+            if !sent {
+                return Err(closed());
+            }
+            answer.await.map_err(|_| closed())?
         }
     }
 
@@ -314,22 +376,167 @@ fn members(room: &Room) -> Vec<RemoteMember> {
     list
 }
 
+/// Takes the old microphone out of the room and puts `source` in. In this order: one person
+/// has one microphone for the others, at every moment.
+async fn swap_mic(
+    room: &Room,
+    mic: &Mutex<MicState>,
+    source: NativeAudioSource,
+) -> Result<(), String> {
+    let local = room.local_participant();
+    let published: Vec<TrackSid> = local
+        .track_publications()
+        .values()
+        .filter(|p| p.source() == TrackSource::Microphone)
+        .map(LocalTrackPublication::sid)
+        .collect();
+    for sid in published {
+        local
+            .unpublish_track(&sid)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let track = LocalAudioTrack::create_audio_track("microphone", RtcAudioSource::Native(source));
+    {
+        let mut mic = lock_mic(mic);
+        if mic.muted {
+            track.mute();
+        }
+        mic.track = track.clone();
+    }
+    // A silenced member stays off the air: the right coming back publishes the new track.
+    if may_publish(room) {
+        publish_mic(room, &track).await?;
+    }
+    Ok(())
+}
+
+/// A member's microphone playing, and which publication that is: the end of an older one can
+/// come after this one has begun, and must not stop it (ADR-0066).
+struct Voice {
+    publication: TrackSid,
+    _task: AbortOnDrop,
+}
+
+/// Plays one member's microphone, in the mixer the host gives.
+fn play_voice(
+    host: &Arc<dyn RoomHost>,
+    voices: &mut HashMap<String, Voice>,
+    user_id: String,
+    publication: &RemoteTrackPublication,
+    track: &RemoteAudioTrack,
+    rate: u32,
+) {
+    if let Some(input) = host.voice_started(&user_id) {
+        let stream = NativeAudioStream::with_options(
+            track.rtc_track(),
+            i32::try_from(rate).expect("sample rate fits in i32"),
+            1,
+            NativeAudioStreamOptions {
+                queue_size_frames: Some(REMOTE_QUEUE_FRAMES),
+            },
+        );
+        let task = tauri::async_runtime::spawn(play(stream, input));
+        voices.insert(
+            user_id,
+            Voice {
+                publication: publication.sid(),
+                _task: AbortOnDrop(task),
+            },
+        );
+    }
+}
+
+/// Puts the microphone up or takes it down, as the right to publish now says.
+async fn follow_permission(
+    room: &Room,
+    local: &LocalParticipant,
+    mic: &Mutex<MicState>,
+    may_publish: bool,
+) {
+    let published: Vec<TrackSid> = local
+        .track_publications()
+        .values()
+        .filter(|p| p.source() == TrackSource::Microphone)
+        .map(LocalTrackPublication::sid)
+        .collect();
+    if may_publish {
+        if published.is_empty() {
+            let track = lock_mic(mic).track.clone();
+            if let Err(e) = publish_mic(room, &track).await {
+                eprintln!("[oc-voice] microphone back after a lift: {e}");
+            }
+        }
+    } else {
+        for sid in published {
+            // The track itself keeps running: only the sender goes.
+            if let Err(e) = local.unpublish_track(&sid).await {
+                eprintln!("[oc-voice] microphone down on silence: {e}");
+            }
+        }
+    }
+}
+
+/// Starts every voice over, in the mixer the host has now.
+fn replay_voices(
+    room: &Room,
+    host: &Arc<dyn RoomHost>,
+    voices: &mut HashMap<String, Voice>,
+    rate: u32,
+) {
+    voices.clear();
+    for participant in room.remote_participants().into_values() {
+        for publication in participant.track_publications().into_values() {
+            if publication.source() != TrackSource::Microphone {
+                continue;
+            }
+            if let Some(RemoteTrack::Audio(track)) = publication.track() {
+                play_voice(
+                    host,
+                    voices,
+                    participant.identity().to_string(),
+                    &publication,
+                    &track,
+                    rate,
+                );
+            }
+        }
+    }
+}
+
 async fn handle_events(
     room: Arc<Room>,
     mut events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
+    mut controls: tokio::sync::mpsc::UnboundedReceiver<Control>,
     host: Arc<dyn RoomHost>,
-    playback_rate: u32,
-    mic: LocalAudioTrack,
+    mut playback_rate: u32,
+    mic: Arc<Mutex<MicState>>,
 ) {
-    let mut voices: HashMap<String, AbortOnDrop> = HashMap::new();
+    let mut voices: HashMap<String, Voice> = HashMap::new();
     let mut last_members = members(&room);
-    let stop_voice = |voices: &mut HashMap<String, AbortOnDrop>, user_id: &str| {
+    let stop_voice = |voices: &mut HashMap<String, Voice>, user_id: &str| {
         if voices.remove(user_id).is_some() {
             host.voice_stopped(user_id);
         }
     };
 
-    while let Some(event) = events.recv().await {
+    loop {
+        let event = tokio::select! {
+            event = events.recv() => event,
+            Some(control) = controls.recv() => {
+                match control {
+                    Control::Replay { rate } => {
+                        playback_rate = rate;
+                        replay_voices(&room, &host, &mut voices, rate);
+                    }
+                    Control::Microphone { source, done } => {
+                        let _ = done.send(swap_mic(&room, &mic, source).await);
+                    }
+                }
+                continue;
+            }
+        };
+        let Some(event) = event else { break };
         match event {
             RoomEvent::TrackPublished { publication, .. } => listen_if_microphone(&publication),
             RoomEvent::TrackSubscribed {
@@ -339,25 +546,27 @@ async fn handle_events(
             } if publication.source() == TrackSource::Microphone => {
                 let user_id = participant.identity().to_string();
                 stop_voice(&mut voices, &user_id);
-                if let Some(input) = host.voice_started(&user_id) {
-                    let stream = NativeAudioStream::with_options(
-                        track.rtc_track(),
-                        i32::try_from(playback_rate).expect("sample rate fits in i32"),
-                        1,
-                        NativeAudioStreamOptions {
-                            queue_size_frames: Some(REMOTE_QUEUE_FRAMES),
-                        },
-                    );
-                    let task = tauri::async_runtime::spawn(play(stream, input));
-                    voices.insert(user_id, AbortOnDrop(task));
-                }
+                play_voice(
+                    &host,
+                    &mut voices,
+                    user_id,
+                    &publication,
+                    &track,
+                    playback_rate,
+                );
             }
             RoomEvent::TrackUnsubscribed {
                 publication,
                 participant,
                 ..
             } if publication.source() == TrackSource::Microphone => {
-                stop_voice(&mut voices, &participant.identity().to_string());
+                let user_id = participant.identity().to_string();
+                if voices
+                    .get(&user_id)
+                    .is_some_and(|v| v.publication == publication.sid())
+                {
+                    stop_voice(&mut voices, &user_id);
+                }
             }
             RoomEvent::ParticipantDisconnected(participant) => {
                 stop_voice(&mut voices, &participant.identity().to_string());
@@ -369,26 +578,8 @@ async fn handle_events(
                 participant: Participant::Local(local),
                 permission,
             } => {
-                let published: Vec<TrackSid> = local
-                    .track_publications()
-                    .values()
-                    .filter(|p| p.source() == TrackSource::Microphone)
-                    .map(LocalTrackPublication::sid)
-                    .collect();
-                if permission.is_none_or(|p| p.can_publish) {
-                    if published.is_empty() {
-                        if let Err(e) = publish_mic(&room, &mic).await {
-                            eprintln!("[oc-voice] microphone back after a lift: {e}");
-                        }
-                    }
-                } else {
-                    for sid in published {
-                        // The track itself keeps running: only the sender goes.
-                        if let Err(e) = local.unpublish_track(&sid).await {
-                            eprintln!("[oc-voice] microphone down on silence: {e}");
-                        }
-                    }
-                }
+                let may = permission.is_none_or(|p| p.can_publish);
+                follow_permission(&room, &local, &mic, may).await;
             }
             RoomEvent::Disconnected { reason } => {
                 eprintln!("[oc-voice] disconnected: {reason:?}");
@@ -777,6 +968,155 @@ pub(crate) mod tests {
         VoiceRoom::connect(params, source, false, host)
             .await
             .expect("voice through the camp (is `pnpm livekit` running?)")
+    }
+
+    impl Ears {
+        fn heard(&self, user_id: &str) -> usize {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|id| *id == user_id)
+                .count()
+        }
+
+        async fn wait_for_times(&self, user_id: &str, times: usize) {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while self.heard(user_id) < times {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{times} voices, heard {}", self.heard(user_id)));
+        }
+    }
+
+    /// ADR-0066 against the real LiveKit: a new mixer plays every voice again without anyone
+    /// doing anything in the room.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn a_new_mixer_plays_every_voice_again() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("replay").await;
+            let speaker = connect(params).await;
+            let speaker_id = speaker.room().local_participant().identity().to_string();
+            let ears = Arc::new(Ears::default());
+            let (client, session) = another_member(&camp, "Слушатель").await;
+            let hearing = listener(way_in(&client, &session).await, &ears).await;
+            ears.wait_for_times(&speaker_id, 1).await;
+
+            hearing.replay(44_100);
+            ears.wait_for_times(&speaker_id, 2).await;
+
+            hearing.close().await;
+            speaker.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
+    }
+
+    /// Plays voices into a mixer as the engine does, and counts how many are on.
+    struct Player {
+        mixer: std::sync::Mutex<oc_audio::mixer::MixerControl<u32>>,
+        _core: std::sync::Mutex<oc_audio::mixer::MixerCore>,
+        started: std::sync::atomic::AtomicU32,
+        stopped: std::sync::atomic::AtomicU32,
+    }
+
+    impl Player {
+        fn new() -> Self {
+            let (mixer, core) =
+                oc_audio::mixer::mixer(oc_audio::mixer::MixerConfig::default_48k_stereo());
+            Self {
+                mixer: mixer.into(),
+                _core: core.into(),
+                started: 0.into(),
+                stopped: 0.into(),
+            }
+        }
+
+        fn started(&self) -> u32 {
+            self.started.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn playing(&self) -> u32 {
+            self.started() - self.stopped.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl RoomHost for Player {
+        fn voice_started(&self, _: &str) -> Option<SourceInput> {
+            let n = self
+                .started
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.mixer
+                .lock()
+                .unwrap()
+                .add_source(n, oc_audio::mixer::Layout::Mono, 1.0)
+                .ok()
+        }
+        fn voice_stopped(&self, _: &str) {
+            self.stopped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn members_changed(&self, _: Vec<RemoteMember>) {}
+        fn disconnected(&self, _: String) {}
+        fn link_changed(&self, _: Link) {}
+    }
+
+    /// ADR-0066 against the real LiveKit: another microphone, at another rate, reaches the
+    /// others by itself and goes on playing when the old one's end comes, later than its own
+    /// start. Muting holds across the change.
+    #[test]
+    #[ignore = "needs a local LiveKit: `pnpm livekit`"]
+    fn another_microphone_reaches_the_others_and_stays_muted() {
+        tauri::async_runtime::block_on(async {
+            let (camp, dir, params) = camp_room("swap").await;
+            let speaker = connect(params).await;
+            let local = speaker.room().local_participant();
+            let player = Arc::new(Player::new());
+            let (client, session) = another_member(&camp, "Слушатель").await;
+            let silent = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 0);
+            let host: Arc<dyn RoomHost> = player.clone();
+            let hearing = VoiceRoom::connect(way_in(&client, &session).await, silent, false, host)
+                .await
+                .unwrap();
+            let voices = |times: u32| {
+                let player = Arc::clone(&player);
+                async move {
+                    for _ in 0..500 {
+                        if player.started() >= times {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                    panic!("{times} voices, heard {}", player.started());
+                }
+            };
+            voices(1).await;
+
+            speaker.set_mic_muted(true);
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 16_000, 1, 0);
+            speaker.replace_mic(source).await.unwrap();
+            voices(2).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            assert_eq!(player.playing(), 1, "the new voice goes on");
+
+            let mics: Vec<_> = local
+                .track_publications()
+                .into_values()
+                .filter(|p| p.source() == TrackSource::Microphone)
+                .collect();
+            assert_eq!(mics.len(), 1, "the old one is gone");
+            assert!(mics[0].is_muted(), "muted before the change, muted after");
+            speaker.set_mic_muted(false);
+            assert!(!mics[0].is_muted(), "and the button works on the new one");
+
+            hearing.close().await;
+            speaker.close().await;
+            camp.stop().await;
+            let _ = std::fs::remove_dir_all(dir);
+        });
     }
 
     /// The stream of `user_id` as this room sees it, once announced.

@@ -16,6 +16,8 @@ use oc_audio::meter::SpeechDetectorConfig;
 use oc_audio::mixer::{mixer, Layout, MixerConfig, MixerControl, MixerCore, OutputTap};
 use oc_audio::SAMPLE_RATE;
 
+use super::devices::Alarm;
+
 /// Frames processed per mixer call when the device has more than two channels and the
 /// stereo mix has to be spread into a wider frame. Allocated once per stream.
 const WIDE_SCRATCH_FRAMES: usize = 4096;
@@ -26,7 +28,7 @@ const TAP_CAPACITY_MS: u32 = 500;
 /// Why the output device could not be opened.
 #[derive(Debug)]
 pub enum OutputError {
-    /// The OS reports no default output device.
+    /// The OS reports no output device to use.
     NoDevice,
     /// The device offers no 32-bit float format (all mainstream drivers do).
     UnsupportedFormat,
@@ -77,7 +79,6 @@ pub struct Output {
     thread: Option<JoinHandle<()>>,
     sample_rate: u32,
     device_name: String,
-    latency: DeviceLatency,
 }
 
 impl Output {
@@ -91,12 +92,6 @@ impl Output {
     #[must_use]
     pub fn device_name(&self) -> &str {
         &self.device_name
-    }
-
-    /// Live output latency.
-    #[must_use]
-    pub fn latency(&self) -> DeviceLatency {
-        self.latency.clone()
     }
 }
 
@@ -121,25 +116,31 @@ pub struct Opened<K> {
     pub output: Output,
 }
 
-/// Opens the default output device and starts mixing into it.
+/// Opens the named output device, or the system's if there is no such device now, and starts
+/// mixing into it. `latency` follows whatever is open; `alarm` hears when it fails.
 ///
 /// # Errors
 /// See [`OutputError`].
-pub fn open<K>() -> Result<Opened<K>, OutputError>
+pub fn open<K>(
+    device: Option<&str>,
+    latency: &DeviceLatency,
+    alarm: &Arc<Alarm>,
+) -> Result<Opened<K>, OutputError>
 where
     K: Eq + Hash + Clone + Send + 'static,
 {
     type Ready<K> = Result<(MixerControl<K>, OutputTap, u32, String), OutputError>;
     let (ready_tx, ready_rx) = mpsc::channel::<Ready<K>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
-    let latency = DeviceLatency::default();
+    let device = device.map(str::to_owned);
 
     let thread = {
         let latency = latency.clone();
+        let alarm = Arc::clone(alarm);
         thread::Builder::new()
             .name("oc-audio-output".into())
             .spawn(move || {
-                let stream = match start_stream::<K>(latency) {
+                let stream = match start_stream::<K>(device.as_deref(), latency, alarm) {
                     Ok(started) => {
                         let _ = ready_tx.send(Ok((
                             started.control,
@@ -173,7 +174,6 @@ where
             thread: Some(thread),
             sample_rate,
             device_name,
-            latency,
         },
     })
 }
@@ -186,9 +186,20 @@ struct Started<K> {
     name: String,
 }
 
-fn start_stream<K: Eq + Hash + Clone>(latency: DeviceLatency) -> Result<Started<K>, OutputError> {
+fn start_stream<K: Eq + Hash + Clone>(
+    wanted: Option<&str>,
+    latency: DeviceLatency,
+    alarm: Arc<Alarm>,
+) -> Result<Started<K>, OutputError> {
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or(OutputError::NoDevice)?;
+    let named = wanted.and_then(|wanted| {
+        host.output_devices()
+            .ok()?
+            .find(|d| d.name().is_ok_and(|name| name == wanted))
+    });
+    let device = named
+        .or_else(|| host.default_output_device())
+        .ok_or(OutputError::NoDevice)?;
     let name = device.name().unwrap_or_else(|_| "unknown".into());
     let config = choose_config(&device)?;
     let channels = usize::from(config.channels);
@@ -212,9 +223,11 @@ fn start_stream<K: Eq + Hash + Clone>(latency: DeviceLatency) -> Result<Started<
         .build_output_stream(
             &config,
             render_callback(core, channels, latency),
-            // Device errors (unplugged headset, driver reset) are logged for now;
-            // device switching and UI reporting arrive with the settings window (M7).
-            |err| eprintln!("[oc-audio] output stream error: {err}"),
+            // An unplugged headset, a driver reset: the engine moves to another device.
+            move |err| {
+                eprintln!("[oc-audio] output stream error: {err}");
+                alarm.output_failed();
+            },
             None,
         )
         .map_err(backend)?;

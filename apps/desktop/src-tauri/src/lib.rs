@@ -31,6 +31,9 @@ const CAMP_DIRECTIVE_EVENT: &str = "camp://directive";
 /// Chat updates for every window (ADR-0044). Must match `CAMP_CHAT_EVENT` in
 /// `src/engine/tauri-camp-api.ts`.
 const CAMP_CHAT_EVENT: &str = "camp://chat";
+/// The system's sound devices changed (ADR-0066). Must match `SOUND_EVENT` in
+/// `src/engine/tauri-sound-api.ts`.
+const SOUND_EVENT: &str = "sound://changed";
 
 /// The main window's close button hides it into the tray: voice and the camp stay on, like
 /// in other voice apps; "Выйти" in the tray menu ends OurCamp (ADR-0031). The chat window
@@ -82,6 +85,35 @@ fn forward_camp_events(app: &tauri::AppHandle, camps: &Camps) {
     }));
 }
 
+/// One running OurCamp per profile, or this one leaves.
+fn hold_profile(app: &tauri::App, dir: &std::path::Path) {
+    match lock_profile(dir) {
+        Ok(lock) => {
+            app.manage(lock);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            // A second window would join voice as the same person and LiveKit
+            // would throw the first one out (`DuplicateIdentity`).
+            eprintln!(
+                "[ourcamp] OurCamp is already running with this profile; \
+                 for a second person on this PC set OC_PROFILE=<name> (debug builds)"
+            );
+            std::process::exit(0);
+        }
+        // Cannot lock (exotic file system): run anyway rather than not at all.
+        Err(e) => eprintln!("[ourcamp] profile lock unavailable: {e}"),
+    }
+}
+
+/// Tells every window when the system's sound devices change.
+fn forward_sound(app: tauri::AppHandle, engine: &Engine) {
+    engine.watch_devices(Arc::new(move |sound| {
+        if let Err(e) = tauri::Emitter::emit(&app, SOUND_EVENT, sound) {
+            eprintln!("[ourcamp] sound event: {e}");
+        }
+    }));
+}
+
 /// Starts the application. Called from `main.rs` (desktop) and mobile entry points.
 ///
 /// # Panics
@@ -112,22 +144,10 @@ pub fn run() {
             let dir = data_dir(app.path().app_data_dir());
             if let Ok(dir) = &dir {
                 eprintln!("[ourcamp] data: {}", dir.display());
-                match lock_profile(dir) {
-                    Ok(lock) => {
-                        app.manage(lock);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        // A second window would join voice as the same person and LiveKit
-                        // would throw the first one out (`DuplicateIdentity`).
-                        eprintln!(
-                            "[ourcamp] OurCamp is already running with this profile; \
-                             for a second person on this PC set OC_PROFILE=<name> (debug builds)"
-                        );
-                        std::process::exit(0);
-                    }
-                    // Cannot lock (exotic file system): run anyway rather than not at all.
-                    Err(e) => eprintln!("[ourcamp] profile lock unavailable: {e}"),
+                if let Some(engine) = &for_levels {
+                    engine.load_sound(dir.clone());
                 }
+                hold_profile(app, dir);
             }
             let camps: CampsState = dir
                 .and_then(|dir| Camps::load(&dir).map_err(|e| e.to_string()))
@@ -142,6 +162,7 @@ pub fn run() {
             app.manage(camps);
             if let Some(engine) = for_levels {
                 participants::forward(app.handle().clone(), &engine);
+                forward_sound(app.handle().clone(), &engine);
                 levels::spawn(app.handle().clone(), engine);
             }
             tray(app)?;
@@ -156,6 +177,10 @@ pub fn run() {
             commands::voice_set_mic_muted,
             commands::voice_set_deafened,
             commands::settings_window_open,
+            commands::sound_view,
+            commands::sound_set_output,
+            commands::sound_set_microphone,
+            commands::sound_set_volume,
             commands::profile_set_name,
             commands::stream_sources,
             commands::stream_qualities,

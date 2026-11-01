@@ -1,6 +1,7 @@
 //! Native audio: devices (output, microphone), the voice engine and the synthetic
 //! test voices.
 
+pub mod devices;
 pub mod engine;
 pub mod input;
 pub mod output;

@@ -113,6 +113,42 @@ pub async fn stream_sound_available() -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The sound settings (ADR-0066).
+#[tauri::command]
+pub async fn sound_view(
+    state: State<'_, EngineState>,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?.sound().await
+}
+
+/// Chooses the output; none follows the system.
+#[tauri::command]
+pub async fn sound_set_output(
+    state: State<'_, EngineState>,
+    device: Option<String>,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?.set_output(device).await
+}
+
+/// Chooses the microphone; none follows the system.
+#[tauri::command]
+pub async fn sound_set_microphone(
+    state: State<'_, EngineState>,
+    device: Option<String>,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?.set_microphone(device).await
+}
+
+/// The overall volume, percent; `save` when the hand is off the slider.
+#[tauri::command]
+pub fn sound_set_volume(
+    state: State<'_, EngineState>,
+    percent: f32,
+    save: bool,
+) -> Result<(), String> {
+    engine(&state)?.set_sound_volume(percent, save)
+}
+
 /// Local volume of the sound of streams, percent.
 #[tauri::command]
 pub fn stream_volume(state: State<'_, EngineState>, percent: f32) -> Result<(), String> {

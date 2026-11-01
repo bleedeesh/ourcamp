@@ -7,17 +7,23 @@
 //!   and the speaking ring without a second person or a server.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Duration;
 
 use oc_audio::gain::percent_to_gain;
 use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatus};
 
+use super::devices::{self, Alarm, Listing, SoundPrefs};
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
 use crate::stream::{OwnStream, ScreenStream, SourceKind, StreamQuality, ViewStatus, Viewer};
-use crate::voice::mic::{LocalLevel, MicPipeline, TapSlot};
+use crate::voice::mic::{install_tap, LocalLevel, MicPipeline, TapSlot};
 use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
+
+/// How often the watcher looks at the system's devices (ADR-0066).
+const LOOK_EVERY: Duration = Duration::from_secs(3);
 
 /// A remote member to play when joining a channel.
 #[derive(Debug, Clone)]
@@ -72,6 +78,22 @@ pub type LinkListener = Arc<dyn Fn(Link) + Send + Sync>;
 
 /// Receives how your own stream is going (ADR-0054).
 pub type StreamListener = Arc<dyn Fn(OwnStream) + Send + Sync>;
+
+/// What the settings window shows: what the system has, and what was chosen.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundView {
+    pub outputs: Vec<String>,
+    pub default_output: Option<String>,
+    pub microphones: Vec<String>,
+    pub default_microphone: Option<String>,
+    pub output: Option<String>,
+    pub microphone: Option<String>,
+    pub volume: f32,
+}
+
+/// Receives the sound settings whenever the system's devices change.
+pub type SoundListener = Arc<dyn Fn(SoundView) + Send + Sync>;
 
 /// User-facing error text (shown in the UI toast).
 pub type EngineError = String;
@@ -147,9 +169,15 @@ struct Live {
     link: LinkRelay,
     next_session_id: u64,
     next_stream: u64,
+    deafened: bool,
+    /// What the user chose, and where it is kept (no folder: not kept).
+    sound: SoundPrefs,
+    sound_dir: Option<PathBuf>,
+    alarm: Arc<Alarm>,
+    /// One for the engine's life: the microphone keeps reading it across outputs.
     output_latency: DeviceLatency,
     output_rate: u32,
-    _output: Output,
+    output: Output,
 }
 
 impl Live {
@@ -208,8 +236,6 @@ impl Live {
 )]
 pub struct StreamOutlet {
     live: Weak<Mutex<Live>>,
-    /// What the mixer plays at.
-    pub rate: u32,
 }
 
 #[cfg_attr(
@@ -217,8 +243,9 @@ pub struct StreamOutlet {
     allow(dead_code, reason = "the viewer is Windows only until step 6")
 )]
 impl StreamOutlet {
-    /// A mixer source for the sound, replacing a stale one. `None` if the mixer refused.
-    pub fn open(&self) -> Option<SourceInput> {
+    /// A mixer source for the sound, replacing a stale one, and the rate the mixer plays at.
+    /// `None` if the mixer refused.
+    pub fn open(&self) -> Option<(SourceInput, u32)> {
         let live = self.live.upgrade()?;
         let mut live = lock(&live);
         let gain = percent_to_gain(live.stream_volume);
@@ -227,7 +254,7 @@ impl StreamOutlet {
             .mixer
             .add_source(SourceKey::Stream, Layout::Stereo, gain)
         {
-            Ok(input) => Some(input),
+            Ok(input) => Some((input, live.output_rate)),
             Err(e) => {
                 eprintln!("[oc-stream] cannot play the sound: {e}");
                 None
@@ -268,7 +295,10 @@ impl Engine {
     /// # Errors
     /// When no usable output device exists; the app keeps running without audio.
     pub fn start() -> Result<Self, EngineError> {
-        let opened = output::open::<SourceKey>().map_err(|e| format!("Звук недоступен: {e}"))?;
+        let alarm = Arc::<Alarm>::default();
+        let output_latency = DeviceLatency::default();
+        let opened = output::open::<SourceKey>(None, &output_latency, &alarm)
+            .map_err(|e| format!("Звук недоступен: {e}"))?;
         let output = opened.output;
         let synthetic = std::env::var("OC_VOICE")
             .is_ok_and(|v| v == "synthetic")
@@ -303,9 +333,13 @@ impl Engine {
                 next_stream: 0,
                 // Set when a camp is opened (`set_self_id`).
                 self_id: String::new(),
-                output_latency: output.latency(),
+                deafened: false,
+                sound: SoundPrefs::default(),
+                sound_dir: None,
+                alarm,
+                output_latency,
                 output_rate: output.sample_rate(),
-                _output: output,
+                output,
             })),
             transitions: Arc::default(),
         })
@@ -313,6 +347,303 @@ impl Engine {
 
     fn lock(&self) -> MutexGuard<'_, Live> {
         lock(&self.live)
+    }
+
+    /// Takes up what was chosen earlier, from the app's folder. Once, while nothing plays yet.
+    pub fn load_sound(&self, dir: PathBuf) {
+        let sound = SoundPrefs::load(&dir);
+        let elsewhere = sound.output.is_some();
+        {
+            let mut live = self.lock();
+            let gain = percent_to_gain(sound.volume);
+            if let Err(e) = live.mixer.set_master_gain(gain) {
+                eprintln!("[oc-audio] volume: {e}");
+            }
+            live.sound = sound;
+            live.sound_dir = Some(dir);
+        }
+        if elsewhere && self.needs_room() {
+            if let Err(e) = self.replace_output() {
+                eprintln!("[oc-audio] {e}");
+            }
+        }
+    }
+
+    fn save_sound(&self) {
+        let (sound, dir) = {
+            let live = self.lock();
+            (live.sound.clone(), live.sound_dir.clone())
+        };
+        if let Some(dir) = dir {
+            if let Err(e) = sound.save(&dir) {
+                eprintln!("[oc-audio] saving the sound settings: {e}");
+            }
+        }
+    }
+
+    fn sound_view(&self, listing: Listing) -> SoundView {
+        let live = self.lock();
+        SoundView {
+            outputs: listing.outputs,
+            default_output: listing.default_output,
+            microphones: listing.microphones,
+            default_microphone: listing.default_microphone,
+            output: live.sound.output.clone(),
+            microphone: live.sound.microphone.clone(),
+            volume: live.sound.volume,
+        }
+    }
+
+    /// The sound settings as they are now.
+    ///
+    /// # Errors
+    /// If the task asking the system died.
+    pub async fn sound(&self) -> Result<SoundView, EngineError> {
+        Ok(self.sound_view(listing().await?))
+    }
+
+    /// Chooses the output (`None`: as in the system) and moves to it, if that is another device.
+    ///
+    /// # Errors
+    /// The device could not be opened; the old one keeps playing and nothing is saved.
+    pub async fn set_output(&self, chosen: Option<String>) -> Result<SoundView, EngineError> {
+        if !self.needs_room() {
+            return Err("С OC_VOICE=synthetic устройство не меняется".to_owned());
+        }
+        let listing = listing().await?;
+        let _transition = self.transitions.lock().await;
+        let (previous, moving) = {
+            let mut live = self.lock();
+            let previous = std::mem::replace(&mut live.sound.output, chosen);
+            let moving = devices::pick(
+                live.sound.output.as_deref(),
+                &listing.outputs,
+                listing.default_output.as_deref(),
+            )
+            .is_some_and(|name| name != live.output.device_name());
+            (previous, moving)
+        };
+        if moving {
+            if let Err(e) = self.replace_output() {
+                self.lock().sound.output = previous;
+                return Err(e);
+            }
+        }
+        self.save_sound();
+        Ok(self.sound_view(listing))
+    }
+
+    /// Chooses the microphone (`None`: as in the system). In a channel it moves there at once;
+    /// otherwise the next channel opens it.
+    ///
+    /// # Errors
+    /// The device could not be opened or published; the choice stays, and the watcher tries again.
+    pub async fn set_microphone(&self, chosen: Option<String>) -> Result<SoundView, EngineError> {
+        let listing = listing().await?;
+        let _transition = self.transitions.lock().await;
+        let moving = {
+            let mut live = self.lock();
+            live.sound.microphone = chosen;
+            let wanted = devices::pick(
+                live.sound.microphone.as_deref(),
+                &listing.microphones,
+                listing.default_microphone.as_deref(),
+            );
+            live.session
+                .as_ref()
+                .is_some_and(|s| wanted.is_some_and(|name| name != s.mic.device_name()))
+        };
+        self.save_sound();
+        if moving {
+            if let Err(e) = self.replace_mic().await {
+                self.lock().alarm.retry_microphone();
+                return Err(e);
+            }
+        }
+        Ok(self.sound_view(listing))
+    }
+
+    /// Sets the overall volume, percent. `save`: the hand is off the slider, keep it.
+    ///
+    /// # Errors
+    /// If the mixer command queue is full.
+    pub fn set_sound_volume(&self, percent: f32, save: bool) -> Result<(), EngineError> {
+        {
+            let mut live = self.lock();
+            live.sound.volume = percent;
+            live.mixer
+                .set_master_gain(percent_to_gain(percent))
+                .map_err(mixer_error)?;
+        }
+        if save {
+            self.save_sound();
+        }
+        Ok(())
+    }
+
+    /// Opens the chosen output with a new mixer, and everything playing moves there. A new
+    /// mixer, because a device's rate is the mixer's and the sources' (ADR-0066). The old
+    /// output plays until the new one is up, so a failure costs nothing. Holds `transitions`.
+    fn replace_output(&self) -> Result<(), EngineError> {
+        let (chosen, latency, alarm, volume, deafened) = {
+            let live = self.lock();
+            (
+                live.sound.output.clone(),
+                live.output_latency.clone(),
+                Arc::clone(&live.alarm),
+                live.sound.volume,
+                live.deafened,
+            )
+        };
+        let opened = output::open::<SourceKey>(chosen.as_deref(), &latency, &alarm)
+            .map_err(|e| format!("Звук: {e}"))?;
+        let mut mixer = opened.mixer;
+        mixer
+            .set_master_gain(percent_to_gain(volume))
+            .and_then(|()| mixer.set_master_muted(deafened))
+            .map_err(mixer_error)?;
+        let rate = opened.output.sample_rate();
+        eprintln!(
+            "[oc-audio] output: {} @ {rate} Hz",
+            opened.output.device_name()
+        );
+        let old = {
+            let mut live = self.lock();
+            live.mixer = mixer;
+            live.sources.clear();
+            live.output_rate = rate;
+            install_tap(&live.taps, opened.tap);
+            if let Some(session) = &live.session {
+                session.room.replay(rate);
+                if let Some(viewer) = &session.viewer {
+                    viewer.mixer_replaced();
+                }
+            }
+            std::mem::replace(&mut live.output, opened.output)
+        };
+        // Outside the lock: it waits for the device's thread.
+        drop(old);
+        Ok(())
+    }
+
+    /// Opens the chosen microphone and puts it in the room. A new track, because a device's
+    /// rate is its source's (ADR-0066). The old one has to let go of the output's tap first,
+    /// and goes silent even if the new one fails. Holds `transitions`.
+    async fn replace_mic(&self) -> Result<(), EngineError> {
+        let (chosen, taps, latency, muted, alarm) = {
+            let mut live = self.lock();
+            let Some(session) = live.session.as_mut() else {
+                return Ok(());
+            };
+            session.mic.halt();
+            (
+                live.sound.microphone.clone(),
+                Arc::clone(&live.taps),
+                live.output_latency.clone(),
+                live.mic_muted,
+                Arc::clone(&live.alarm),
+            )
+        };
+        let mic = MicPipeline::start(chosen, &taps, latency, muted, alarm)
+            .map_err(|message| format!("Микрофон: {message}"))?;
+        let published = {
+            let mut live = self.lock();
+            mic.set_muted(live.mic_muted);
+            live.local_level = Some(mic.level());
+            let session = live.session.as_mut().ok_or("Сначала зайдите в канал")?;
+            let published = session.room.replace_mic(mic.source());
+            session.mic = mic;
+            published
+        };
+        published
+            .await
+            .map_err(|e| format!("Не удалось включить микрофон в комнате: {e}"))
+    }
+
+    /// Brings what is open in line with the system: the chosen device came back or left, the
+    /// system's default moved, a device failed. A device that could not be opened is tried
+    /// again at the next look.
+    async fn reconcile(&self, listing: &Listing) -> Result<(), EngineError> {
+        let _transition = self.transitions.lock().await;
+        let (alarm, output_moves, mic_moves) = {
+            let live = self.lock();
+            let alarm = Arc::clone(&live.alarm);
+            let output = devices::pick(
+                live.sound.output.as_deref(),
+                &listing.outputs,
+                listing.default_output.as_deref(),
+            );
+            let mic = devices::pick(
+                live.sound.microphone.as_deref(),
+                &listing.microphones,
+                listing.default_microphone.as_deref(),
+            );
+            let output_moves = match output {
+                Some(name) => alarm.take_output() || name != live.output.device_name(),
+                None => false,
+            };
+            let mic_moves = match (mic, &live.session) {
+                (Some(name), Some(session)) => {
+                    alarm.take_microphone() || name != session.mic.device_name()
+                }
+                _ => false,
+            };
+            (alarm, output_moves, mic_moves)
+        };
+        if output_moves {
+            self.replace_output()
+                .inspect_err(|_| alarm.retry_output())?;
+        }
+        if mic_moves {
+            let moved = self.replace_mic().await;
+            moved.inspect_err(|_| alarm.retry_microphone())?;
+        }
+        Ok(())
+    }
+
+    /// Follows the system's devices for as long as the app lives (ADR-0066). `cpal` tells only
+    /// of a device failing, so the rest is found by looking now and then.
+    pub fn watch_devices(&self, listener: SoundListener) {
+        if !self.needs_room() {
+            return;
+        }
+        let engine = self.clone();
+        let alarm = Arc::clone(&self.lock().alarm);
+        tauri::async_runtime::spawn(async move {
+            let Ok(mut seen) = tauri::async_runtime::spawn_blocking(devices::glance).await else {
+                return;
+            };
+            let Ok(mut known) = listing().await else {
+                return;
+            };
+            let mut problem = None;
+            loop {
+                let failed = tokio::select! {
+                    () = tokio::time::sleep(LOOK_EVERY) => false,
+                    () = alarm.raised() => true,
+                };
+                let Ok(glance) = tauri::async_runtime::spawn_blocking(devices::glance).await else {
+                    continue;
+                };
+                if failed || glance != seen {
+                    let Ok(now) = listing().await else { continue };
+                    seen = glance;
+                    if now != known {
+                        listener(engine.sound_view(now.clone()));
+                        known = now;
+                    }
+                }
+                // Each time: a device that could not be opened is tried again.
+                let result = engine.reconcile(&known).await.err();
+                // Once for each new problem: it may stay for hours.
+                if result != problem {
+                    if let Some(e) = &result {
+                        eprintln!("[oc-audio] following the devices: {e}");
+                    }
+                    problem = result;
+                }
+            }
+        });
     }
 
     /// Where participant updates go.
@@ -402,18 +733,21 @@ impl Engine {
     }
 
     async fn join_room(&self, access: RoomAccess) -> Result<(), EngineError> {
-        let (taps, output_latency, mic_muted, playback_rate) = {
+        let (taps, output_latency, mic_muted, playback_rate, device, alarm) = {
             let live = self.lock();
+            live.alarm.take_microphone();
             (
                 Arc::clone(&live.taps),
                 live.output_latency.clone(),
                 live.mic_muted,
                 live.output_rate,
+                live.sound.microphone.clone(),
+                Arc::clone(&live.alarm),
             )
         };
         // If anything below fails or this future is dropped, dropping `mic` returns the
         // tap to `taps` (see `TapSlot`).
-        let mic = MicPipeline::start(&taps, output_latency, mic_muted)
+        let mic = MicPipeline::start(device, &taps, output_latency, mic_muted, alarm)
             .map_err(|message| format!("Микрофон: {message}"))?;
         let session_id = {
             let mut live = self.lock();
@@ -591,7 +925,6 @@ impl Engine {
             .map_err(|e| format!("Не удалось открыть окно стрима: {e}"))?;
         let outlet = StreamOutlet {
             live: Arc::downgrade(&self.live),
-            rate: self.lock().output_rate,
         };
         let viewer = match Viewer::start(room, user_id, name, window.clone(), outlet).await {
             Ok(viewer) => viewer,
@@ -687,10 +1020,9 @@ impl Engine {
     /// # Errors
     /// If the mixer command queue is full.
     pub fn set_deafened(&self, deafened: bool) -> Result<(), EngineError> {
-        self.lock()
-            .mixer
-            .set_master_muted(deafened)
-            .map_err(mixer_error)
+        let mut live = self.lock();
+        live.deafened = deafened;
+        live.mixer.set_master_muted(deafened).map_err(mixer_error)
     }
 
     /// Mutes the microphone; the room shows us as muted.
@@ -727,6 +1059,13 @@ impl Engine {
         });
         remote.chain(local).collect()
     }
+}
+
+/// What the system has now. Off the async threads: it takes a moment for each device.
+async fn listing() -> Result<Listing, EngineError> {
+    tauri::async_runtime::spawn_blocking(devices::list)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// The engine as seen by a room. Weak: the room's event task must not keep the

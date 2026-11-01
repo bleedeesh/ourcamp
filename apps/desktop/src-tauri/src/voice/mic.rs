@@ -25,6 +25,7 @@ use oc_audio::meter::{rms_dbfs, SpeechDetector, SpeechDetectorConfig, SILENCE_DB
 use oc_audio::mixer::OutputTap;
 use oc_audio::pcm::{f32_to_i16, i16_to_f32};
 
+use crate::audio::devices::Alarm;
 use crate::audio::input;
 use crate::audio::output::DeviceLatency;
 
@@ -86,14 +87,31 @@ impl TapLease {
             .as_mut()
             .expect("tap is present until the lease drops")
     }
+
+    /// Moves to the tap of a new output, if the engine has left one in the slot.
+    fn renew(&mut self) -> bool {
+        match lock_slot(&self.slot).take() {
+            Some(tap) => {
+                self.tap = Some(tap);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 impl Drop for TapLease {
     fn drop(&mut self) {
         if let Some(tap) = self.tap.take() {
-            *lock_slot(&self.slot) = Some(tap);
+            // A tap in the slot is newer than this one.
+            lock_slot(&self.slot).get_or_insert(tap);
         }
     }
+}
+
+/// Leaves the tap of a new output: the running pipeline moves to it, or the next one takes it.
+pub fn install_tap(slot: &TapSlot, tap: OutputTap) {
+    *lock_slot(slot) = Some(tap);
 }
 
 fn lock_slot(slot: &TapSlot) -> MutexGuard<'_, Option<OutputTap>> {
@@ -105,6 +123,7 @@ fn lock_slot(slot: &TapSlot) -> MutexGuard<'_, Option<OutputTap>> {
 /// the output tap to its [`TapSlot`].
 pub struct MicPipeline {
     source: NativeAudioSource,
+    device_name: String,
     muted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     level: Arc<LocalLevel>,
@@ -118,14 +137,17 @@ struct Shared {
 }
 
 impl MicPipeline {
-    /// Opens the default microphone and starts processing, borrowing the tap in `taps`.
+    /// Opens the named microphone (the system's if there is no such device now) and starts
+    /// processing, borrowing the tap in `taps`.
     ///
     /// # Errors
     /// If the tap is in use by another pipeline or the microphone cannot be opened.
     pub fn start(
+        device: Option<String>,
         taps: &TapSlot,
         output_latency: DeviceLatency,
         muted: bool,
+        alarm: Arc<Alarm>,
     ) -> Result<Self, String> {
         let lease = TapLease::take(taps).ok_or("микрофон уже используется другим каналом")?;
         let shared = Shared {
@@ -138,14 +160,24 @@ impl MicPipeline {
             Arc::clone(&shared.stop),
             Arc::clone(&shared.level),
         );
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<NativeAudioSource, String>>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<Started, String>>();
         let thread = thread::Builder::new()
             .name("oc-mic".into())
-            .spawn(move || run(lease, &output_latency, &shared, &ready_tx))
+            .spawn(move || {
+                run(
+                    device.as_deref(),
+                    lease,
+                    &output_latency,
+                    &shared,
+                    &alarm,
+                    &ready_tx,
+                );
+            })
             .map_err(|e| format!("не удалось запустить поток микрофона: {e}"))?;
         match ready_rx.recv() {
-            Ok(Ok(source)) => Ok(Self {
-                source,
+            Ok(Ok(started)) => Ok(Self {
+                source: started.source,
+                device_name: started.device_name,
                 muted,
                 stop,
                 level,
@@ -169,6 +201,12 @@ impl MicPipeline {
         self.source.clone()
     }
 
+    /// The device it opened.
+    #[must_use]
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
     /// Stops sending audio (processing keeps running so the echo canceller stays
     /// converged and unmuting is instant).
     pub fn set_muted(&self, muted: bool) {
@@ -182,19 +220,31 @@ impl MicPipeline {
     }
 
     /// Closes the microphone; the tap is back in its slot when this returns.
-    pub fn stop(self) {
-        drop(self);
+    pub fn stop(mut self) {
+        self.halt();
     }
-}
 
-impl Drop for MicPipeline {
-    fn drop(&mut self) {
+    /// The same for a pipeline still in its place: a new one needs the tap before it can
+    /// replace this one. Nothing more comes out of it.
+    pub fn halt(&mut self) {
         if let Some(thread) = self.thread.take() {
             self.stop.store(true, Ordering::Relaxed);
             thread.thread().unpark();
             join(thread);
         }
     }
+}
+
+impl Drop for MicPipeline {
+    fn drop(&mut self) {
+        self.halt();
+    }
+}
+
+/// What a pipeline's thread answers when it is up.
+struct Started {
+    source: NativeAudioSource,
+    device_name: String,
 }
 
 /// Waits for the pipeline thread. A panic there is a bug: it is logged loudly, but the
@@ -236,19 +286,20 @@ impl Frame {
 }
 
 fn run(
+    device: Option<&str>,
     mut lease: TapLease,
     output_latency: &DeviceLatency,
     shared: &Shared,
-    ready: &mpsc::Sender<Result<NativeAudioSource, String>>,
+    alarm: &Arc<Alarm>,
+    ready: &mpsc::Sender<Result<Started, String>>,
 ) {
-    let mut capture = match input::open(thread::current()) {
+    let mut capture = match input::open(device, thread::current(), alarm) {
         Ok(capture) => capture,
         Err(e) => {
             let _ = ready.send(Err(e.to_string()));
             return;
         }
     };
-    let tap = lease.tap();
     eprintln!(
         "[oc-voice] microphone: {} @ {} Hz",
         capture.device_name, capture.sample_rate
@@ -262,24 +313,16 @@ fn run(
     };
     // Queue 0: frames go straight to the encoder, no extra buffering latency.
     let source = NativeAudioSource::new(options, capture.sample_rate, 1, 0);
-    let _ = ready.send(Ok(source.clone()));
+    let _ = ready.send(Ok(Started {
+        source: source.clone(),
+        device_name: capture.device_name.clone(),
+    }));
 
     let mut apm = AudioProcessingModule::new(true, true, true, true);
     let mut mic = Frame::new(capture.sample_rate);
     // An output rate that does not give whole 10 ms frames (very rare) means no echo
     // reference; everything else still works.
-    let mut reference = tap
-        .sample_rate()
-        .is_multiple_of(100)
-        .then(|| Frame::new(tap.sample_rate()));
-    if reference.is_none() {
-        eprintln!(
-            "[oc-voice] output rate {} Hz: echo cancellation disabled",
-            tap.sample_rate()
-        );
-    }
-    // Whatever was played before we joined is irrelevant to this microphone.
-    tap.discard_older_than(0);
+    let mut reference = reference_frame(lease.tap());
     let mut detector = SpeechDetector::new(SpeechDetectorConfig::voice(capture.sample_rate));
     let mut reported_error = false;
     let mut report = |what: &str, e: &dyn std::fmt::Display| {
@@ -291,6 +334,11 @@ fn run(
 
     while !shared.stop.load(Ordering::Relaxed) {
         thread::park_timeout(WAKE_INTERVAL);
+
+        if lease.renew() {
+            reference = reference_frame(lease.tap());
+        }
+        let tap = lease.tap();
 
         let backlog = capture.samples.available();
         if backlog > mic.len() * MAX_CAPTURE_BACKLOG_FRAMES {
@@ -345,6 +393,18 @@ fn run(
     // `lease` drops here and puts the tap back.
 }
 
+/// A frame to read `tap` into, from now on: whatever was played before is irrelevant to this
+/// microphone. `None` means no echo reference, and everything else still works.
+fn reference_frame(tap: &mut OutputTap) -> Option<Frame> {
+    let rate = tap.sample_rate();
+    tap.discard_older_than(0);
+    let usable = rate.is_multiple_of(100);
+    if !usable {
+        eprintln!("[oc-voice] output rate {rate} Hz: echo cancellation disabled");
+    }
+    usable.then(|| Frame::new(rate))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +426,43 @@ mod tests {
         );
         drop(lease);
         assert!(lock_slot(&slot).is_some(), "back after the lease ends");
+    }
+
+    #[test]
+    fn a_lease_moves_to_the_tap_of_a_new_output() {
+        let slot = slot();
+        let mut lease = TapLease::take(&slot).unwrap();
+        assert!(!lease.renew(), "nothing new yet");
+
+        let (_control, mut core) = mixer::<u8>(MixerConfig {
+            sample_rate: 44_100,
+            ..MixerConfig::default_48k_stereo()
+        });
+        install_tap(&slot, core.tap_output(10));
+        assert!(lease.renew());
+        assert_eq!(lease.tap().sample_rate(), 44_100);
+        drop(lease);
+        assert_eq!(
+            lock_slot(&slot).as_ref().map(OutputTap::sample_rate),
+            Some(44_100),
+            "back in the slot goes the new one"
+        );
+    }
+
+    #[test]
+    fn a_tap_left_for_the_next_pipeline_is_not_overwritten_by_the_old_one() {
+        let slot = slot();
+        let lease = TapLease::take(&slot).unwrap();
+        let (_control, mut core) = mixer::<u8>(MixerConfig {
+            sample_rate: 44_100,
+            ..MixerConfig::default_48k_stereo()
+        });
+        install_tap(&slot, core.tap_output(10));
+        drop(lease);
+        assert_eq!(
+            lock_slot(&slot).as_ref().map(OutputTap::sample_rate),
+            Some(44_100)
+        );
     }
 
     #[test]
