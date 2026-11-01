@@ -141,7 +141,9 @@ function Attachment({ bytes, onRemove }: { bytes: Uint8Array; onRemove: () => vo
   return (
     <div className="attachment">
       {url !== null && <img className="attachment__thumb" src={url} alt="" />}
-      <span className="attachment__label">Фото · {sizeLabel(bytes.length)}</span>
+      <span className="attachment__label">
+        {photoType(bytes) === "image/gif" ? "GIF" : "Фото"} · {sizeLabel(bytes.length)}
+      </span>
       <button type="button" className="attachment__remove" aria-label="Убрать фото" onClick={onRemove}>
         <Icon name="close" size={14} />
       </button>
