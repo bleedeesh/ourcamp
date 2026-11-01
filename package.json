@@ -14,6 +14,7 @@
     "server:docker": "cargo run -p oc-server -- --data target/camp-data --livekit-url ws://127.0.0.1:7880",
     "server:window": "pnpm --filter @ourcamp/server tauri dev",
     "server:pack": "node dev/pack-server.ts",
+    "installers": "node dev/pack-installers.ts",
     "test": "pnpm -r test && cargo test",
     "typecheck": "pnpm -r typecheck",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check"

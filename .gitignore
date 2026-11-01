@@ -11,3 +11,5 @@ target/
 
 # livekit-server for `managed` mode (`pnpm livekit:fetch`, ADR-0022)
 dev/bin/
+# Its copy for the server's installer (`pnpm installers`).
+apps/server/src-tauri/binaries/
