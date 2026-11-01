@@ -1293,13 +1293,50 @@ mod tests {
         }
     }
 
+    /// What the connection says about a video it sends: the target, and for a failed test what
+    /// tells the estimate holding it back from an encoder or a network doing so (ADR-0067).
+    async fn sending(track: &LocalVideoTrack) -> (f64, String) {
+        use livekit::webrtc::stats::RtcStats;
+        use std::fmt::Write;
+
+        let mut target = 0.0;
+        let mut detail = String::new();
+        for stats in track.get_stats().await.unwrap() {
+            match stats {
+                RtcStats::OutboundRtp(rtp) => {
+                    let out = rtp.outbound;
+                    target = out.target_bitrate;
+                    let _ = write!(
+                        detail,
+                        "encoded {}, sent {} at {:.0} fps, limited by {:?}, send delay {:.2} s, nacks {}; ",
+                        out.frames_encoded,
+                        out.frames_sent,
+                        out.frames_per_second,
+                        out.quality_limitation_reason,
+                        out.total_packet_send_delay,
+                        out.nack_count,
+                    );
+                }
+                RtcStats::RemoteInboundRtp(remote) => {
+                    let _ = write!(
+                        detail,
+                        "rtt {:.3} s, lost {:.3}; ",
+                        remote.remote_inbound.round_trip_time, remote.remote_inbound.fraction_lost,
+                    );
+                }
+                _ => {}
+            }
+        }
+        (target, detail)
+    }
+
     /// The connection is already up when a stream starts, as with a voice call, so the
-    /// bandwidth estimator has to find the room for it at once (ADR-0062).
+    /// bandwidth estimator has to find the room for it at once (ADR-0062). Fails now and then:
+    /// the probe sometimes comes to nothing, and why is still open (ADR-0067).
     #[test]
     #[ignore = "needs LiveKit: pnpm livekit"]
     fn a_stream_gets_its_bitrate_at_once() {
         use livekit::track::LocalTrack;
-        use livekit::webrtc::stats::RtcStats;
 
         tauri::async_runtime::block_on(async {
             let mut room = Audience::gather("stream-ramp").await;
@@ -1330,25 +1367,19 @@ mod tests {
                 })
                 .unwrap();
             let ceiling = f64::from(bitrate(q(720, 60)));
-            // Seconds, where climbing by itself takes most of a minute.
-            let mut target = 0.0;
+            // Seconds, where climbing by itself can take most of a minute.
+            let (mut target, mut detail) = (0.0, String::new());
             for _ in 0..16 {
-                target = published
-                    .get_stats()
-                    .await
-                    .unwrap()
-                    .into_iter()
-                    .find_map(|s| match s {
-                        RtcStats::OutboundRtp(rtp) => Some(rtp.outbound.target_bitrate),
-                        _ => None,
-                    })
-                    .unwrap();
+                (target, detail) = sending(&published).await;
                 if target > ceiling * 0.8 {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            assert!(target > ceiling * 0.8, "target {target} of {ceiling}");
+            assert!(
+                target > ceiling * 0.8,
+                "target {target} of {ceiling}: {detail}"
+            );
             stream.stop().await;
             room.leave().await;
         });
