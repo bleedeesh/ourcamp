@@ -25,6 +25,8 @@ export interface SoundSettings {
   readonly talkKey: TalkKey | null;
   /** A key can be read on this system (ADR-0069). */
   readonly talkKeyWorks: boolean;
+  readonly noiseSuppression: boolean;
+  readonly echoCancellation: boolean;
 }
 
 /** What the microphone hears now. */
@@ -45,6 +47,7 @@ export interface SoundApi {
   /** `save`: the hand is off the slider, keep the value. */
   setThreshold(db: number, save: boolean): Promise<void>;
   setTalkKey(key: TalkKey | null): Promise<SoundSettings>;
+  setProcessing(noiseSuppression: boolean, echoCancellation: boolean): Promise<SoundSettings>;
   /** The level bar came on screen or left it; outside a channel it opens the microphone. */
   micCheck(on: boolean): Promise<void>;
   micInput(): Promise<MicInput>;

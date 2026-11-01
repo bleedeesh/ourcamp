@@ -125,6 +125,8 @@ pub struct SoundPrefs {
     /// Where [`MicMode::Voice`] opens, dBFS.
     pub voice_threshold: f32,
     pub talk_key: Option<TalkKey>,
+    pub noise_suppression: bool,
+    pub echo_cancellation: bool,
 }
 
 impl Default for SoundPrefs {
@@ -136,6 +138,8 @@ impl Default for SoundPrefs {
             mic_mode: MicMode::default(),
             voice_threshold: DEFAULT_THRESHOLD_DB,
             talk_key: None,
+            noise_suppression: true,
+            echo_cancellation: true,
         }
     }
 }
@@ -270,6 +274,8 @@ mod tests {
                 code: 0x56,
                 label: "V".into(),
             }),
+            noise_suppression: false,
+            echo_cancellation: true,
         };
         prefs.save(&dir).unwrap();
         assert_eq!(SoundPrefs::load(&dir), prefs);
@@ -286,6 +292,10 @@ mod tests {
         let prefs = SoundPrefs::load(&dir);
         assert_eq!(prefs.microphone.as_deref(), Some("Гарнитура"));
         assert_eq!(prefs.mic_mode, MicMode::Voice);
+        assert!(
+            prefs.noise_suppression && prefs.echo_cancellation,
+            "stay on"
+        );
         assert_eq!(
             prefs.voice_threshold.to_bits(),
             DEFAULT_THRESHOLD_DB.to_bits()

@@ -178,6 +178,18 @@ pub async fn sound_set_talk_key(
     engine(&state)?.set_talk_key(key).await
 }
 
+/// The noise suppression and the echo cancellation.
+#[tauri::command]
+pub async fn sound_set_processing(
+    state: State<'_, EngineState>,
+    noise_suppression: bool,
+    echo_cancellation: bool,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?
+        .set_processing(noise_suppression, echo_cancellation)
+        .await
+}
+
 /// The settings' bar came on screen or left it.
 #[tauri::command]
 pub async fn sound_mic_check(state: State<'_, EngineState>, on: bool) -> Result<(), String> {

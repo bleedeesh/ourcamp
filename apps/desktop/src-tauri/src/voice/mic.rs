@@ -29,6 +29,7 @@ use oc_audio::pcm::{f32_to_i16, i16_to_f32};
 use crate::audio::devices::{talk_key_down, Alarm};
 use crate::audio::input;
 use crate::audio::output::DeviceLatency;
+use crate::voice::denoise::{self, Denoiser};
 
 /// Upper bound on how long the thread sleeps if the driver stops calling back.
 const WAKE_INTERVAL: Duration = Duration::from_millis(20);
@@ -78,19 +79,100 @@ impl LocalLevel {
     }
 }
 
-/// How the gate is set, from the settings and the key. One for the engine's life: every
+/// What the processing does to the microphone, as the settings have it (ADR-0072).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Processing {
+    noise_suppression: bool,
+    echo_cancellation: bool,
+}
+
+/// Echo cancellation → noise suppression → gain control, in that order (ADR-0008). The suppressor
+/// stands between two modules: the SDK offers no way into the middle of one. The SDK also chooses
+/// a module's settings only when creating it, so new settings mean a new chain.
+struct Chain {
+    processing: Processing,
+    /// The echo cancellation and the high pass filter, which always works (ADR-0009). Where the
+    /// model cannot work, WebRTC's suppressor too: there is only ever one (ADR-0008).
+    first: AudioProcessingModule,
+    denoiser: Option<Denoiser>,
+    gain: AudioProcessingModule,
+    rate: i32,
+    scratch: Vec<f32>,
+}
+
+impl Chain {
+    fn new(processing: Processing, rate: u32) -> Self {
+        let denoiser = (processing.noise_suppression && rate == denoise::RATE)
+            .then(Denoiser::new)
+            .and_then(|made| {
+                made.map_err(|e| eprintln!("[oc-voice] suppressor: {e}"))
+                    .ok()
+            });
+        let webrtc_suppressor = processing.noise_suppression && denoiser.is_none();
+        Self {
+            processing,
+            first: AudioProcessingModule::new(
+                processing.echo_cancellation,
+                false,
+                true,
+                webrtc_suppressor,
+            ),
+            denoiser,
+            gain: AudioProcessingModule::new(false, true, false, false),
+            rate: i32::try_from(rate).unwrap_or(i32::MAX),
+            scratch: vec![0.0; (rate / 100) as usize],
+        }
+    }
+
+    /// What the loudspeakers just played. Without the echo cancellation it has no use.
+    fn reference(&mut self, reference: &mut Frame) -> Result<(), String> {
+        if !self.processing.echo_cancellation {
+            return Ok(());
+        }
+        self.first
+            .process_reverse_stream(&mut reference.i16, reference.rate_i32, 1)
+            .map_err(|e| e.message)
+    }
+
+    /// Everything but the gain control, which would raise what is left and hide the rest.
+    fn clean(&mut self, mic: &mut Frame, delay_ms: i32) -> Result<(), String> {
+        let _ = self.first.set_stream_delay_ms(delay_ms);
+        self.first
+            .process_stream(&mut mic.i16, self.rate, 1)
+            .map_err(|e| e.message)?;
+        if let Some(denoiser) = self.denoiser.as_mut() {
+            i16_to_f32(&mic.i16, &mut mic.f32);
+            denoiser.process(&mut mic.f32, &mut self.scratch)?;
+            f32_to_i16(&mic.f32, &mut mic.i16);
+        }
+        Ok(())
+    }
+
+    fn process(&mut self, mic: &mut Frame, delay_ms: i32) -> Result<(), String> {
+        self.clean(mic, delay_ms)?;
+        self.gain
+            .process_stream(&mut mic.i16, self.rate, 1)
+            .map_err(|e| e.message)
+    }
+}
+
+/// How the microphone is set, from the settings and the key. One for the engine's life: every
 /// microphone it opens reads it. Lock-free: the audio thread reads it each frame.
 #[derive(Debug)]
-pub struct GateControl {
+pub struct MicControl {
+    noise_suppression: AtomicBool,
+    echo_cancellation: AtomicBool,
     key_mode: AtomicBool,
     /// The talk key's code; 0 is none, no key has it.
     talk_key: AtomicU16,
     threshold_db: AtomicU32,
 }
 
-impl Default for GateControl {
+impl Default for MicControl {
     fn default() -> Self {
         Self {
+            noise_suppression: AtomicBool::new(true),
+            echo_cancellation: AtomicBool::new(true),
             key_mode: AtomicBool::new(false),
             talk_key: AtomicU16::new(0),
             threshold_db: AtomicU32::new(DEFAULT_THRESHOLD_DB.to_bits()),
@@ -98,7 +180,21 @@ impl Default for GateControl {
     }
 }
 
-impl GateControl {
+impl MicControl {
+    pub fn set_processing(&self, noise_suppression: bool, echo_cancellation: bool) {
+        self.noise_suppression
+            .store(noise_suppression, Ordering::Relaxed);
+        self.echo_cancellation
+            .store(echo_cancellation, Ordering::Relaxed);
+    }
+
+    fn processing(&self) -> Processing {
+        Processing {
+            noise_suppression: self.noise_suppression.load(Ordering::Relaxed),
+            echo_cancellation: self.echo_cancellation.load(Ordering::Relaxed),
+        }
+    }
+
     pub fn set_key_mode(&self, key_mode: bool) {
         self.key_mode.store(key_mode, Ordering::Relaxed);
     }
@@ -207,7 +303,7 @@ struct Shared {
     muted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     level: Arc<LocalLevel>,
-    gate: Arc<GateControl>,
+    control: Arc<MicControl>,
 }
 
 impl MicPipeline {
@@ -221,7 +317,7 @@ impl MicPipeline {
         taps: &TapSlot,
         output_latency: DeviceLatency,
         muted: bool,
-        gate: Arc<GateControl>,
+        control: Arc<MicControl>,
         alarm: Arc<Alarm>,
     ) -> Result<Self, String> {
         let lease = TapLease::take(taps).ok_or("микрофон уже используется другим каналом")?;
@@ -229,7 +325,7 @@ impl MicPipeline {
             muted: Arc::new(AtomicBool::new(muted)),
             stop: Arc::new(AtomicBool::new(false)),
             level: Arc::new(LocalLevel::default()),
-            gate,
+            control,
         };
         let (muted, stop, level) = (
             Arc::clone(&shared.muted),
@@ -394,7 +490,7 @@ fn run(
         device_name: capture.device_name.clone(),
     }));
 
-    let mut apm = AudioProcessingModule::new(true, true, true, true);
+    let mut chain = Chain::new(shared.control.processing(), capture.sample_rate);
     let mut mic = Frame::new(capture.sample_rate);
     // An output rate that does not give whole 10 ms frames (very rare) means no echo
     // reference; everything else still works.
@@ -423,15 +519,20 @@ fn run(
         }
 
         while capture.samples.available() >= mic.len() {
+            // A switch in the settings: a new chain starts its adaptation over, and that is
+            // heard for a moment only when someone flips it.
+            let wanted = shared.control.processing();
+            if wanted != chain.processing {
+                chain = Chain::new(wanted, capture.sample_rate);
+            }
+
             if let Some(reference) = reference.as_mut() {
                 tap.discard_older_than(reference.len() * MAX_REFERENCE_BACKLOG_FRAMES);
                 while tap.available() >= reference.len() {
                     tap.read(&mut reference.f32);
                     f32_to_i16(&reference.f32, &mut reference.i16);
-                    if let Err(e) =
-                        apm.process_reverse_stream(&mut reference.i16, reference.rate_i32, 1)
-                    {
-                        report("echo reference", &e.message);
+                    if let Err(e) = chain.reference(reference) {
+                        report("echo reference", &e);
                     }
                 }
             }
@@ -439,15 +540,15 @@ fn run(
             capture.samples.pop_slice(&mut mic.f32);
             f32_to_i16(&mic.f32, &mut mic.i16);
             let delay = output_latency.ms() + capture.latency.ms();
-            let _ = apm.set_stream_delay_ms(i32::try_from(delay).unwrap_or(i32::MAX));
-            if let Err(e) = apm.process_stream(&mut mic.i16, mic.rate_i32, 1) {
-                report("processing", &e.message);
+            let delay = i32::try_from(delay).unwrap_or(i32::MAX);
+            if let Err(e) = chain.process(&mut mic, delay) {
+                report("processing", &e);
             }
 
             // Before the mute: the settings' bar shows the voice with the microphone off too.
             i16_to_f32(&mic.i16, &mut mic.f32);
             let input = rms_dbfs(&mic.f32);
-            let opener = shared.gate.opener(talk_key_down);
+            let opener = shared.control.opener(talk_key_down);
             let open = gate.update(opener, input, mic.len() as u32);
             shared.level.set_input(input, open);
 
@@ -495,6 +596,90 @@ mod tests {
     use super::*;
     use oc_audio::mixer::{mixer, MixerConfig};
 
+    /// Ten seconds of the chain's work on noise, in 10 ms frames; the level of the last second,
+    /// dBFS. `echo`: the noise is what a loudspeaker plays, and the microphone hears it 50 ms later.
+    fn level_after(processing: Processing, rate: u32, echo: bool) -> f32 {
+        const ECHO_FRAMES: usize = 5;
+        let mut chain = Chain::new(processing, rate);
+        let mut noise = 0x1234_5678_u32;
+        let mut played = vec![vec![0_i16; (rate / 100) as usize]; ECHO_FRAMES + 1];
+        let mut mic = Frame::new(rate);
+        let mut reference = Frame::new(rate);
+        let mut out = Vec::new();
+        for index in 0..1000 {
+            let newest = index % played.len();
+            for sample in &mut played[newest] {
+                // A fixed sequence, so that the test is the same each time.
+                noise ^= noise << 13;
+                noise ^= noise >> 17;
+                noise ^= noise << 5;
+                *sample = i16::try_from(i32::try_from(noise >> 16).unwrap() - 32_768).unwrap() / 8;
+            }
+            mic.i16.copy_from_slice(&played[newest]);
+            if echo {
+                reference.i16.copy_from_slice(&played[newest]);
+                chain.reference(&mut reference).unwrap();
+                mic.i16.copy_from_slice(&played[(index + 1) % played.len()]);
+            }
+            chain.clean(&mut mic, 50).unwrap();
+            if index >= 900 {
+                out.extend(mic.i16.iter().map(|&s| f32::from(s) / 32_768.0));
+            }
+        }
+        rms_dbfs(&out)
+    }
+
+    #[test]
+    fn the_noise_switch_reaches_the_model() {
+        let with = |noise_suppression| Processing {
+            noise_suppression,
+            echo_cancellation: false,
+        };
+        let on = level_after(with(true), denoise::RATE, false);
+        let off = level_after(with(false), denoise::RATE, false);
+        assert!(on < off - 20.0, "with {on} dB, without {off} dB");
+    }
+
+    #[test]
+    fn where_the_model_cannot_work_webrtc_suppresses() {
+        let with = |noise_suppression| Processing {
+            noise_suppression,
+            echo_cancellation: false,
+        };
+        assert!(Chain::new(with(true), 16_000).denoiser.is_none());
+        assert!(Chain::new(with(true), denoise::RATE).denoiser.is_some());
+        assert!(Chain::new(with(false), denoise::RATE).denoiser.is_none());
+        let on = level_after(with(true), 16_000, false);
+        let off = level_after(with(false), 16_000, false);
+        assert!(on < off - 6.0, "with {on} dB, without {off} dB");
+    }
+
+    #[test]
+    fn the_echo_switch_reaches_the_module() {
+        let with = |echo_cancellation| Processing {
+            noise_suppression: false,
+            echo_cancellation,
+        };
+        let on = level_after(with(true), denoise::RATE, true);
+        let off = level_after(with(false), denoise::RATE, true);
+        assert!(on < off - 6.0, "with {on} dB, without {off} dB");
+    }
+
+    #[test]
+    fn everything_is_on_until_the_settings_say_otherwise() {
+        let control = MicControl::default();
+        assert_eq!(
+            control.processing(),
+            Processing {
+                noise_suppression: true,
+                echo_cancellation: true,
+            }
+        );
+        control.set_processing(false, true);
+        assert!(!control.processing().noise_suppression);
+        assert!(control.processing().echo_cancellation);
+    }
+
     fn slot() -> TapSlot {
         let (_control, mut core) = mixer::<u8>(MixerConfig::default_48k_stereo());
         Arc::new(Mutex::new(Some(core.tap_output(10))))
@@ -502,7 +687,7 @@ mod tests {
 
     #[test]
     fn the_control_says_what_opens_the_gate() {
-        let control = GateControl::default();
+        let control = MicControl::default();
         control.set_threshold(-30.0);
         assert_eq!(
             control.opener(|_| true),
@@ -533,7 +718,7 @@ mod tests {
     #[test]
     fn a_threshold_from_an_edited_file_stays_among_those_offered() {
         let threshold = |db: f32| {
-            let control = GateControl::default();
+            let control = MicControl::default();
             control.set_threshold(db);
             control.opener(|_| false)
         };

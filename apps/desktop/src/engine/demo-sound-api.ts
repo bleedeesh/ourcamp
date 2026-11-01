@@ -14,6 +14,8 @@ export class DemoSoundApi implements SoundApi {
     voiceThreshold: -50,
     talkKey: null,
     talkKeyWorks: true,
+    noiseSuppression: true,
+    echoCancellation: true,
   };
 
   settings(): Promise<SoundSettings> {
@@ -47,6 +49,11 @@ export class DemoSoundApi implements SoundApi {
 
   setTalkKey(key: TalkKey | null): Promise<SoundSettings> {
     this.state = { ...this.state, talkKey: key };
+    return this.settings();
+  }
+
+  setProcessing(noiseSuppression: boolean, echoCancellation: boolean): Promise<SoundSettings> {
+    this.state = { ...this.state, noiseSuppression, echoCancellation };
     return this.settings();
   }
 
