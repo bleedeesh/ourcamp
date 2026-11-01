@@ -714,7 +714,9 @@ pub(super) mod tests {
     #[ignore = "needs a Windows desktop with an output device"]
     fn loopback_hears_the_chosen_process_and_leaves_out_the_other() {
         const TONE: f64 = 997.0;
-        let mut opened = output::open::<SourceKey>().unwrap();
+        let mut opened =
+            output::open::<SourceKey>(None, &output::DeviceLatency::default(), &Arc::default())
+                .unwrap();
         let rate = f64::from(opened.output.sample_rate());
         let mut input = opened
             .mixer

@@ -5,6 +5,7 @@
 //! everywhere); the callback wakes that thread with `unpark` whenever audio arrives.
 
 use std::fmt;
+use std::sync::Arc;
 use std::thread::Thread;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -12,6 +13,7 @@ use cpal::{FromSample, SampleFormat, SampleRate, SizedSample, StreamConfig};
 use oc_audio::ring::{ring_buffer, Consumer, Producer};
 use oc_audio::SAMPLE_RATE;
 
+use super::devices::Alarm;
 use super::output::DeviceLatency;
 
 /// Mono samples converted per chunk inside the callback. Allocated once per stream.
@@ -22,7 +24,7 @@ const RING_MS: u32 = 500;
 /// Why the microphone could not be opened.
 #[derive(Debug)]
 pub enum InputError {
-    /// The OS reports no default input device.
+    /// The OS reports no input device to use.
     NoDevice,
     /// No f32/i16 format at a rate libwebrtc accepts (a multiple of 100 Hz).
     UnsupportedFormat,
@@ -64,13 +66,25 @@ pub struct Capture {
     pub latency: DeviceLatency,
 }
 
-/// Opens the default microphone. `reader` is unparked whenever new samples arrive.
+/// Opens the named microphone, or the system's if there is no such device now. `reader` is
+/// unparked whenever new samples arrive; `alarm` hears when the device fails.
 ///
 /// # Errors
 /// See [`InputError`].
-pub fn open(reader: Thread) -> Result<Capture, InputError> {
+pub fn open(
+    wanted: Option<&str>,
+    reader: Thread,
+    alarm: &Arc<Alarm>,
+) -> Result<Capture, InputError> {
     let host = cpal::default_host();
-    let device = host.default_input_device().ok_or(InputError::NoDevice)?;
+    let named = wanted.and_then(|wanted| {
+        host.input_devices()
+            .ok()?
+            .find(|d| d.name().is_ok_and(|name| name == wanted))
+    });
+    let device = named
+        .or_else(|| host.default_input_device())
+        .ok_or(InputError::NoDevice)?;
     let device_name = device.name().unwrap_or_else(|_| "unknown".into());
     let (config, format) = choose_config(&device)?;
     let sample_rate = config.sample_rate.0;
@@ -84,7 +98,11 @@ pub fn open(reader: Thread) -> Result<Capture, InputError> {
         reader,
         latency: latency.clone(),
     };
-    let on_error = |err| eprintln!("[oc-audio] input stream error: {err}");
+    let alarm = Arc::clone(alarm);
+    let on_error = move |err| {
+        eprintln!("[oc-audio] input stream error: {err}");
+        alarm.microphone_failed();
+    };
     let stream = match format {
         SampleFormat::F32 => {
             device.build_input_stream(&config, ctx.into_callback::<f32>(), on_error, None)

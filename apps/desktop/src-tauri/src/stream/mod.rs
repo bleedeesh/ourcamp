@@ -255,6 +255,10 @@ mod other {
             let Self = self;
         }
 
+        pub fn mixer_replaced(&self) {
+            let Self = self;
+        }
+
         pub fn place(&self, _x: i32, _y: i32, _width: u32, _height: u32) {
             let Self = self;
         }

@@ -24,6 +24,7 @@ use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
 };
 use tauri::{Emitter, WebviewWindow};
+use tokio::sync::Notify;
 
 use super::{ViewStatus, ASK_LIGHT, FULL_TRACK, LIGHT_TRACK, STREAM_SOURCE};
 use crate::audio::engine::StreamOutlet;
@@ -75,6 +76,7 @@ pub struct Viewer {
     render: JoinHandle<()>,
     stop: tokio::sync::oneshot::Sender<()>,
     follow: tauri::async_runtime::JoinHandle<()>,
+    mixer_replaced: Arc<Notify>,
 }
 
 impl Viewer {
@@ -105,6 +107,7 @@ impl Viewer {
 
         let status = Arc::new(Mutex::new(ViewStatus::default()));
         let (stop, stopped) = tokio::sync::oneshot::channel();
+        let mixer_replaced = Arc::new(Notify::new());
         let follow_task = tauri::async_runtime::spawn(follow(
             Follow {
                 room,
@@ -123,6 +126,7 @@ impl Viewer {
                 sound: None,
             },
             stopped,
+            Arc::clone(&mixer_replaced),
         ));
         Ok(Self {
             user_id,
@@ -134,6 +138,7 @@ impl Viewer {
             render,
             stop,
             follow: follow_task,
+            mixer_replaced,
         })
     }
 
@@ -170,6 +175,11 @@ impl Viewer {
         );
         self.surface.place(x, y, w, h);
         self.shared.with(|m| m.size = Some((width, height)));
+    }
+
+    /// There is a new mixer: the sound starts over in it.
+    pub fn mixer_replaced(&self) {
+        self.mixer_replaced.notify_one();
     }
 
     /// Stops watching and closes the window. The surface goes before the window that holds
@@ -488,12 +498,12 @@ impl Follow {
 
     fn play_sound(&mut self, track: &RemoteAudioTrack) {
         self.sound = None;
-        let Some(input) = self.outlet.open() else {
+        let Some((input, rate)) = self.outlet.open() else {
             return;
         };
         let stream = NativeAudioStream::with_options(
             track.rtc_track(),
-            i32::try_from(self.outlet.rate).expect("sample rate fits in i32"),
+            i32::try_from(rate).expect("sample rate fits in i32"),
             2,
             NativeAudioStreamOptions {
                 queue_size_frames: Some(REMOTE_QUEUE_FRAMES),
@@ -690,7 +700,11 @@ async fn say_watching(room: &Room, whose: String) {
 }
 
 /// Keeps the subscription and carries pictures for as long as the viewer lives.
-async fn follow(mut this: Follow, mut stopped: tokio::sync::oneshot::Receiver<()>) {
+async fn follow(
+    mut this: Follow,
+    mut stopped: tokio::sync::oneshot::Receiver<()>,
+    mixer_replaced: Arc<Notify>,
+) {
     // Before looking at what is there: nothing can fall between the two.
     let mut events = this.room.subscribe();
     if let Some(publication) = this.layer_publication(Layer::Full) {
@@ -709,6 +723,15 @@ async fn follow(mut this: Follow, mut stopped: tokio::sync::oneshot::Receiver<()
     loop {
         tokio::select! {
             _ = &mut stopped => break,
+            () = mixer_replaced.notified() => {
+                if this.sound.is_some() {
+                    if let Some(RemoteTrack::Audio(track)) =
+                        this.sound_publication().and_then(|p| p.track())
+                    {
+                        this.play_sound(&track);
+                    }
+                }
+            }
             _ = second.tick() => {
                 let fps = std::mem::take(&mut this.count);
                 this.report(|s| s.fps = fps);

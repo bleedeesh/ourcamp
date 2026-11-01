@@ -5,9 +5,13 @@ import type { IconName } from "@ourcamp/ui/Icon.tsx";
 import { canSaveName, MAX_NAME_CHARS, nameProblem } from "../../domain/settings.ts";
 import type { CampApi } from "../../engine/camp-api.ts";
 import { DemoCampApi } from "../../engine/demo-camp-api.ts";
+import { DemoSoundApi } from "../../engine/demo-sound-api.ts";
+import type { SoundApi } from "../../engine/sound-api.ts";
 import { TauriCampApi } from "../../engine/tauri-camp-api.ts";
 import { isTauri } from "../../engine/tauri-engine.ts";
+import { TauriSoundApi } from "../../engine/tauri-sound-api.ts";
 import { AvatarPicker } from "../AvatarPicker.tsx";
+import { SoundTab } from "./SoundTab.tsx";
 
 type Tab = "sound" | "keys" | "profile";
 
@@ -110,8 +114,8 @@ function LaterTab({ title, step }: { title: string; step: number }) {
 /** The settings window (M7, ADR-0057): the mockup's screen 13. */
 export function SettingsApp() {
   const api = useMemo<CampApi>(() => (isTauri() ? new TauriCampApi() : new DemoCampApi()), []);
-  // The first tab that works; "Звук" takes its place at the top with step 2.
-  const [tab, setTab] = useState<Tab>("profile");
+  const sound = useMemo<SoundApi>(() => (isTauri() ? new TauriSoundApi() : new DemoSoundApi()), []);
+  const [tab, setTab] = useState<Tab>("sound");
 
   const minimize = () => {
     if (isTauri()) void getCurrentWindow().minimize();
@@ -154,7 +158,7 @@ export function SettingsApp() {
         </nav>
         <main className="settings-app__body">
           {tab === "profile" && <ProfileTab api={api} />}
-          {tab === "sound" && <LaterTab title="Звук" step={2} />}
+          {tab === "sound" && <SoundTab api={sound} />}
           {tab === "keys" && <LaterTab title="Клавиши" step={4} />}
         </main>
       </div>
