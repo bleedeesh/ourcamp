@@ -1,4 +1,4 @@
-import type { SoundApi, SoundSettings } from "./sound-api.ts";
+import type { MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
 
 /** Sound settings for looking at the layout in a browser: nothing plays. */
 export class DemoSoundApi implements SoundApi {
@@ -10,6 +10,10 @@ export class DemoSoundApi implements SoundApi {
     output: null,
     microphone: null,
     volume: 100,
+    micMode: "voice",
+    voiceThreshold: -50,
+    talkKey: null,
+    talkKeyWorks: true,
   };
 
   settings(): Promise<SoundSettings> {
@@ -29,6 +33,31 @@ export class DemoSoundApi implements SoundApi {
   setVolume(percent: number): Promise<void> {
     this.state = { ...this.state, volume: percent };
     return Promise.resolve();
+  }
+
+  setMicMode(mode: MicMode): Promise<SoundSettings> {
+    this.state = { ...this.state, micMode: mode };
+    return this.settings();
+  }
+
+  setThreshold(db: number): Promise<void> {
+    this.state = { ...this.state, voiceThreshold: db };
+    return Promise.resolve();
+  }
+
+  setTalkKey(key: TalkKey | null): Promise<SoundSettings> {
+    this.state = { ...this.state, talkKey: key };
+    return this.settings();
+  }
+
+  micCheck(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  /** A voice that rises and falls, to see the bar move. */
+  micInput(): Promise<MicInput> {
+    const levelDb = -45 + 20 * Math.sin(Date.now() / 400);
+    return Promise.resolve({ levelDb, open: levelDb >= this.state.voiceThreshold });
   }
 
   onChanged(): () => void {

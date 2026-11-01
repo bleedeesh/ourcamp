@@ -75,6 +75,43 @@
   line-height: 1.4;
 }
 
+/* What the microphone hears against the threshold (ADR-0069). */
+.mic-meter {
+  position: relative;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.mic-meter__fill {
+  width: 0;
+  height: 100%;
+  background: var(--text-muted);
+}
+
+.mic-meter__fill[data-open="true"] {
+  background: var(--accent);
+}
+
+.mic-meter__mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--text);
+}
+
+.talk-key {
+  align-self: flex-start;
+  padding: 0 16px;
+}
+
+.talk-key[data-waiting] {
+  color: var(--accent-text);
+}
+
 .settings-section__error {
   margin: 0;
   padding: 10px 12px;

@@ -12,14 +12,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use oc_audio::gain::percent_to_gain;
+use oc_audio::meter::SILENCE_DB;
 use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatus};
 
-use super::devices::{self, Alarm, Listing, SoundPrefs};
+use super::devices::{self, Alarm, Listing, MicMode, SoundPrefs, TalkKey, TALK_KEY_WORKS};
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
 use crate::stream::{OwnStream, ScreenStream, SourceKind, StreamQuality, ViewStatus, Viewer};
-use crate::voice::mic::{install_tap, LocalLevel, MicPipeline, TapSlot};
+use crate::voice::mic::{install_tap, GateControl, LocalLevel, MicPipeline, TapSlot};
 use crate::voice::room::{Link, RemoteMember, RoomAccess, RoomHost, RoomParams, VoiceRoom};
 
 /// How often the watcher looks at the system's devices (ADR-0066).
@@ -90,6 +91,20 @@ pub struct SoundView {
     pub output: Option<String>,
     pub microphone: Option<String>,
     pub volume: f32,
+    pub mic_mode: MicMode,
+    pub voice_threshold: f32,
+    pub talk_key: Option<TalkKey>,
+    /// A key can be read on this system.
+    pub talk_key_works: bool,
+}
+
+/// What the microphone hears now, for the settings' bar (ADR-0069).
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicInput {
+    pub level_db: f32,
+    /// The gate is open at this level.
+    pub open: bool,
 }
 
 /// Receives the sound settings whenever the system's devices change.
@@ -173,6 +188,12 @@ struct Live {
     /// What the user chose, and where it is kept (no folder: not kept).
     sound: SoundPrefs,
     sound_dir: Option<PathBuf>,
+    /// One for the engine's life: every microphone opened reads it.
+    gate: Arc<GateControl>,
+    /// The settings' bar is on screen (ADR-0069). Outside a channel it needs a microphone of
+    /// its own, `check`, which sends nothing; a channel's takes over while there is one.
+    checking: bool,
+    check: Option<MicPipeline>,
     alarm: Arc<Alarm>,
     /// One for the engine's life: the microphone keeps reading it across outputs.
     output_latency: DeviceLatency,
@@ -225,6 +246,24 @@ impl Live {
         if let Some(listener) = &self.stream_listener {
             listener(OwnStream { live, note });
         }
+    }
+
+    /// The microphone open now, if any.
+    fn open_mic(&self) -> Option<&MicPipeline> {
+        self.session
+            .as_ref()
+            .map(|session| &session.mic)
+            .or(self.check.as_ref())
+    }
+
+    /// Hands the saved settings to the gate.
+    fn apply_gate(&self) {
+        // A file copied from a system where a key works must not leave the microphone shut.
+        self.gate
+            .set_key_mode(TALK_KEY_WORKS && self.sound.mic_mode == MicMode::Key);
+        self.gate
+            .set_talk_key(self.sound.talk_key.as_ref().map(|key| key.code));
+        self.gate.set_threshold(self.sound.voice_threshold);
     }
 }
 
@@ -336,6 +375,9 @@ impl Engine {
                 deafened: false,
                 sound: SoundPrefs::default(),
                 sound_dir: None,
+                gate: Arc::default(),
+                checking: false,
+                check: None,
                 alarm,
                 output_latency,
                 output_rate: output.sample_rate(),
@@ -361,6 +403,7 @@ impl Engine {
             }
             live.sound = sound;
             live.sound_dir = Some(dir);
+            live.apply_gate();
         }
         if elsewhere && self.needs_room() {
             if let Err(e) = self.replace_output() {
@@ -391,6 +434,10 @@ impl Engine {
             output: live.sound.output.clone(),
             microphone: live.sound.microphone.clone(),
             volume: live.sound.volume,
+            mic_mode: live.sound.mic_mode,
+            voice_threshold: live.sound.voice_threshold,
+            talk_key: live.sound.talk_key.clone(),
+            talk_key_works: TALK_KEY_WORKS,
         }
     }
 
@@ -449,9 +496,8 @@ impl Engine {
                 &listing.microphones,
                 listing.default_microphone.as_deref(),
             );
-            live.session
-                .as_ref()
-                .is_some_and(|s| wanted.is_some_and(|name| name != s.mic.device_name()))
+            live.open_mic()
+                .is_some_and(|mic| wanted.is_some_and(|name| name != mic.device_name()))
         };
         self.save_sound();
         if moving {
@@ -479,6 +525,108 @@ impl Engine {
             self.save_sound();
         }
         Ok(())
+    }
+
+    /// Chooses how the microphone goes on the air (ADR-0069).
+    ///
+    /// # Errors
+    /// If the task asking the system died.
+    pub async fn set_mic_mode(&self, mode: MicMode) -> Result<SoundView, EngineError> {
+        let listing = listing().await?;
+        {
+            let mut live = self.lock();
+            live.sound.mic_mode = mode;
+            live.apply_gate();
+        }
+        self.save_sound();
+        Ok(self.sound_view(listing))
+    }
+
+    /// Chooses the key that opens the microphone.
+    ///
+    /// # Errors
+    /// If the task asking the system died.
+    pub async fn set_talk_key(&self, key: Option<TalkKey>) -> Result<SoundView, EngineError> {
+        let listing = listing().await?;
+        {
+            let mut live = self.lock();
+            live.sound.talk_key = key;
+            live.apply_gate();
+        }
+        self.save_sound();
+        Ok(self.sound_view(listing))
+    }
+
+    /// Sets where the voice opens the gate, dBFS. `save`: the hand is off the slider, keep it.
+    pub fn set_voice_threshold(&self, db: f32, save: bool) {
+        {
+            let mut live = self.lock();
+            live.sound.voice_threshold = db;
+            live.apply_gate();
+        }
+        if save {
+            self.save_sound();
+        }
+    }
+
+    /// The settings' bar came on screen or left it. Outside a channel this opens or closes
+    /// the microphone, so it stays open no longer than someone is looking at the bar.
+    ///
+    /// # Errors
+    /// The microphone could not be opened; the watcher tries again.
+    pub async fn mic_check(&self, on: bool) -> Result<(), EngineError> {
+        if !self.needs_room() {
+            return Ok(());
+        }
+        let _transition = self.transitions.lock().await;
+        self.lock().checking = on;
+        if on {
+            self.resume_check()
+        } else {
+            self.end_check();
+            Ok(())
+        }
+    }
+
+    /// Opens the settings' microphone if it is wanted and no channel has one. Holds `transitions`.
+    fn resume_check(&self) -> Result<(), EngineError> {
+        let (chosen, taps, latency, gate, alarm) = {
+            let live = self.lock();
+            if !live.checking || live.open_mic().is_some() {
+                return Ok(());
+            }
+            (
+                live.sound.microphone.clone(),
+                Arc::clone(&live.taps),
+                live.output_latency.clone(),
+                Arc::clone(&live.gate),
+                Arc::clone(&live.alarm),
+            )
+        };
+        // Muted for good: frames never leave it.
+        let mic = MicPipeline::start(chosen, &taps, latency, true, gate, alarm)
+            .map_err(|message| format!("Микрофон: {message}"))?;
+        self.lock().check = Some(mic);
+        Ok(())
+    }
+
+    /// Closes the settings' microphone, if open. The tap is free when this returns.
+    fn end_check(&self) {
+        let check = self.lock().check.take();
+        // Outside the lock: it waits for the device's thread.
+        if let Some(check) = check {
+            check.stop();
+        }
+    }
+
+    /// What the microphone hears now, for the settings' bar.
+    #[must_use]
+    pub fn mic_input(&self) -> MicInput {
+        let (level_db, open) = self
+            .lock()
+            .open_mic()
+            .map_or((SILENCE_DB, false), |mic| mic.level().input());
+        MicInput { level_db, open }
     }
 
     /// Opens the chosen output with a new mixer, and everything playing moves there. A new
@@ -530,7 +678,11 @@ impl Engine {
     /// rate is its source's (ADR-0066). The old one has to let go of the output's tap first,
     /// and goes silent even if the new one fails. Holds `transitions`.
     async fn replace_mic(&self) -> Result<(), EngineError> {
-        let (chosen, taps, latency, muted, alarm) = {
+        if self.lock().session.is_none() {
+            self.end_check();
+            return self.resume_check();
+        }
+        let (chosen, taps, latency, muted, gate, alarm) = {
             let mut live = self.lock();
             let Some(session) = live.session.as_mut() else {
                 return Ok(());
@@ -541,10 +693,11 @@ impl Engine {
                 Arc::clone(&live.taps),
                 live.output_latency.clone(),
                 live.mic_muted,
+                Arc::clone(&live.gate),
                 Arc::clone(&live.alarm),
             )
         };
-        let mic = MicPipeline::start(chosen, &taps, latency, muted, alarm)
+        let mic = MicPipeline::start(chosen, &taps, latency, muted, gate, alarm)
             .map_err(|message| format!("Микрофон: {message}"))?;
         let published = {
             let mut live = self.lock();
@@ -582,9 +735,12 @@ impl Engine {
                 Some(name) => alarm.take_output() || name != live.output.device_name(),
                 None => false,
             };
-            let mic_moves = match (mic, &live.session) {
-                (Some(name), Some(session)) => {
-                    alarm.take_microphone() || name != session.mic.device_name()
+            let mic_moves = match mic {
+                Some(name) if live.session.is_some() || live.checking => {
+                    alarm.take_microphone()
+                        || live
+                            .open_mic()
+                            .is_none_or(|open| name != open.device_name())
                 }
                 _ => false,
             };
@@ -610,7 +766,7 @@ impl Engine {
         let engine = self.clone();
         let alarm = Arc::clone(&self.lock().alarm);
         tauri::async_runtime::spawn(async move {
-            let Ok(mut seen) = tauri::async_runtime::spawn_blocking(devices::glance).await else {
+            let Ok(mut seen) = on_own_thread(devices::glance).await else {
                 return;
             };
             let Ok(mut known) = listing().await else {
@@ -622,7 +778,7 @@ impl Engine {
                     () = tokio::time::sleep(LOOK_EVERY) => false,
                     () = alarm.raised() => true,
                 };
-                let Ok(glance) = tauri::async_runtime::spawn_blocking(devices::glance).await else {
+                let Ok(glance) = on_own_thread(devices::glance).await else {
                     continue;
                 };
                 if failed || glance != seen {
@@ -687,6 +843,8 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let _transition = self.transitions.lock().await;
         self.close_session().await?;
+        // The channel's microphone needs the tap, and a device is opened by one at a time.
+        self.end_check();
 
         let synthetic = {
             let mut live = self.lock();
@@ -701,10 +859,22 @@ impl Engine {
             }
             live.synthetic.is_some()
         };
-        match (synthetic, access) {
+        let joined = match (synthetic, access) {
             (true, _) => self.join_synthetic(members),
             (false, Some(access)) => self.join_room(access).await,
             (false, None) => Err("Нет доступа к комнате".into()),
+        };
+        if joined.is_err() {
+            self.check_again();
+        }
+        joined
+    }
+
+    /// No channel any more: the settings' bar, if on screen, needs its own microphone back.
+    fn check_again(&self) {
+        if let Err(e) = self.resume_check() {
+            self.lock().alarm.retry_microphone();
+            eprintln!("[oc-voice] {e}");
         }
     }
 
@@ -733,7 +903,7 @@ impl Engine {
     }
 
     async fn join_room(&self, access: RoomAccess) -> Result<(), EngineError> {
-        let (taps, output_latency, mic_muted, playback_rate, device, alarm) = {
+        let (taps, output_latency, mic_muted, playback_rate, device, gate, alarm) = {
             let live = self.lock();
             live.alarm.take_microphone();
             (
@@ -742,12 +912,13 @@ impl Engine {
                 live.mic_muted,
                 live.output_rate,
                 live.sound.microphone.clone(),
+                Arc::clone(&live.gate),
                 Arc::clone(&live.alarm),
             )
         };
         // If anything below fails or this future is dropped, dropping `mic` returns the
         // tap to `taps` (see `TapSlot`).
-        let mic = MicPipeline::start(device, &taps, output_latency, mic_muted, alarm)
+        let mic = MicPipeline::start(device, &taps, output_latency, mic_muted, gate, alarm)
             .map_err(|message| format!("Микрофон: {message}"))?;
         let session_id = {
             let mut live = self.lock();
@@ -796,7 +967,9 @@ impl Engine {
     /// If the mixer command queue is full.
     pub async fn leave_channel(&self) -> Result<(), EngineError> {
         let _transition = self.transitions.lock().await;
-        self.close_session().await
+        let closed = self.close_session().await;
+        self.check_again();
+        closed
     }
 
     async fn close_session(&self) -> Result<(), EngineError> {
@@ -1061,11 +1234,25 @@ impl Engine {
     }
 }
 
-/// What the system has now. Off the async threads: it takes a moment for each device.
+/// What the system has now. It takes a moment for each device.
 async fn listing() -> Result<Listing, EngineError> {
-    tauri::async_runtime::spawn_blocking(devices::list)
-        .await
-        .map_err(|e| e.to_string())
+    on_own_thread(devices::list).await
+}
+
+/// Asks `cpal` about devices on a thread of its own. Not a shared blocking one: `cpal` leaves
+/// COM in single-threaded mode on the thread it ran on, and whatever came there next and needed
+/// another mode was refused (ADR-0070).
+async fn on_own_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, EngineError> {
+    let (done, answer) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("oc-devices".into())
+        .spawn(move || {
+            let _ = done.send(work());
+        })
+        .map_err(|e| e.to_string())?;
+    answer.await.map_err(|e| e.to_string())
 }
 
 /// The engine as seen by a room. Weak: the room's event task must not keep the
@@ -1175,15 +1362,22 @@ impl RoomHost for Host {
             if let Some(session) = session {
                 session.close().await;
             }
-            let live = &mut lock(&live);
-            if let Err(e) = live.clear_voices() {
-                eprintln!("[oc-voice] cleanup after disconnect: {e}");
+            {
+                let live = &mut lock(&live);
+                if let Err(e) = live.clear_voices() {
+                    eprintln!("[oc-voice] cleanup after disconnect: {e}");
+                }
+                live.announce(Vec::new());
+                live.announce_stream(false, None);
+                if let Some(listener) = &live.disconnect_listener {
+                    listener(message);
+                }
             }
-            live.announce(Vec::new());
-            live.announce_stream(false, None);
-            if let Some(listener) = &live.disconnect_listener {
-                listener(message);
+            Engine {
+                live,
+                transitions: Arc::clone(&transitions),
             }
+            .check_again();
         });
     }
 }
@@ -1192,6 +1386,31 @@ impl RoomHost for Host {
 mod tests {
     use super::LinkRelay;
     use crate::voice::room::{Link, LinkQuality};
+
+    /// `cpal` leaves COM in its own mode on the thread that asked it about devices. On the
+    /// shared blocking threads that would refuse the stream's sound, which needs another.
+    #[cfg(windows)]
+    #[test]
+    fn looking_at_devices_leaves_the_blocking_threads_as_they_were() {
+        use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+        tauri::async_runtime::block_on(async {
+            for _ in 0..8 {
+                super::listing().await.unwrap();
+                let usable = tauri::async_runtime::spawn_blocking(|| {
+                    // SAFETY: paired with `CoUninitialize` on this thread when it succeeds.
+                    let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                    if result.is_ok() {
+                        unsafe { CoUninitialize() };
+                    }
+                    result.is_ok()
+                })
+                .await
+                .unwrap();
+                assert!(usable, "a blocking thread keeps the mode `cpal` chose");
+            }
+        });
+    }
 
     const LINK: Link = Link {
         quality: LinkQuality::Excellent,

@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use oc_audio::gate::DEFAULT_THRESHOLD_DB;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
@@ -71,6 +72,47 @@ pub fn pick<'a>(
         .or(system)
 }
 
+/// How the microphone goes on the air (ADR-0069).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MicMode {
+    /// When the voice reaches the threshold.
+    #[default]
+    Voice,
+    /// While a key is held.
+    Key,
+}
+
+/// The key that opens the microphone in [`MicMode::Key`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkKey {
+    /// Windows virtual-key code, which the page's `keyCode` already is.
+    pub code: u16,
+    /// What the settings call it.
+    pub label: String,
+}
+
+/// Whether a key can be read here with the window minimized (ADR-0069).
+pub const TALK_KEY_WORKS: bool = cfg!(windows);
+
+/// Whether the key is held now, whichever window has the focus. Only looks at this key's
+/// state: nothing else about the keyboard is read, and the key still reaches the other apps.
+#[cfg(windows)]
+#[must_use]
+pub fn talk_key_down(code: u16) -> bool {
+    // The top bit of the answer, which makes it negative, is "held now".
+    // SAFETY: no pointers; any code is valid and an unknown one reads as not held.
+    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(code)) < 0 }
+}
+
+/// The same where no way to read a key is written yet (ADR-0069).
+#[cfg(not(windows))]
+#[must_use]
+pub fn talk_key_down(_code: u16) -> bool {
+    false
+}
+
 /// What the user chose; `None` follows the system. Kept on this device.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -79,6 +121,10 @@ pub struct SoundPrefs {
     pub output: Option<String>,
     /// Overall volume, percent.
     pub volume: f32,
+    pub mic_mode: MicMode,
+    /// Where [`MicMode::Voice`] opens, dBFS.
+    pub voice_threshold: f32,
+    pub talk_key: Option<TalkKey>,
 }
 
 impl Default for SoundPrefs {
@@ -87,6 +133,9 @@ impl Default for SoundPrefs {
             microphone: None,
             output: None,
             volume: 100.0,
+            mic_mode: MicMode::default(),
+            voice_threshold: DEFAULT_THRESHOLD_DB,
+            talk_key: None,
         }
     }
 }
@@ -215,9 +264,32 @@ mod tests {
             microphone: Some("Гарнитура".into()),
             output: None,
             volume: 40.0,
+            mic_mode: MicMode::Key,
+            voice_threshold: -33.0,
+            talk_key: Some(TalkKey {
+                code: 0x56,
+                label: "V".into(),
+            }),
         };
         prefs.save(&dir).unwrap();
         assert_eq!(SoundPrefs::load(&dir), prefs);
+    }
+
+    #[test]
+    fn a_file_from_before_the_mic_modes_keeps_its_choice() {
+        let dir = temp_dir("older");
+        fs::write(
+            dir.join(SOUND_FILE),
+            r#"{"microphone":"Гарнитура","output":null,"volume":40.0}"#,
+        )
+        .unwrap();
+        let prefs = SoundPrefs::load(&dir);
+        assert_eq!(prefs.microphone.as_deref(), Some("Гарнитура"));
+        assert_eq!(prefs.mic_mode, MicMode::Voice);
+        assert_eq!(
+            prefs.voice_threshold.to_bits(),
+            DEFAULT_THRESHOLD_DB.to_bits()
+        );
     }
 
     #[test]

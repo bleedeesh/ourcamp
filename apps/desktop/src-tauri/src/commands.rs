@@ -149,6 +149,49 @@ pub fn sound_set_volume(
     engine(&state)?.set_sound_volume(percent, save)
 }
 
+/// How the microphone goes on the air (ADR-0069).
+#[tauri::command]
+pub async fn sound_set_mic_mode(
+    state: State<'_, EngineState>,
+    mode: crate::audio::devices::MicMode,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?.set_mic_mode(mode).await
+}
+
+/// Where the voice opens the microphone, dBFS; `save` when the hand is off the slider.
+#[tauri::command]
+pub fn sound_set_threshold(
+    state: State<'_, EngineState>,
+    db: f32,
+    save: bool,
+) -> Result<(), String> {
+    engine(&state)?.set_voice_threshold(db, save);
+    Ok(())
+}
+
+/// The key that opens the microphone; none takes it away.
+#[tauri::command]
+pub async fn sound_set_talk_key(
+    state: State<'_, EngineState>,
+    key: Option<crate::audio::devices::TalkKey>,
+) -> Result<crate::audio::engine::SoundView, String> {
+    engine(&state)?.set_talk_key(key).await
+}
+
+/// The settings' bar came on screen or left it.
+#[tauri::command]
+pub async fn sound_mic_check(state: State<'_, EngineState>, on: bool) -> Result<(), String> {
+    engine(&state)?.mic_check(on).await
+}
+
+/// What the microphone hears now, for the settings' bar.
+#[tauri::command]
+pub fn sound_mic_input(
+    state: State<'_, EngineState>,
+) -> Result<crate::audio::engine::MicInput, String> {
+    Ok(engine(&state)?.mic_input())
+}
+
 /// Local volume of the sound of streams, percent.
 #[tauri::command]
 pub fn stream_volume(state: State<'_, EngineState>, percent: f32) -> Result<(), String> {

@@ -49,6 +49,20 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
             tauri::async_runtime::spawn(close_viewer(window.clone()));
         }
     }
+    // The page's own goodbye does not run when its window goes.
+    if matches!(event, WindowEvent::Destroyed) && window.label() == windows::SETTINGS {
+        tauri::async_runtime::spawn(end_mic_check(window.clone()));
+    }
+}
+
+/// Closes the microphone the settings' bar opened (ADR-0069).
+async fn end_mic_check(window: tauri::Window) {
+    let state = window.state::<commands::EngineState>();
+    if let Ok(engine) = commands::engine(&state) {
+        if let Err(e) = engine.mic_check(false).await {
+            eprintln!("[oc-audio] {e}");
+        }
+    }
 }
 
 /// Closes the viewer, which destroys its window; without a viewer, just the window.
@@ -114,6 +128,58 @@ fn forward_sound(app: tauri::AppHandle, engine: &Engine) {
     }));
 }
 
+/// Everything the pages may call.
+fn commands() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        commands::voice_join_channel,
+        commands::voice_leave_channel,
+        commands::voice_set_volume,
+        commands::voice_set_local_mute,
+        commands::voice_set_mic_muted,
+        commands::voice_set_deafened,
+        commands::settings_window_open,
+        commands::sound_view,
+        commands::sound_set_output,
+        commands::sound_set_microphone,
+        commands::sound_set_volume,
+        commands::sound_set_mic_mode,
+        commands::sound_set_threshold,
+        commands::sound_set_talk_key,
+        commands::sound_mic_check,
+        commands::sound_mic_input,
+        commands::profile_set_name,
+        commands::stream_sources,
+        commands::stream_qualities,
+        commands::stream_sound_available,
+        commands::stream_volume,
+        commands::stream_start_window_open,
+        commands::stream_start,
+        commands::stream_stop,
+        commands::stream_watch,
+        commands::stream_view,
+        commands::stream_place,
+        commands::camp_list,
+        commands::camp_preview,
+        commands::camp_join,
+        commands::camp_open,
+        commands::camp_leave,
+        commands::camp_invite,
+        commands::camp_move_member,
+        commands::camp_kick,
+        commands::camp_set_silenced,
+        commands::camp_avatar,
+        commands::chat_history,
+        commands::chat_send,
+        commands::chat_photo,
+        commands::chat_delete,
+        commands::chat_mark_read,
+        commands::chat_context,
+        commands::chat_window_open,
+        commands::profile_avatar,
+        commands::profile_set_avatar,
+    ]
+}
+
 /// Starts the application. Called from `main.rs` (desktop) and mobile entry points.
 ///
 /// # Panics
@@ -169,49 +235,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(on_window_event)
-        .invoke_handler(tauri::generate_handler![
-            commands::voice_join_channel,
-            commands::voice_leave_channel,
-            commands::voice_set_volume,
-            commands::voice_set_local_mute,
-            commands::voice_set_mic_muted,
-            commands::voice_set_deafened,
-            commands::settings_window_open,
-            commands::sound_view,
-            commands::sound_set_output,
-            commands::sound_set_microphone,
-            commands::sound_set_volume,
-            commands::profile_set_name,
-            commands::stream_sources,
-            commands::stream_qualities,
-            commands::stream_sound_available,
-            commands::stream_volume,
-            commands::stream_start_window_open,
-            commands::stream_start,
-            commands::stream_stop,
-            commands::stream_watch,
-            commands::stream_view,
-            commands::stream_place,
-            commands::camp_list,
-            commands::camp_preview,
-            commands::camp_join,
-            commands::camp_open,
-            commands::camp_leave,
-            commands::camp_invite,
-            commands::camp_move_member,
-            commands::camp_kick,
-            commands::camp_set_silenced,
-            commands::camp_avatar,
-            commands::chat_history,
-            commands::chat_send,
-            commands::chat_photo,
-            commands::chat_delete,
-            commands::chat_mark_read,
-            commands::chat_context,
-            commands::chat_window_open,
-            commands::profile_avatar,
-            commands::profile_set_avatar,
-        ])
+        .invoke_handler(commands())
         .build(tauri::generate_context!())
         .expect("failed to start OurCamp");
     app.run(move |_, event| {
