@@ -7,11 +7,14 @@ import {
   MAX_THRESHOLD_DB,
   meterPercent,
   MIN_THRESHOLD_DB,
+  plainKey,
+  sameKey,
   talkKeyFromMouse,
   talkKeyFromPress,
   thresholdLabel,
 } from "../../domain/sound.ts";
 import type { MicMode, SoundApi, SoundSettings, TalkKey } from "../../engine/sound-api.ts";
+import { KeyPicker } from "./KeyPicker.tsx";
 
 /** How often the bar asks for the level: the rate levels go by everywhere (~20 Hz). */
 const METER_EVERY_MS = 50;
@@ -19,44 +22,8 @@ const METER_EVERY_MS = 50;
 const VOICE_MODE: { value: MicMode; label: string } = { value: "voice", label: "Голосом" };
 const KEY_MODE: { value: MicMode; label: string } = { value: "key", label: "Пока зажата клавиша" };
 
-/**
- * The key that opens the microphone: the next key or side mouse button pressed becomes it,
- * Esc changes nothing. Nothing else about the keyboard is looked at (ADR-0069).
- */
-function TalkKeyPicker({ value, onPick }: { value: TalkKey | null; onPick: (key: TalkKey) => void }) {
-  const [waiting, setWaiting] = useState(false);
-
-  useEffect(() => {
-    if (!waiting) return undefined;
-    const pick = (key: TalkKey | null) => {
-      if (key === null) return;
-      setWaiting(false);
-      onPick(key);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      e.preventDefault();
-      if (e.code === "Escape") setWaiting(false);
-      else pick(talkKeyFromPress(e.code, e.keyCode));
-    };
-    const onMouse = (e: MouseEvent) => {
-      const key = talkKeyFromMouse(e.button);
-      if (key !== null) e.preventDefault();
-      pick(key);
-    };
-    window.addEventListener("keydown", onKey, true);
-    window.addEventListener("mousedown", onMouse, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("mousedown", onMouse, true);
-    };
-  }, [waiting, onPick]);
-
-  return (
-    <button type="button" className="wide-button talk-key" data-waiting={waiting || undefined} onClick={() => setWaiting(!waiting)}>
-      {waiting ? "Нажмите клавишу… (Esc — отмена)" : (value?.label ?? "Назначить клавишу")}
-    </button>
-  );
-}
+const talkFromKey = (e: KeyboardEvent) => talkKeyFromPress(e.code, e.keyCode);
+const talkFromMouse = (e: MouseEvent) => talkKeyFromMouse(e.button);
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -114,9 +81,15 @@ export function SoundTab({ api }: { api: SoundApi }) {
 
   const pickKey = useCallback(
     (key: TalkKey) => {
+      const plain = plainKey(key);
+      if (plain !== null && sound !== null && (sameKey(plain, sound.muteKey) || sameKey(plain, sound.deafenKey))) {
+        setProblem(`${key.label} уже занята`);
+        return;
+      }
+      setProblem(null);
       api.setTalkKey(key).then(setSound, (e: unknown) => setProblem(message(e)));
     },
-    [api],
+    [api, sound],
   );
 
   const byKey = sound?.talkKeyWorks === true && sound.micMode === "key";
@@ -207,7 +180,7 @@ export function SoundTab({ api }: { api: SoundApi }) {
           ) : (
             <>
               <span className="field__label">Клавиша</span>
-              <TalkKeyPicker value={sound.talkKey} onPick={pickKey} />
+              <KeyPicker value={sound.talkKey} empty="Назначить клавишу" fromKey={talkFromKey} fromMouse={talkFromMouse} onPick={pickKey} />
               <p className="settings-section__note">
                 {sound.talkKey === null
                   ? "Пока клавиша не назначена, микрофон не включится."

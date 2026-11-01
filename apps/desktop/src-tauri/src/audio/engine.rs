@@ -16,6 +16,7 @@ use oc_audio::meter::SILENCE_DB;
 use oc_audio::mixer::{Layout, MixerControl, MixerError, SourceInput, SourceStatus};
 
 use super::devices::{self, Alarm, Listing, MicMode, SoundPrefs, TalkKey, TALK_KEY_WORKS};
+use super::hotkeys::{self, Action, Hotkey, HotkeyControl};
 use super::output::{self, DeviceLatency, Output};
 use super::synthetic::SyntheticVoices;
 use super::SourceKey;
@@ -94,6 +95,8 @@ pub struct SoundView {
     pub mic_mode: MicMode,
     pub voice_threshold: f32,
     pub talk_key: Option<TalkKey>,
+    pub mute_key: Option<Hotkey>,
+    pub deafen_key: Option<Hotkey>,
     /// A key can be read on this system.
     pub talk_key_works: bool,
 }
@@ -190,6 +193,7 @@ struct Live {
     sound_dir: Option<PathBuf>,
     /// One for the engine's life: every microphone opened reads it.
     gate: Arc<GateControl>,
+    hotkeys: Arc<HotkeyControl>,
     /// The settings' bar is on screen (ADR-0069). Outside a channel it needs a microphone of
     /// its own, `check`, which sends nothing; a channel's takes over while there is one.
     checking: bool,
@@ -264,6 +268,13 @@ impl Live {
         self.gate
             .set_talk_key(self.sound.talk_key.as_ref().map(|key| key.code));
         self.gate.set_threshold(self.sound.voice_threshold);
+    }
+
+    /// Hands the saved keys to the thread reading them.
+    fn apply_hotkeys(&self) {
+        self.hotkeys.set(Action::Mic, self.sound.mute_key.as_ref());
+        self.hotkeys
+            .set(Action::Sound, self.sound.deafen_key.as_ref());
     }
 }
 
@@ -376,6 +387,7 @@ impl Engine {
                 sound: SoundPrefs::default(),
                 sound_dir: None,
                 gate: Arc::default(),
+                hotkeys: Arc::default(),
                 checking: false,
                 check: None,
                 alarm,
@@ -437,6 +449,8 @@ impl Engine {
             mic_mode: live.sound.mic_mode,
             voice_threshold: live.sound.voice_threshold,
             talk_key: live.sound.talk_key.clone(),
+            mute_key: live.sound.mute_key.clone(),
+            deafen_key: live.sound.deafen_key.clone(),
             talk_key_works: TALK_KEY_WORKS,
         }
     }
@@ -555,6 +569,41 @@ impl Engine {
         }
         self.save_sound();
         Ok(self.sound_view(listing))
+    }
+
+    /// Chooses the key for an action; none takes it away (ADR-0071).
+    ///
+    /// # Errors
+    /// If the task asking the system died.
+    pub async fn set_hotkey(
+        &self,
+        action: Action,
+        key: Option<Hotkey>,
+    ) -> Result<SoundView, EngineError> {
+        let listing = listing().await?;
+        {
+            let mut live = self.lock();
+            match action {
+                Action::Mic => live.sound.mute_key = key,
+                Action::Sound => live.sound.deafen_key = key,
+            }
+            live.apply_hotkeys();
+        }
+        self.save_sound();
+        Ok(self.sound_view(listing))
+    }
+
+    /// Starts watching the assigned keys, where they can be read.
+    pub fn watch_hotkeys(&self, on_press: impl Fn(Action) + Send + 'static) {
+        if !TALK_KEY_WORKS {
+            return;
+        }
+        let control = {
+            let live = self.lock();
+            live.apply_hotkeys();
+            Arc::clone(&live.hotkeys)
+        };
+        hotkeys::watch(control, on_press);
     }
 
     /// Sets where the voice opens the gate, dBFS. `save`: the hand is off the slider, keep it.

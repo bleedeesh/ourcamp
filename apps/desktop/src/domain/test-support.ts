@@ -1,5 +1,5 @@
 // Fakes shared by the domain tests (not itself a test file).
-import type { JoinRequest, LinkStatus, MemberLevel, OwnStream, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
+import type { HotkeyAction, JoinRequest, LinkStatus, MemberLevel, OwnStream, ParticipantsUpdate, VoiceEngine } from "../engine/engine.ts";
 import type { KeyValueStorage } from "./volume.ts";
 
 export class MemoryStorage implements KeyValueStorage {
@@ -46,6 +46,16 @@ export class FakeEngine implements VoiceEngine {
     return this.#record("stopStream");
   }
   #stream: ((s: OwnStream) => void) | null = null;
+  #hotkey: ((a: HotkeyAction) => void) | null = null;
+  onHotkey(listener: (a: HotkeyAction) => void) {
+    this.#hotkey = listener;
+    return () => {
+      this.#hotkey = null;
+    };
+  }
+  pressHotkey(action: HotkeyAction) {
+    this.#hotkey?.(action);
+  }
   onStream(listener: (s: OwnStream) => void) {
     this.#stream = listener;
     return () => (this.#stream = null);

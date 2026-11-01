@@ -95,6 +95,19 @@ test("deafen mutes the mic and undeafen restores the previous mic state", async 
   assert.ok(engine.calls.includes("deaf:true"));
 });
 
+test("the keys do what the buttons do, until the controller is gone", () => {
+  const { engine, voice } = setup();
+  engine.pressHotkey("mic");
+  assert.equal(voice.store.get().micMuted, true);
+  engine.pressHotkey("mic");
+  assert.equal(voice.store.get().micMuted, false);
+  engine.pressHotkey("sound");
+  assert.equal(voice.store.get().deafened, true);
+  voice.dispose();
+  engine.pressHotkey("sound");
+  assert.equal(voice.store.get().deafened, true);
+});
+
 test("unmuting while deafened undeafens too", async () => {
   const { voice } = setup();
   await voice.toggleDeafen();

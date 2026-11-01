@@ -112,6 +112,17 @@
   color: var(--accent-text);
 }
 
+.settings-key {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-key__row {
+  display: flex;
+  gap: 8px;
+}
+
 .settings-section__error {
   margin: 0;
   padding: 10px 12px;

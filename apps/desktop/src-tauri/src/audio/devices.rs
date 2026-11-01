@@ -13,6 +13,8 @@ use oc_audio::gate::DEFAULT_THRESHOLD_DB;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
+use super::hotkeys::Hotkey;
+
 const SOUND_FILE: &str = "sound.json";
 
 /// What the system has right now.
@@ -125,6 +127,10 @@ pub struct SoundPrefs {
     /// Where [`MicMode::Voice`] opens, dBFS.
     pub voice_threshold: f32,
     pub talk_key: Option<TalkKey>,
+    /// Turns the microphone off and on (ADR-0071).
+    pub mute_key: Option<Hotkey>,
+    /// Turns the sound off and on.
+    pub deafen_key: Option<Hotkey>,
 }
 
 impl Default for SoundPrefs {
@@ -136,6 +142,8 @@ impl Default for SoundPrefs {
             mic_mode: MicMode::default(),
             voice_threshold: DEFAULT_THRESHOLD_DB,
             talk_key: None,
+            mute_key: None,
+            deafen_key: None,
         }
     }
 }
@@ -270,6 +278,14 @@ mod tests {
                 code: 0x56,
                 label: "V".into(),
             }),
+            mute_key: Some(Hotkey {
+                code: 0x4D,
+                ctrl: true,
+                shift: false,
+                alt: false,
+                label: "Ctrl+M".into(),
+            }),
+            deafen_key: None,
         };
         prefs.save(&dir).unwrap();
         assert_eq!(SoundPrefs::load(&dir), prefs);
@@ -286,6 +302,7 @@ mod tests {
         let prefs = SoundPrefs::load(&dir);
         assert_eq!(prefs.microphone.as_deref(), Some("Гарнитура"));
         assert_eq!(prefs.mic_mode, MicMode::Voice);
+        assert_eq!(prefs.mute_key, None);
         assert_eq!(
             prefs.voice_threshold.to_bits(),
             DEFAULT_THRESHOLD_DB.to_bits()

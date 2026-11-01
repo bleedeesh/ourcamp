@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { UserId } from "../domain/types.ts";
-import type { JoinRequest, LinkStatus, MemberLevel, OwnStream, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
+import type { HotkeyAction, JoinRequest, LinkStatus, MemberLevel, OwnStream, ParticipantsUpdate, VoiceEngine } from "./engine.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
 
 /** Event emitted by `src-tauri/src/levels.rs`. */
@@ -13,6 +13,8 @@ const DISCONNECTED_EVENT = "voice://disconnected";
 const LINK_EVENT = "voice://link";
 /** Event emitted by `src-tauri/src/participants.rs`: your own stream (ADR-0054). */
 const STREAM_EVENT = "voice://stream";
+/** Event emitted by `src-tauri/src/lib.rs`: an assigned key was pressed (ADR-0071). */
+const HOTKEY_EVENT = "voice://hotkey";
 
 /**
  * Talks to the Rust media engine. Command names and argument shapes must match
@@ -73,6 +75,10 @@ export class TauriEngine implements VoiceEngine {
 
   onStream(listener: (stream: OwnStream) => void): () => void {
     return subscribe<OwnStream>(STREAM_EVENT, listener);
+  }
+
+  onHotkey(listener: (action: HotkeyAction) => void): () => void {
+    return subscribe<HotkeyAction>(HOTKEY_EVENT, listener);
   }
 }
 

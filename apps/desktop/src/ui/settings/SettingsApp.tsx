@@ -11,6 +11,7 @@ import { TauriCampApi } from "../../engine/tauri-camp-api.ts";
 import { isTauri } from "../../engine/tauri-engine.ts";
 import { TauriSoundApi } from "../../engine/tauri-sound-api.ts";
 import { AvatarPicker } from "../AvatarPicker.tsx";
+import { KeysTab } from "./KeysTab.tsx";
 import { SoundTab } from "./SoundTab.tsx";
 
 type Tab = "sound" | "keys" | "profile";
@@ -102,15 +103,6 @@ function ProfileTab({ api }: { api: CampApi }) {
 }
 
 /** Arrives with a later step of M7 (ADR-0057). */
-function LaterTab({ title, step }: { title: string; step: number }) {
-  return (
-    <div className="settings-section">
-      <h2 className="settings-section__title">{title}</h2>
-      <p className="settings-section__note">Этот раздел появится на шаге {step} M7.</p>
-    </div>
-  );
-}
-
 /** The settings window (M7, ADR-0057): the mockup's screen 13. */
 export function SettingsApp() {
   const api = useMemo<CampApi>(() => (isTauri() ? new TauriCampApi() : new DemoCampApi()), []);
@@ -159,7 +151,7 @@ export function SettingsApp() {
         <main className="settings-app__body">
           {tab === "profile" && <ProfileTab api={api} />}
           {tab === "sound" && <SoundTab api={sound} />}
-          {tab === "keys" && <LaterTab title="Клавиши" step={4} />}
+          {tab === "keys" && <KeysTab api={sound} />}
         </main>
       </div>
     </div>

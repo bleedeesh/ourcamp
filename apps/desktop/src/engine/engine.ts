@@ -46,6 +46,9 @@ export interface JoinRequest {
   readonly members: ReadonlyArray<{ userId: UserId; volume: number; muted: boolean; micMuted: boolean }>;
 }
 
+/** What an assigned key does: turns the microphone or the sound off and on (ADR-0071). */
+export type HotkeyAction = "mic" | "sound";
+
 /** How your own stream is going, mirrors `stream::OwnStream` (ADR-0054). */
 export interface OwnStream {
   readonly live: boolean;
@@ -86,4 +89,6 @@ export interface VoiceEngine {
   onLink(listener: (link: LinkStatus) => void): () => void;
   /** Your own stream started or stopped, by whatever cause. Returns an unsubscribe function. */
   onStream(listener: (stream: OwnStream) => void): () => void;
+  /** An assigned key was pressed, whichever window has the focus. Returns an unsubscribe function. */
+  onHotkey(listener: (action: HotkeyAction) => void): () => void;
 }

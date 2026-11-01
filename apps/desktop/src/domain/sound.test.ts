@@ -6,9 +6,13 @@ import {
   deviceChoice,
   deviceOptions,
   deviceValue,
+  hotkeyFromMouse,
+  hotkeyFromPress,
   MAX_THRESHOLD_DB,
   meterPercent,
   MIN_THRESHOLD_DB,
+  plainKey,
+  sameKey,
   talkKeyFromMouse,
   talkKeyFromPress,
   thresholdLabel,
@@ -32,6 +36,48 @@ test("only the side buttons of a mouse can be a talk key", () => {
   assert.deepEqual(talkKeyFromMouse(3), { code: 5, label: "Кнопка мыши 4" });
   assert.deepEqual(talkKeyFromMouse(4), { code: 6, label: "Кнопка мыши 5" });
   for (const button of [0, 1, 2]) assert.equal(talkKeyFromMouse(button), null);
+});
+
+const NONE = { ctrl: false, shift: false, alt: false };
+const CTRL = { ...NONE, ctrl: true };
+
+test("a combination is named in the usual order", () => {
+  assert.deepEqual(hotkeyFromPress("KeyM", 0x4d, { ctrl: true, shift: true, alt: false }), {
+    code: 0x4d,
+    ctrl: true,
+    shift: true,
+    alt: false,
+    label: "Ctrl+Shift+M",
+  });
+});
+
+test("a key that types needs a modifier, an F-key does not", () => {
+  assert.equal(hotkeyFromPress("KeyM", 0x4d, NONE), null);
+  assert.equal(hotkeyFromPress("Space", 0x20, NONE), null);
+  assert.equal(hotkeyFromPress("F9", 0x78, NONE)?.label, "F9");
+  assert.equal(hotkeyFromPress("KeyM", 0x4d, CTRL)?.label, "Ctrl+M");
+});
+
+test("a modifier alone is only the start of a combination", () => {
+  assert.equal(hotkeyFromPress("ControlLeft", 0x11, CTRL), null);
+  assert.equal(hotkeyFromPress("AltRight", 0x12, { ...NONE, alt: true }), null);
+  assert.equal(hotkeyFromPress("MetaLeft", 0x5b, CTRL), null);
+});
+
+test("only a side mouse button can be a key, with modifiers too", () => {
+  assert.equal(hotkeyFromMouse(0, CTRL), null);
+  assert.equal(hotkeyFromMouse(3, NONE)?.label, "Кнопка мыши 4");
+  assert.equal(hotkeyFromMouse(4, CTRL)?.label, "Ctrl+Кнопка мыши 5");
+});
+
+test("the same key means the same code and modifiers", () => {
+  const ctrlM = hotkeyFromPress("KeyM", 0x4d, CTRL)!;
+  assert.equal(sameKey(ctrlM, { ...ctrlM, label: "другая подпись" }), true);
+  assert.equal(sameKey(ctrlM, { ...ctrlM, shift: true }), false);
+  assert.equal(sameKey(ctrlM, null), false);
+  assert.equal(sameKey(hotkeyFromPress("F9", 0x78, NONE)!, plainKey({ code: 0x78, label: "F9" })), true, "the talk key");
+  assert.equal(sameKey(ctrlM, plainKey({ code: 0x4d, label: "M" })), false, "M alone is another key");
+  assert.equal(plainKey(null), null);
 });
 
 test("the bar covers the thresholds on offer and no more", () => {

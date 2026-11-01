@@ -51,6 +51,7 @@ export class VoiceController {
   #unsubscribeDisconnected: (() => void) | null = null;
   #unsubscribeLink: (() => void) | null = null;
   #unsubscribeStream: (() => void) | null = null;
+  #unsubscribeHotkey: (() => void) | null = null;
   /** Members whose saved volume the engine already has for the current channel. */
   #volumesSent = new Set<UserId>();
 
@@ -84,6 +85,9 @@ export class VoiceController {
     this.#unsubscribeStream ??= this.#engine.onStream(({ live, note }) => {
       this.store.patch(note === null ? { streaming: live } : { streaming: live, error: note });
     });
+    this.#unsubscribeHotkey ??= this.#engine.onHotkey((action) => {
+      void (action === "mic" ? this.toggleMic() : this.toggleDeafen());
+    });
   }
 
   dispose(): void {
@@ -97,6 +101,8 @@ export class VoiceController {
     this.#unsubscribeLink = null;
     this.#unsubscribeStream?.();
     this.#unsubscribeStream = null;
+    this.#unsubscribeHotkey?.();
+    this.#unsubscribeHotkey = null;
   }
 
   /** Switches to another camp: leaves the current campfire first. */

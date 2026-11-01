@@ -70,6 +70,11 @@ export class DemoEngine implements VoiceEngine {
     return () => undefined;
   }
 
+  /** A browser hears keys only in its own window. */
+  onHotkey(): () => void {
+    return () => undefined;
+  }
+
   setDeafened(): Promise<void> {
     return Promise.resolve();
   }

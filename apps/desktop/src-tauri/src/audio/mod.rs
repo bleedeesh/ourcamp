@@ -3,6 +3,7 @@
 
 pub mod devices;
 pub mod engine;
+pub mod hotkeys;
 pub mod input;
 pub mod output;
 pub mod synthetic;

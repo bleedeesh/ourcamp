@@ -1,4 +1,5 @@
-import type { MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
+import type { HotkeyAction } from "./engine.ts";
+import type { Hotkey, MicInput, MicMode, SoundApi, SoundSettings, TalkKey } from "./sound-api.ts";
 
 /** Sound settings for looking at the layout in a browser: nothing plays. */
 export class DemoSoundApi implements SoundApi {
@@ -13,6 +14,8 @@ export class DemoSoundApi implements SoundApi {
     micMode: "voice",
     voiceThreshold: -50,
     talkKey: null,
+    muteKey: null,
+    deafenKey: null,
     talkKeyWorks: true,
   };
 
@@ -47,6 +50,11 @@ export class DemoSoundApi implements SoundApi {
 
   setTalkKey(key: TalkKey | null): Promise<SoundSettings> {
     this.state = { ...this.state, talkKey: key };
+    return this.settings();
+  }
+
+  setHotkey(action: HotkeyAction, key: Hotkey | null): Promise<SoundSettings> {
+    this.state = action === "mic" ? { ...this.state, muteKey: key } : { ...this.state, deafenKey: key };
     return this.settings();
   }
 
