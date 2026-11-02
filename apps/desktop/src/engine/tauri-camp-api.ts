@@ -22,6 +22,8 @@ const CAMP_STATE_EVENT = "camp://state";
 const CAMP_DIRECTIVE_EVENT = "camp://directive";
 /** Event emitted by `src-tauri/src/lib.rs` (`CAMP_CHAT_EVENT`). */
 const CAMP_CHAT_EVENT = "camp://chat";
+/** A link from outside is waiting (ADR-0078). Must match `LINK_EVENT` in `src-tauri/src/deep_link.rs`. */
+const LINK_EVENT = "link://open";
 
 /** Event emitted by `src-tauri/src/commands.rs` (`PROFILE_CHANGED_EVENT`). */
 const PROFILE_CHANGED_EVENT = "profile://changed";
@@ -67,6 +69,14 @@ export class TauriCampApi implements CampApi {
 
   setProfileName(name: string): Promise<void> {
     return invoke("profile_set_name", { name });
+  }
+
+  takeLink(): Promise<string | null> {
+    return invoke("take_link");
+  }
+
+  onLink(listener: () => void): () => void {
+    return subscribe<null>(LINK_EVENT, () => listener());
   }
 
   onProfileChanged(listener: () => void): () => void {

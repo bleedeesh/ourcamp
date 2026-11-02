@@ -129,6 +129,7 @@ export class CampsController {
   #unsubscribeDirective: (() => void) | null = null;
   #unsubscribeChat: (() => void) | null = null;
   #unsubscribeProfile: (() => void) | null = null;
+  #unsubscribeLink: (() => void) | null = null;
   #chats: OpenChats = {
     channels: [],
     latest: {},
@@ -227,9 +228,21 @@ export class CampsController {
     } catch (err) {
       this.store.patch({ view: "empty", error: message(err) });
     }
+    // Only now: a form opened earlier would be replaced by the camp that was opening. A link
+    // that arrives in the meantime waits in the engine.
+    this.#unsubscribeLink ??= this.#api.onLink(() => void this.#takeLink());
+    await this.#takeLink();
   }
 
   // ---- join form ----
+
+  /** A link from outside the app fills in the form; joining still takes a press (ADR-0078). */
+  async #takeLink(): Promise<void> {
+    const link = await this.#api.takeLink().catch(() => null);
+    if (link === null) return;
+    this.openJoin();
+    await this.setLink(link);
+  }
 
   openJoin(): void {
     const { displayName } = this.store.get();

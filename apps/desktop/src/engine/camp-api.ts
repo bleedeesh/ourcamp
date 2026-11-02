@@ -148,6 +148,10 @@ export interface CampApi {
   setProfileName(name: string): Promise<void>;
   /** Your name or avatar changed, possibly in another window. */
   onProfileChanged(listener: () => void): () => void;
+  /** The `ourcamp://` link that opened the app, once (ADR-0078); `null` with none. */
+  takeLink(): Promise<string | null>;
+  /** A link is waiting to be taken; returns an unsubscribe. */
+  onLink(listener: () => void): () => void;
   /** A member's avatar by the hash the snapshot names (cached by the app). */
   avatar(id: string, userId: UserId, hash: string): Promise<Uint8Array>;
   /** Kicks someone of a lower rank out of the camp, no ban (ADR-0033). */

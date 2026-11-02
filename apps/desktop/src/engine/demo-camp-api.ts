@@ -137,6 +137,14 @@ export class DemoCampApi implements CampApi {
     return Promise.resolve();
   }
 
+  takeLink(): Promise<string | null> {
+    return Promise.resolve(null);
+  }
+
+  onLink(): () => void {
+    return () => {};
+  }
+
   onProfileChanged(): () => void {
     return () => {};
   }

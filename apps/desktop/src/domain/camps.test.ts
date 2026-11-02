@@ -40,6 +40,17 @@ class FakeCampApi implements CampApi {
   failOpen: string | null = null;
   failJoin: string | null = null;
 
+  pendingLink: string | null = null;
+  linkListener: (() => void) | null = null;
+  takeLink(): Promise<string | null> {
+    const link = this.pendingLink;
+    this.pendingLink = null;
+    return Promise.resolve(link);
+  }
+  onLink(listener: () => void): () => void {
+    this.linkListener = listener;
+    return () => {};
+  }
   list(): Promise<CampList> {
     return Promise.resolve(this.list_);
   }
@@ -235,6 +246,75 @@ test("a domain's link needs no fingerprint", async () => {
     await pending;
   }
   assert.equal(api.calls.length, 2);
+});
+
+const IN_CAMP: CampList = { displayName: "Дима", camps: [{ id: "vk", name: "Вечерний кооп", role: "member" }], current: "vk" };
+
+test("a link the app was opened with fills in the form and joins nothing", async () => {
+  const { api, camps } = setup();
+  api.pendingLink = LINK;
+  const start = camps.start();
+  await tick();
+  const s = camps.store.get();
+  assert.equal(s.view, "join");
+  assert.equal(s.link, LINK);
+  assert.equal(s.check.state, "checking");
+  api.pending.get(LINK)?.resolve({ name: "Вечерний кооп", channels: 3, kind: "join", usable: true });
+  await start;
+  camps.setName("Дима");
+  assert.equal(camps.canJoin(), true);
+  assert.deepEqual(api.calls.filter((c) => c.startsWith("join")), [], "joining takes a press");
+});
+
+test("a link at start is not covered by the last camp opening", async () => {
+  const { api, camps } = setup();
+  api.list_ = IN_CAMP;
+  api.pendingLink = LINK;
+  const start = camps.start();
+  await tick();
+  assert.equal(camps.store.get().view, "join");
+  api.pending.get(LINK)?.resolve({ name: "Другой", channels: 1, kind: "join", usable: true });
+  await start;
+  assert.equal(camps.store.get().view, "join");
+  camps.cancelJoin();
+  assert.equal(camps.store.get().view, "camp", "the camp is still there behind the form");
+});
+
+test("a link that arrives later opens the form over the camp, once", async () => {
+  const { api, camps } = setup();
+  api.list_ = IN_CAMP;
+  await camps.start();
+  assert.equal(camps.store.get().view, "camp");
+  api.pendingLink = LINK;
+  api.linkListener?.();
+  await tick();
+  assert.equal(camps.store.get().view, "join");
+  assert.equal(camps.store.get().link, LINK);
+
+  camps.cancelJoin();
+  api.linkListener?.();
+  await tick();
+  assert.equal(camps.store.get().view, "camp", "the event alone brings nothing");
+});
+
+test("a new link replaces what the form held", async () => {
+  const { api, camps } = setup();
+  await camps.start();
+  camps.openJoin();
+  await camps.setLink("ourcamp://192.0.2.15/jo");
+  api.pendingLink = LINK;
+  api.linkListener?.();
+  await tick();
+  assert.equal(camps.store.get().link, LINK);
+});
+
+test("a link that cannot be complete stays in the form, unchecked", async () => {
+  const { api, camps } = setup();
+  api.pendingLink = "ourcamp://";
+  await camps.start();
+  assert.equal(camps.store.get().view, "join");
+  assert.equal(camps.store.get().link, "ourcamp://");
+  assert.equal(api.calls.length, 0);
 });
 
 test("a slow answer about an old link does not overwrite the current one", async () => {
