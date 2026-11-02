@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use oc_camp_client::{CampClient, ClientError, Session};
-use oc_proto::{avatar_hash, ChannelKind, ChatMessage, ErrorCode, NewMessage, Photo, PhotoFormat};
+use oc_proto::{
+    avatar_hash, ChannelKind, ChatMessage, ErrorCode, LinkCard, NewMessage, Photo, PhotoFormat,
+};
 use serde::Serialize;
 
 use super::{describe, CampError, Camps, SavedCamp};
@@ -18,6 +20,10 @@ const PHOTO_CACHE: &str = "photos";
 
 /// What changed in the open camp's chats, as sent to every window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "lives only until it is sent to the windows; a message is the usual update"
+)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -55,6 +61,17 @@ pub struct ChatContext {
     pub camp: super::OpenCamp,
     /// The latest live update about it; `None` until the first one.
     pub live: Option<super::CampLive>,
+}
+
+/// A link's card to send, as the window holds it (ADR-0077).
+#[derive(Debug, Clone)]
+pub struct OutgoingLink {
+    /// As the message's text shows it.
+    pub url: String,
+    pub title: String,
+    pub description: String,
+    /// Its picture, re-encoded by the window like any photo.
+    pub photo: Option<OutgoingPhoto>,
 }
 
 /// A photo to send, as the window made it (at most 1600 px on its long side, a GIF as it is).
@@ -104,7 +121,7 @@ impl Camps {
         .map_err(chat_error)
     }
 
-    /// Writes in a chat: the photo goes up first. The message also comes back as a
+    /// Writes in a chat: pictures go up first. The message also comes back as a
     /// [`ChatUpdate::Message`], like everyone else's.
     ///
     /// # Errors
@@ -115,33 +132,46 @@ impl Camps {
         channel_id: &str,
         text: String,
         photo: Option<OutgoingPhoto>,
+        link: Option<OutgoingLink>,
     ) -> Result<ChatMessage, CampError> {
         let camp = self.camp(id)?;
         let client = camp.client()?;
         // A stale session is renewed once, on the first call that hits it.
         let mut session = camp.session();
-        let photo = match photo {
-            None => None,
-            Some(photo) => {
-                if PhotoFormat::sniff(&photo.bytes).is_none() {
-                    return Err("Это не фото: подойдёт JPEG, PNG, WebP или GIF".into());
-                }
-                let hash = match client.upload_photo(&session, photo.bytes.clone()).await {
-                    Err(ClientError::Api(ErrorCode::Unauthorized)) => {
-                        session = self.relogin(&camp, &client).await?;
-                        client.upload_photo(&session, photo.bytes).await
-                    }
-                    other => other,
-                }
-                .map_err(chat_error)?;
-                Some(Photo {
-                    hash,
-                    width: photo.width,
-                    height: photo.height,
-                })
+        let mut upload = async |photo: Option<OutgoingPhoto>| {
+            let Some(photo) = photo else {
+                return Ok(None);
+            };
+            if PhotoFormat::sniff(&photo.bytes).is_none() {
+                return Err(CampError::from(
+                    "Это не фото: подойдёт JPEG, PNG, WebP или GIF",
+                ));
             }
+            let hash = match client.upload_photo(&session, photo.bytes.clone()).await {
+                Err(ClientError::Api(ErrorCode::Unauthorized)) => {
+                    session = self.relogin(&camp, &client).await?;
+                    client.upload_photo(&session, photo.bytes).await
+                }
+                other => other,
+            }
+            .map_err(chat_error)?;
+            Ok(Some(Photo {
+                hash,
+                width: photo.width,
+                height: photo.height,
+            }))
         };
-        let message = NewMessage { text, photo };
+        let photo = upload(photo).await?;
+        let link = match link {
+            None => None,
+            Some(link) => Some(LinkCard {
+                url: link.url,
+                title: link.title,
+                description: link.description,
+                photo: upload(link.photo).await?,
+            }),
+        };
+        let message = NewMessage { text, photo, link };
         match client.post_message(&session, channel_id, &message).await {
             Err(ClientError::Api(ErrorCode::Unauthorized)) => {
                 let session = self.relogin(&camp, &client).await?;

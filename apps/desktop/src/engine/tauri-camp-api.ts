@@ -9,6 +9,8 @@ import type {
   ChatMessage,
   ChatUpdate,
   OpenCamp,
+  LinkPreview,
+  OutgoingLink,
   OutgoingPhoto,
 } from "./camp-api.ts";
 import { subscribe } from "@ourcamp/ui/tauri-events.ts";
@@ -95,10 +97,34 @@ export class TauriCampApi implements CampApi {
     return invoke("chat_history", { id, channelId, before, limit });
   }
 
-  send(id: string, channelId: string, text: string, photo: OutgoingPhoto | null): Promise<ChatMessage> {
-    const encoded =
-      photo === null ? null : { bytes: encodeBase64Url(photo.bytes), width: photo.width, height: photo.height };
-    return invoke("chat_send", { id, channelId, text, photo: encoded });
+  send(
+    id: string,
+    channelId: string,
+    text: string,
+    photo: OutgoingPhoto | null,
+    link: OutgoingLink | null,
+  ): Promise<ChatMessage> {
+    const encode = (p: OutgoingPhoto | null) =>
+      p === null ? null : { bytes: encodeBase64Url(p.bytes), width: p.width, height: p.height };
+    return invoke("chat_send", {
+      id,
+      channelId,
+      text,
+      photo: encode(photo),
+      link: link === null ? null : { ...link, photo: encode(link.photo) },
+    });
+  }
+
+  async linkPreview(url: string): Promise<LinkPreview | null> {
+    const found = await invoke<{ title: string; description: string; picture: string | null } | null>("link_preview", {
+      url,
+    });
+    if (found === null) return null;
+    return { ...found, picture: found.picture === null ? null : decodeBase64Url(found.picture) };
+  }
+
+  openLink(url: string): Promise<void> {
+    return invoke("open_link", { url });
   }
 
   deleteMessage(id: string, channelId: string, seq: number): Promise<void> {

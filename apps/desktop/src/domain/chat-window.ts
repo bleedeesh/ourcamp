@@ -6,11 +6,13 @@ import type {
   ChatContext,
   ChatMessage,
   ChatUpdate,
+  OutgoingLink,
   OutgoingPhoto,
 } from "../engine/camp-api.ts";
 import { createStore, type Store } from "../lib/store.ts";
 import { advance, type SeqByChat } from "./chat.ts";
 import { gapBefore, mergeMessages } from "./chat-feed.ts";
+import { firstLink } from "./links.ts";
 import { avatarColor, governs } from "./roster.ts";
 import type { Role, UserId } from "./types.ts";
 import type { KeyValueStorage } from "./volume.ts";
@@ -19,6 +21,8 @@ import type { KeyValueStorage } from "./volume.ts";
 export const PAGE = 50;
 /** The longest message, as the camp counts it (`oc_proto::MAX_MESSAGE_CHARS`). */
 export const MAX_MESSAGE_CHARS = 2000;
+/** A link's card waits for this pause: an address being typed is not fetched at each letter. */
+export const LINK_WAIT_MS = 500;
 /** Where the window remembers the chat it showed last, per camp. */
 const LAST_CHAT_KEY = "ourcamp.chat.last.v1";
 
@@ -64,6 +68,8 @@ export interface ChatWindowState {
   readonly members: Readonly<Record<UserId, ChatMember>>;
   readonly draft: string;
   readonly photo: OutgoingPhoto | null;
+  /** The card of the draft's first link, once it is ready (ADR-0077). */
+  readonly link: OutgoingLink | null;
   readonly sending: boolean;
   readonly error: string | null;
 }
@@ -82,15 +88,25 @@ export class ChatController {
   readonly store: Store<ChatWindowState>;
   readonly #api: CampApi;
   readonly #storage: KeyValueStorage;
+  readonly #makePicture: (bytes: Uint8Array) => Promise<OutgoingPhoto>;
+  /** The link the card is for, fetched or on its way. */
+  #linkUrl: string | null = null;
+  /** Bumped when that link changes: an answer about another one is dropped. */
+  #linkTicket = 0;
+  #linkTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Cards taken back in this draft: they stay away while the link stays. */
+  readonly #dismissed = new Set<string>();
   readonly #avatars = new Map<string, Promise<Uint8Array>>();
   readonly #photos = new Map<string, Promise<Uint8Array>>();
   #unsubscribe: Array<() => void> = [];
   /** Bumped per context load: answers about a camp no longer shown are dropped. */
   #generation = 0;
 
-  constructor(api: CampApi, storage: KeyValueStorage) {
+  /** `makePicture`: a card's picture as a photo, re-encoded by the webview (`makePhoto`). */
+  constructor(api: CampApi, storage: KeyValueStorage, makePicture: (bytes: Uint8Array) => Promise<OutgoingPhoto>) {
     this.#api = api;
     this.#storage = storage;
+    this.#makePicture = makePicture;
     this.store = createStore<ChatWindowState>({
       status: "loading",
       campId: "",
@@ -106,6 +122,7 @@ export class ChatController {
       members: {},
       draft: "",
       photo: null,
+      link: null,
       sending: false,
       error: null,
     });
@@ -121,6 +138,7 @@ export class ChatController {
   dispose(): void {
     for (const unsubscribe of this.#unsubscribe) unsubscribe();
     this.#unsubscribe = [];
+    this.#forgetLink();
   }
 
   /** Shows a chat, fetching its latest page the first time. */
@@ -168,6 +186,24 @@ export class ChatController {
 
   setDraft(draft: string): void {
     this.store.patch({ draft, error: null });
+    this.#watchLink(draft);
+  }
+
+  /** Takes the card back; the link stays in the text and gets no other. */
+  dismissLink(): void {
+    if (this.#linkUrl !== null) this.#dismissed.add(this.#linkUrl);
+    this.#linkTicket += 1;
+    this.#clearLinkTimer();
+    this.store.patch({ link: null });
+  }
+
+  /** Opens a link in the system's browser; a failure is said in the composer. */
+  async openLink(url: string): Promise<void> {
+    try {
+      await this.#api.openLink(url);
+    } catch (err) {
+      this.store.patch({ error: message(err) });
+    }
   }
 
   /** Whether you may remove this message: your own, or a lower rank's (`Role::governs`). */
@@ -221,12 +257,14 @@ export class ChatController {
   /** Sends the draft (and the photo) to the active chat; on a refusal both stay. */
   async send(): Promise<void> {
     if (!this.canSend()) return;
-    const { campId, activeId, draft, photo } = this.store.get();
+    const { campId, activeId, draft, photo, link } = this.store.get();
     if (activeId === null) return;
     this.store.patch({ sending: true, error: null });
     try {
-      const sent = await this.#api.send(campId, activeId, draft.trimEnd(), photo);
-      this.store.patch({ sending: false, draft: "", photo: null });
+      // A card still on its way is not waited for: the message goes without it.
+      const sent = await this.#api.send(campId, activeId, draft.trimEnd(), photo, link);
+      this.store.patch({ sending: false, draft: "", photo: null, link: null });
+      this.#forgetLink();
       this.#receive(sent);
     } catch (err) {
       this.store.patch({ sending: false, error: message(err) });
@@ -253,6 +291,51 @@ export class ChatController {
     return bytes;
   }
 
+  // ---- the card ----
+
+  /** The draft changed: when its first link is another one, its card is started anew. */
+  #watchLink(draft: string): void {
+    const url = firstLink(draft)?.url ?? null;
+    if (url === this.#linkUrl) return;
+    this.#linkUrl = url;
+    const ticket = ++this.#linkTicket;
+    this.#clearLinkTimer();
+    this.store.patch({ link: null });
+    if (url === null || this.#dismissed.has(url)) return;
+    this.#linkTimer = setTimeout(() => void this.#fetchLink(url, ticket), LINK_WAIT_MS);
+  }
+
+  async #fetchLink(url: string, ticket: number): Promise<void> {
+    this.#linkTimer = null;
+    let link: OutgoingLink | null = null;
+    try {
+      const found = await this.#api.linkPreview(url);
+      if (found !== null) {
+        // A picture the webview cannot read costs only itself.
+        const photo = found.picture === null ? null : await this.#makePicture(found.picture).catch(() => null);
+        if (found.title !== "" || photo !== null) {
+          link = { url, title: found.title, description: found.description, photo };
+        }
+      }
+    } catch {
+      // No card: the link goes as text.
+    }
+    if (ticket === this.#linkTicket) this.store.patch({ link });
+  }
+
+  #clearLinkTimer(): void {
+    if (this.#linkTimer !== null) clearTimeout(this.#linkTimer);
+    this.#linkTimer = null;
+  }
+
+  /** The draft is gone, and everything about its link with it. */
+  #forgetLink(): void {
+    this.#linkTicket += 1;
+    this.#clearLinkTimer();
+    this.#linkUrl = null;
+    this.#dismissed.clear();
+  }
+
   // ---- the camp ----
 
   async #load(): Promise<void> {
@@ -270,6 +353,7 @@ export class ChatController {
       return;
     }
     const { camp, live } = context;
+    this.#forgetLink();
     this.#avatars.clear();
     this.#photos.clear();
     this.store.patch({
@@ -289,6 +373,7 @@ export class ChatController {
       },
       draft: "",
       photo: null,
+      link: null,
       error: null,
     });
     if (live?.state) this.#applyState(live.state, live.online);
@@ -384,7 +469,7 @@ export class ChatController {
     if (!thread?.messages.some((m) => m.seq === seq)) return;
     const messages = thread.messages.map((m) => {
       if (m.seq !== seq) return m;
-      const { photo: _photo, ...rest } = m;
+      const { photo: _photo, link: _link, ...rest } = m;
       return { ...rest, text: "", deleted: true };
     });
     this.#setThread(chatId, { ...thread, messages });

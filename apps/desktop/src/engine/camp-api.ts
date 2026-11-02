@@ -58,6 +58,15 @@ export interface ChatPhoto {
   readonly height: number;
 }
 
+/** A preview of a link in a message, mirrors `oc_proto::LinkCard` (ADR-0077). */
+export interface LinkCard {
+  readonly url: string;
+  /** Empty only with a picture. */
+  readonly title: string;
+  readonly description?: string;
+  readonly photo?: ChatPhoto;
+}
+
 /** One message of a chat, mirrors `oc_proto::ChatMessage` (ADR-0044). */
 export interface ChatMessage {
   readonly channelId: string;
@@ -71,6 +80,7 @@ export interface ChatMessage {
   /** Empty only with a photo. */
   readonly text: string;
   readonly photo?: ChatPhoto;
+  readonly link?: LinkCard;
   /** Removed (ADR-0048): nothing left to show, the number stays taken. */
   readonly deleted?: boolean;
 }
@@ -80,6 +90,22 @@ export interface OutgoingPhoto {
   readonly bytes: Uint8Array;
   readonly width: number;
   readonly height: number;
+}
+
+/** What a link leads to, before its picture goes through the window (ADR-0077). */
+export interface LinkPreview {
+  readonly title: string;
+  readonly description: string;
+  /** As it came from the site; `null` without one. */
+  readonly picture: Uint8Array | null;
+}
+
+/** A link's card to send. */
+export interface OutgoingLink {
+  readonly url: string;
+  readonly title: string;
+  readonly description: string;
+  readonly photo: OutgoingPhoto | null;
 }
 
 /** The open camp as the chat window gets it when it opens (ADR-0046). */
@@ -135,7 +161,17 @@ export interface CampApi {
   /** Up to `limit` messages of a chat before `before` (up to the latest when `null`), oldest first. */
   history(id: string, channelId: string, before: number | null, limit: number): Promise<ChatMessage[]>;
   /** Writes in a chat; the message also arrives through `onChat`, like everyone else's. */
-  send(id: string, channelId: string, text: string, photo: OutgoingPhoto | null): Promise<ChatMessage>;
+  send(
+    id: string,
+    channelId: string,
+    text: string,
+    photo: OutgoingPhoto | null,
+    link: OutgoingLink | null,
+  ): Promise<ChatMessage>;
+  /** What a link leads to (fetched by this app, ADR-0077); `null`: it goes without a card. */
+  linkPreview(url: string): Promise<LinkPreview | null>;
+  /** Opens a link in the system's browser. */
+  openLink(url: string): Promise<void>;
   /** Removes a message: your own, or that of someone of a lower rank (ADR-0048). */
   deleteMessage(id: string, channelId: string, seq: number): Promise<void>;
   /** A photo by its hash (kept by the app). */

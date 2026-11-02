@@ -29,6 +29,17 @@ export function photoType(bytes: Uint8Array): "image/webp" | "image/png" | "imag
   return null;
 }
 
+/** Whether these are the first bytes of a moving WebP: Giphy's pictures are (ADR-0077). */
+export function isMovingWebp(head: Uint8Array): boolean {
+  const VP8X_ANIMATION = 0x02;
+  return (
+    head.length >= 21 &&
+    photoType(head) === "image/webp" &&
+    String.fromCharCode(...head.subarray(12, 16)) === "VP8X" &&
+    (head[20]! & VP8X_ANIMATION) !== 0
+  );
+}
+
 /** Why a GIF cannot go, as a sentence; `null` when it can. It goes as it is, so it cannot be made smaller. */
 export function gifRefusal(bytes: number, width: number, height: number): string | null {
   if (bytes > MAX_GIF_BYTES) return `GIF весит больше ${sizeLabel(MAX_GIF_BYTES)} — такой отправить нельзя`;

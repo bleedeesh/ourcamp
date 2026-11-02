@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, type ClipboardEvent, type KeyboardEvent } from "react";
 import { Icon } from "@ourcamp/ui/Icon.tsx";
+import type { OutgoingLink } from "../../engine/camp-api.ts";
 import { MAX_MESSAGE_CHARS } from "../../domain/chat-window.ts";
+import { siteOf } from "../../domain/links.ts";
 import { photoType, sizeLabel } from "../../domain/photo.ts";
 import { useObjectUrl } from "../avatar-url.ts";
 import { useChat, useChatController } from "./chat-context.tsx";
@@ -19,6 +21,7 @@ export function Composer() {
   const chat = useChatController();
   const draft = useChat((s) => s.draft);
   const photo = useChat((s) => s.photo);
+  const link = useChat((s) => s.link);
   const sending = useChat((s) => s.sending);
   const error = useChat((s) => s.error);
   const silenced = useChat((s) => s.silenced);
@@ -86,6 +89,7 @@ export function Composer() {
         </p>
       )}
       {photo && <Attachment bytes={photo.bytes} onRemove={() => chat.detach()} />}
+      {link && <LinkAttachment link={link} onRemove={() => chat.dismissLink()} />}
       <div className="composer__bar">
         <button type="button" className="composer__button" aria-label="Прикрепить фото" onClick={() => picker.current?.click()}>
           <Icon name="image" size={18} />
@@ -130,6 +134,23 @@ export function Composer() {
           {length} / {MAX_MESSAGE_CHARS}
         </p>
       )}
+    </div>
+  );
+}
+
+/** The card about to go with the message, with a way to take it back. */
+function LinkAttachment({ link, onRemove }: { link: OutgoingLink; onRemove: () => void }) {
+  const url = useObjectUrl(link.photo?.bytes ?? null, photoType);
+  return (
+    <div className="attachment">
+      {url !== null && <img className="attachment__thumb" src={url} alt="" />}
+      <span className="attachment__text">
+        <span className="attachment__title">{link.title === "" ? "Картинка по ссылке" : link.title}</span>
+        <span className="attachment__label">{siteOf(link.url)}</span>
+      </span>
+      <button type="button" className="attachment__remove" aria-label="Убрать предпросмотр" onClick={onRemove}>
+        <Icon name="close" size={14} />
+      </button>
     </div>
   );
 }

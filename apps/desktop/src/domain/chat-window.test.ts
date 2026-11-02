@@ -11,8 +11,10 @@ import type {
   OpenCamp,
   OutgoingPhoto,
 } from "../engine/camp-api.ts";
-import { ChatController, PAGE } from "./chat-window.ts";
+import { ChatController, LINK_WAIT_MS, PAGE } from "./chat-window.ts";
 import { MemoryStorage } from "./test-support.ts";
+
+const NO_PICTURE = () => Promise.reject(new Error("no pictures in this test"));
 
 const CHANNELS: ChannelInfo[] = [
   { id: "c0", name: "Voice", kind: "voice", afk: false },
@@ -136,7 +138,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 
 async function setup(storage = new MemoryStorage()) {
   const api = new FakeChatApi();
-  const chat = new ChatController(api as unknown as CampApi, storage);
+  const chat = new ChatController(api as unknown as CampApi, storage, NO_PICTURE);
   await chat.start();
   return { api, chat, storage };
 }
@@ -260,7 +262,7 @@ test("an open empty chat shows its first message, sent here or by someone else",
   assert.deepEqual(seqs(chat, "t2"), [1], "your own, at once");
 
   api.chats.set("t1", []);
-  const other = new ChatController(api as unknown as CampApi, new MemoryStorage());
+  const other = new ChatController(api as unknown as CampApi, new MemoryStorage(), NO_PICTURE);
   await other.start();
   assert.deepEqual(seqs(other, "t1"), []);
   api.add("t1", "lena", false);
@@ -288,7 +290,7 @@ test("an empty chat catches up after a missed event; a message during the first 
     if (chatId === "t1" && before === null) await gate;
     return page;
   };
-  const racing = new ChatController(late as unknown as CampApi, new MemoryStorage());
+  const racing = new ChatController(late as unknown as CampApi, new MemoryStorage(), NO_PICTURE);
   const started = racing.start();
   await tick();
   late.add("t1", "lena", false);
@@ -334,4 +336,152 @@ test("back online, removals made meanwhile are read again", async () => {
   const last = chat.store.get().threads["t1"]?.messages.at(-1);
   assert.equal(last?.deleted, true);
   assert.equal(chat.store.get().offline, false);
+});
+
+// ---- a link's card (ADR-0077) ----
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const PHOTO: OutgoingPhoto = { bytes: Uint8Array.of(1), width: 2, height: 1 };
+
+/** The fake camp, with pages behind links and a record of what was asked and sent. */
+class LinkApi extends FakeChatApi {
+  asked: string[] = [];
+  sentLinks: unknown[] = [];
+  answers = new Map<string, { title: string; description: string; picture: Uint8Array | null } | null>();
+  gate: Promise<void> = Promise.resolve();
+
+  async linkPreview(url: string) {
+    this.asked.push(url);
+    await this.gate;
+    return this.answers.get(url) ?? null;
+  }
+
+  override send(id: string, chatId: string, text: string, photo: OutgoingPhoto | null, link?: unknown) {
+    this.sentLinks.push(link ?? null);
+    return super.send(id, chatId, text, photo);
+  }
+}
+
+async function linked(makePicture: (bytes: Uint8Array) => Promise<OutgoingPhoto> = NO_PICTURE) {
+  const api = new LinkApi();
+  const chat = new ChatController(api as unknown as CampApi, new MemoryStorage(), makePicture);
+  await chat.start();
+  return { api, chat };
+}
+
+const A = "https://a.example/x";
+const B = "https://b.example/y";
+const CARD = { title: "Заголовок", description: "Описание", picture: null };
+
+test("a link gets its card after a pause, and it goes with the message", async () => {
+  const { api, chat } = await linked();
+  api.answers.set(A, CARD);
+  chat.setDraft(`смотри ${A}`);
+  assert.deepEqual(api.asked, [], "not at once");
+  await wait(LINK_WAIT_MS + 30);
+  assert.deepEqual(api.asked, [A]);
+  assert.deepEqual(chat.store.get().link, { url: A, title: "Заголовок", description: "Описание", photo: null });
+
+  await chat.send();
+  assert.deepEqual(api.sentLinks, [{ url: A, title: "Заголовок", description: "Описание", photo: null }]);
+  assert.equal(chat.store.get().link, null);
+  chat.dispose();
+});
+
+test("typing fetches only where it paused, and the text around a link changes nothing", async () => {
+  const { api, chat } = await linked();
+  api.answers.set(A, CARD);
+  chat.setDraft("https://a.example/");
+  await wait(50);
+  chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  assert.deepEqual(api.asked, [A]);
+  chat.setDraft(`${A} и ещё слова`);
+  await wait(LINK_WAIT_MS + 30);
+  assert.deepEqual(api.asked, [A], "the same link");
+  assert.equal(chat.store.get().link?.url, A, "the card stays");
+  chat.setDraft("ссылки больше нет");
+  assert.equal(chat.store.get().link, null);
+  chat.dispose();
+});
+
+test("the message does not wait for a card, and a late answer finds nothing to join", async () => {
+  const { api, chat } = await linked();
+  let open = () => {};
+  api.gate = new Promise((resolve) => (open = resolve));
+  api.answers.set(A, CARD);
+  chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  await chat.send();
+  assert.deepEqual(api.sentLinks, [null]);
+  open();
+  await wait(10);
+  assert.equal(chat.store.get().link, null, "it came too late");
+  chat.dispose();
+});
+
+test("an answer about an earlier link is dropped", async () => {
+  const { api, chat } = await linked();
+  let open = () => {};
+  api.gate = new Promise((resolve) => (open = resolve));
+  api.answers.set(A, CARD);
+  api.answers.set(B, { ...CARD, title: "Другая" });
+  chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  chat.setDraft(B);
+  open();
+  await wait(LINK_WAIT_MS + 30);
+  assert.equal(chat.store.get().link?.title, "Другая");
+  chat.dispose();
+});
+
+test("a card taken back stays away while its link stays", async () => {
+  const { api, chat } = await linked();
+  api.answers.set(A, CARD);
+  chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  chat.dismissLink();
+  assert.equal(chat.store.get().link, null);
+  chat.setDraft(`${A} слова`);
+  chat.setDraft("");
+  chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  assert.equal(chat.store.get().link, null, "not asked for again in this draft");
+  assert.deepEqual(api.asked, [A]);
+  chat.dispose();
+});
+
+test("a card's picture goes through the window; one that fails costs only itself", async () => {
+  const picture = Uint8Array.of(9);
+  const good = await linked(() => Promise.resolve(PHOTO));
+  good.api.answers.set(A, { ...CARD, picture });
+  good.chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  assert.equal(good.chat.store.get().link?.photo, PHOTO);
+  good.chat.dispose();
+
+  const bad = await linked();
+  bad.api.answers.set(A, { ...CARD, picture });
+  bad.chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  assert.equal(bad.chat.store.get().link?.photo, null);
+  assert.equal(bad.chat.store.get().link?.title, "Заголовок");
+  bad.chat.dispose();
+
+  const nothing = await linked();
+  nothing.api.answers.set(A, { title: "", description: "", picture });
+  nothing.chat.setDraft(A);
+  await wait(LINK_WAIT_MS + 30);
+  assert.equal(nothing.chat.store.get().link, null, "a card with nothing to show");
+  nothing.chat.dispose();
+});
+
+test("a removed message loses its card", async () => {
+  const { api, chat } = await linked();
+  await chat.select("t2");
+  api.chats.set("t2", [{ ...msg("t2", 1), link: { url: A, title: "Заголовок" } }]);
+  await chat.deleteMessage("t2", 1);
+  const [gone] = chat.store.get().threads["t2"]?.messages ?? [];
+  assert.equal(gone?.link, undefined);
+  chat.dispose();
 });

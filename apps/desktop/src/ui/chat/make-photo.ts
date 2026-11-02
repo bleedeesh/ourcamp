@@ -1,5 +1,5 @@
 import type { OutgoingPhoto } from "../../engine/camp-api.ts";
-import { fitWithin, gifRefusal, MAX_PHOTO_BYTES, photoType } from "../../domain/photo.ts";
+import { fitWithin, gifRefusal, isMovingWebp, MAX_GIF_SIDE, MAX_PHOTO_BYTES, photoType } from "../../domain/photo.ts";
 
 /** Encodings to try, best first: WebP where the webview makes it, then JPEG. */
 const ENCODINGS: ReadonlyArray<readonly [type: string, quality: number]> = [
@@ -17,7 +17,8 @@ function toBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promi
  * Turns a picked, pasted or dropped file into a photo for a chat (ADR-0046): at most
  * 1600 px on its long side, re-encoded — which also leaves the camera's metadata
  * (location included) behind. The webview decodes and scales: no image library in the
- * app. A GIF goes byte for byte: a canvas would keep only its first frame (ADR-0076).
+ * app. A GIF goes byte for byte: a canvas would keep only its first frame (ADR-0076). So
+ * does a moving WebP that fits a photo's limit (ADR-0077); a larger one stands still.
  * Rejects with a sentence.
  */
 export async function makePhoto(file: Blob): Promise<OutgoingPhoto> {
@@ -28,7 +29,13 @@ export async function makePhoto(file: Blob): Promise<OutgoingPhoto> {
   } catch {
     throw new Error("Это не картинка — подойдёт JPEG, PNG, WebP или GIF");
   }
-  if (photoType(new Uint8Array(await file.slice(0, 6).arrayBuffer())) === "image/gif") {
+  const head = new Uint8Array(await file.slice(0, 21).arrayBuffer());
+  if (isMovingWebp(head) && file.size <= MAX_PHOTO_BYTES && Math.max(bitmap.width, bitmap.height) <= MAX_GIF_SIDE) {
+    const { width, height } = bitmap;
+    bitmap.close();
+    return { bytes: new Uint8Array(await file.arrayBuffer()), width, height };
+  }
+  if (photoType(head) === "image/gif") {
     const { width, height } = bitmap;
     bitmap.close();
     const refusal = gifRefusal(file.size, width, height);

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use oc_proto::{ChatMessage, Photo, PhotoFormat};
+use oc_proto::{ChatMessage, LinkCard, NewMessage, Photo, PhotoFormat};
 use rusqlite::{params, OptionalExtension, Row, TransactionBehavior};
 
 use super::{Role, Store, StoreResult};
@@ -16,12 +16,16 @@ const ORPHAN_AFTER_MS: i64 = 60 * 60 * 1000;
 
 /// What [`Store::post_message`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "lives for one call; the message is the usual answer, a box would only add an allocation"
+)]
 pub enum Posted {
     /// Kept, with its number in the chat.
     Message(ChatMessage),
     /// No text channel with that id.
     NoChat,
-    /// The photo it names was never uploaded (or was dropped as an orphan).
+    /// A photo it names was never uploaded (or was dropped as an orphan).
     NoPhoto,
 }
 
@@ -55,6 +59,9 @@ impl Store {
         }
         if version < 8 {
             self.migrate_v8()?;
+        }
+        if version < 9 {
+            self.migrate_v9()?;
         }
         Ok(())
     }
@@ -100,9 +107,28 @@ impl Store {
         Ok(())
     }
 
+    /// Link cards (schema v9, ADR-0077): `link_url` is there exactly when a message has one.
+    /// A card's picture is an ordinary photo.
+    fn migrate_v9(&mut self) -> StoreResult<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute_batch(
+            "ALTER TABLE messages ADD COLUMN link_url TEXT;
+             ALTER TABLE messages ADD COLUMN link_title TEXT;
+             ALTER TABLE messages ADD COLUMN link_description TEXT;
+             ALTER TABLE messages ADD COLUMN link_photo_hash TEXT REFERENCES photos (hash);
+             ALTER TABLE messages ADD COLUMN link_photo_width INTEGER;
+             ALTER TABLE messages ADD COLUMN link_photo_height INTEGER;
+             CREATE INDEX messages_link_photo ON messages (link_photo_hash)
+                 WHERE link_photo_hash IS NOT NULL;",
+        )?;
+        tx.pragma_update(None, "user_version", 9)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Removes a message, if `actor` may: its author, or someone of a higher rank than the
-    /// author ([`Role::governs`]). Someone who left counts as an ordinary member. The text
-    /// and the photo are erased for real; the photo goes at the next sweep of orphans.
+    /// author ([`Role::governs`]). Someone who left counts as an ordinary member. The text,
+    /// the photo and the link card are erased for real; pictures go at the next sweep of orphans.
     ///
     /// # Errors
     /// On database failure.
@@ -143,7 +169,10 @@ impl Store {
         }
         tx.execute(
             "UPDATE messages SET deleted = 1, text = '', photo_hash = NULL,
-                                 photo_width = NULL, photo_height = NULL
+                                 photo_width = NULL, photo_height = NULL,
+                                 link_url = NULL, link_title = NULL, link_description = NULL,
+                                 link_photo_hash = NULL, link_photo_width = NULL,
+                                 link_photo_height = NULL
              WHERE channel_id = ?1 AND seq = ?2",
             params![channel_id, seq],
         )?;
@@ -151,8 +180,8 @@ impl Store {
         Ok(Deleted::Done)
     }
 
-    /// Keeps a message in a chat as its next one. `text` and `photo` were checked by the
-    /// caller (length, sizes).
+    /// Keeps a message in a chat as its next one. It was checked by the caller (lengths,
+    /// sizes).
     ///
     /// # Errors
     /// On database failure.
@@ -160,8 +189,7 @@ impl Store {
         &mut self,
         channel_id: &str,
         author: Author<'_>,
-        text: &str,
-        photo: Option<&Photo>,
+        new: NewMessage,
     ) -> StoreResult<Posted> {
         // IMMEDIATE: the next `seq` is read and written under one write lock.
         let tx = self
@@ -178,7 +206,8 @@ impl Store {
         if !is_chat {
             return Ok(Posted::NoChat);
         }
-        if let Some(photo) = photo {
+        let card_photo = new.link.as_ref().and_then(|link| link.photo.as_ref());
+        for photo in new.photo.iter().chain(card_photo) {
             let uploaded = tx
                 .query_row(
                     "SELECT 1 FROM photos WHERE hash = ?1",
@@ -202,14 +231,19 @@ impl Store {
             author_id: author.user_id.to_owned(),
             author_name: author.name.to_owned(),
             sent_at: now_ms(),
-            text: text.to_owned(),
-            photo: photo.cloned(),
+            text: new.text,
+            photo: new.photo,
+            link: new.link,
             deleted: false,
         };
+        let (photo, link) = (message.photo.as_ref(), message.link.as_ref());
+        let card_photo = link.and_then(|l| l.photo.as_ref());
         tx.execute(
             "INSERT INTO messages (channel_id, seq, author_id, author_name, sent_at, text,
-                                   photo_hash, photo_width, photo_height)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                   photo_hash, photo_width, photo_height,
+                                   link_url, link_title, link_description,
+                                   link_photo_hash, link_photo_width, link_photo_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 message.channel_id,
                 seq,
@@ -220,6 +254,12 @@ impl Store {
                 photo.map(|p| &p.hash),
                 photo.map(|p| p.width),
                 photo.map(|p| p.height),
+                link.map(|l| &l.url),
+                link.map(|l| &l.title),
+                link.map(|l| &l.description),
+                card_photo.map(|p| &p.hash),
+                card_photo.map(|p| p.width),
+                card_photo.map(|p| p.height),
             ],
         )?;
         tx.commit()?;
@@ -252,7 +292,9 @@ impl Store {
         // The newest `limit` below `before`, then turned oldest first.
         let mut stmt = self.conn.prepare(
             "SELECT channel_id, seq, author_id, author_name, sent_at, text,
-                    photo_hash, photo_width, photo_height, deleted
+                    photo_hash, photo_width, photo_height, deleted,
+                    link_url, link_title, link_description,
+                    link_photo_hash, link_photo_width, link_photo_height
              FROM messages
              WHERE channel_id = ?1 AND seq < ?2
              ORDER BY seq DESC LIMIT ?3",
@@ -289,7 +331,8 @@ impl Store {
         let now = now_ms();
         self.conn.execute(
             "DELETE FROM photos WHERE uploaded_at < ?1
-                 AND NOT EXISTS (SELECT 1 FROM messages WHERE photo_hash = photos.hash)",
+                 AND NOT EXISTS (SELECT 1 FROM messages WHERE photo_hash = photos.hash)
+                 AND NOT EXISTS (SELECT 1 FROM messages WHERE link_photo_hash = photos.hash)",
             [now - ORPHAN_AFTER_MS],
         )?;
         let hash = oc_proto::avatar_hash(bytes);
@@ -318,8 +361,21 @@ impl Store {
     }
 }
 
+/// The photo in three columns starting at `first`.
+fn photo_at(r: &Row<'_>, first: usize) -> rusqlite::Result<Option<Photo>> {
+    let hash: Option<String> = r.get(first)?;
+    match hash {
+        Some(hash) => Ok(Some(Photo {
+            hash,
+            width: r.get(first + 1)?,
+            height: r.get(first + 2)?,
+        })),
+        None => Ok(None),
+    }
+}
+
 fn message(r: &Row<'_>) -> rusqlite::Result<ChatMessage> {
-    let hash: Option<String> = r.get(6)?;
+    let url: Option<String> = r.get(10)?;
     Ok(ChatMessage {
         channel_id: r.get(0)?,
         seq: from_sql(r.get(1)?),
@@ -327,11 +383,13 @@ fn message(r: &Row<'_>) -> rusqlite::Result<ChatMessage> {
         author_name: r.get(3)?,
         sent_at: r.get(4)?,
         text: r.get(5)?,
-        photo: match hash {
-            Some(hash) => Some(Photo {
-                hash,
-                width: r.get(7)?,
-                height: r.get(8)?,
+        photo: photo_at(r, 6)?,
+        link: match url {
+            Some(url) => Some(LinkCard {
+                url,
+                title: r.get(11)?,
+                description: r.get(12)?,
+                photo: photo_at(r, 13)?,
             }),
             None => None,
         },
@@ -368,8 +426,16 @@ mod tests {
         Store::open_in_memory("Кооп").unwrap()
     }
 
+    fn new(text: &str, photo: Option<&Photo>) -> NewMessage {
+        NewMessage {
+            text: text.to_owned(),
+            photo: photo.cloned(),
+            link: None,
+        }
+    }
+
     fn post(store: &mut Store, chat: &str, text: &str) -> ChatMessage {
-        match store.post_message(chat, LENA, text, None).unwrap() {
+        match store.post_message(chat, LENA, new(text, None)).unwrap() {
             Posted::Message(m) => m,
             other => panic!("{other:?}"),
         }
@@ -392,12 +458,14 @@ mod tests {
     fn only_text_channels_are_chats() {
         let mut store = camp();
         assert_eq!(
-            store.post_message("c0", LENA, "в голосовой", None).unwrap(),
+            store
+                .post_message("c0", LENA, new("в голосовой", None))
+                .unwrap(),
             Posted::NoChat,
             "c0 is Voice"
         );
         assert_eq!(
-            store.post_message("nope", LENA, "x", None).unwrap(),
+            store.post_message("nope", LENA, new("x", None)).unwrap(),
             Posted::NoChat
         );
         assert_eq!(store.history("c0", None, 50).unwrap(), None);
@@ -437,7 +505,9 @@ mod tests {
             width: 1600,
             height: 900,
         };
-        let Posted::Message(sent) = store.post_message("c1", LENA, "", Some(&photo)).unwrap()
+        let Posted::Message(sent) = store
+            .post_message("c1", LENA, new("", Some(&photo)))
+            .unwrap()
         else {
             panic!("posted")
         };
@@ -449,7 +519,9 @@ mod tests {
             ..photo
         };
         assert_eq!(
-            store.post_message("c1", LENA, "", Some(&never)).unwrap(),
+            store
+                .post_message("c1", LENA, new("", Some(&never)))
+                .unwrap(),
             Posted::NoPhoto
         );
     }
@@ -469,7 +541,9 @@ mod tests {
             height: 10,
         };
         assert!(matches!(
-            store.post_message("c1", LENA, "", Some(&photo)).unwrap(),
+            store
+                .post_message("c1", LENA, new("", Some(&photo)))
+                .unwrap(),
             Posted::Message(_)
         ));
         // Both uploaded long ago; the next upload sweeps.
@@ -518,7 +592,7 @@ mod tests {
             height: 1,
         };
         store
-            .post_message("c1", LENA, "первое", Some(&photo))
+            .post_message("c1", LENA, new("первое", Some(&photo)))
             .unwrap();
         post(&mut store, "c1", "второе");
 
@@ -565,6 +639,83 @@ mod tests {
             store.photo(&hash).unwrap(),
             None,
             "its photo goes with the next sweep"
+        );
+    }
+
+    #[test]
+    fn a_link_card_comes_back_keeps_its_picture_and_goes_with_its_message() {
+        let mut store = camp();
+        let hash = store
+            .put_photo(PhotoFormat::Png, b"\x89PNG\r\n\x1a\ncard")
+            .unwrap();
+        let link = LinkCard {
+            url: "https://example.com/a".into(),
+            title: "Заголовок".into(),
+            description: "Описание".into(),
+            photo: Some(Photo {
+                hash: hash.clone(),
+                width: 10,
+                height: 5,
+            }),
+        };
+        let message = NewMessage {
+            text: "https://example.com/a".into(),
+            photo: None,
+            link: Some(link.clone()),
+        };
+        let Posted::Message(sent) = store.post_message("c1", LENA, message.clone()).unwrap() else {
+            panic!("posted")
+        };
+        assert_eq!(sent.link.as_ref(), Some(&link));
+        assert_eq!(
+            store.history("c1", None, 1).unwrap().unwrap(),
+            [sent],
+            "the same from the database"
+        );
+
+        let sweep = |store: &Store, marker: &[u8]| {
+            store
+                .conn
+                .execute("UPDATE photos SET uploaded_at = 0", [])
+                .unwrap();
+            store.put_photo(PhotoFormat::Png, marker).unwrap();
+        };
+        sweep(&store, b"\x89PNG\r\n\x1a\n1");
+        assert!(
+            store.photo(&hash).unwrap().is_some(),
+            "named by the message's card"
+        );
+
+        assert_eq!(
+            store.delete_message("c1", 1, "lena", Role::Member).unwrap(),
+            Deleted::Done
+        );
+        assert_eq!(
+            store.history("c1", None, 1).unwrap().unwrap()[0].link,
+            None,
+            "erased"
+        );
+        sweep(&store, b"\x89PNG\r\n\x1a\n2");
+        assert_eq!(
+            store.photo(&hash).unwrap(),
+            None,
+            "and its picture after it"
+        );
+
+        let unknown = NewMessage {
+            link: Some(LinkCard {
+                photo: Some(Photo {
+                    hash: "never-uploaded00".into(),
+                    width: 1,
+                    height: 1,
+                }),
+                ..link
+            }),
+            ..message
+        };
+        assert_eq!(
+            store.post_message("c1", LENA, unknown).unwrap(),
+            Posted::NoPhoto
         );
     }
 
