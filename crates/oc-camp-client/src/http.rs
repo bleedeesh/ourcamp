@@ -26,8 +26,31 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// The largest JSON answer: a page of chat history (100 messages of up to 2000
 /// characters) is the biggest. Anything larger is refused.
 const MAX_JSON_BYTES: usize = 1024 * 1024;
-/// The largest picture: a photo (avatars are smaller).
-const MAX_PICTURE_BYTES: usize = oc_proto::MAX_PHOTO_BYTES;
+/// The largest picture: a GIF (other photos and avatars are smaller).
+const MAX_PICTURE_BYTES: usize = oc_proto::MAX_GIF_BYTES;
+/// A picture either way: the largest GIF still gets through a line of about 1 Mbit/s, and a
+/// camp often stands at home, behind a slow uplink (ADR-0076).
+const PICTURE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How much of an answer to read, and how long the whole request may take.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Bounds {
+    limit: usize,
+    timeout: Duration,
+}
+
+const SMALL_REQUEST: Bounds = Bounds {
+    limit: MAX_JSON_BYTES,
+    timeout: REQUEST_TIMEOUT,
+};
+const PICTURE_UPLOAD: Bounds = Bounds {
+    limit: MAX_JSON_BYTES,
+    timeout: PICTURE_TIMEOUT,
+};
+const PICTURE_DOWNLOAD: Bounds = Bounds {
+    limit: MAX_PICTURE_BYTES,
+    timeout: PICTURE_TIMEOUT,
+};
 
 /// TCP + TLS to `authority` (`host:port`), trusting only what `trust` allows: the pinned
 /// certificate (ADR-0014), or an authority's for the host's name (ADR-0042).
@@ -45,13 +68,12 @@ pub(crate) async fn connect(authority: &str, trust: &Trust) -> io::Result<TlsStr
         .await
 }
 
-/// One request over a fresh connection; returns status, headers and body (at most
-/// `limit` bytes).
+/// One request over a fresh connection; returns status, headers and body, within `bounds`.
 pub(crate) async fn send(
     authority: &str,
     trust: &Trust,
     request: Request<Full<Bytes>>,
-    limit: usize,
+    bounds: Bounds,
 ) -> io::Result<(StatusCode, HeaderMap, Bytes)> {
     let exchange = async {
         let tls = connect(authority, trust).await?;
@@ -65,14 +87,14 @@ pub(crate) async fn send(
             .await
             .map_err(io::Error::other)?;
         let (parts, body) = response.into_parts();
-        let bytes = http_body_util::Limited::new(body, limit)
+        let bytes = http_body_util::Limited::new(body, bounds.limit)
             .collect()
             .await
             .map_err(io::Error::other)?
             .to_bytes();
         Ok((parts.status, parts.headers, bytes))
     };
-    tokio::time::timeout(REQUEST_TIMEOUT, exchange)
+    tokio::time::timeout(bounds.timeout, exchange)
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "camp timed out"))?
 }
@@ -126,7 +148,7 @@ impl Client {
             Some(bearer),
             Bytes::from(body),
             JSON,
-            MAX_JSON_BYTES,
+            SMALL_REQUEST,
         )
         .await
         .map(drop)
@@ -146,7 +168,7 @@ impl Client {
             Some(bearer),
             Bytes::from(body),
             JSON,
-            MAX_JSON_BYTES,
+            SMALL_REQUEST,
         )
         .await
         .map(drop)
@@ -164,7 +186,7 @@ impl Client {
             Some(bearer),
             Bytes::new(),
             JSON,
-            MAX_JSON_BYTES,
+            SMALL_REQUEST,
         )
         .await
         .map(drop)
@@ -178,7 +200,7 @@ impl Client {
         body: Bytes,
     ) -> Result<T, ClientError> {
         let bytes = self
-            .exchange(method, path, bearer, body, JSON, MAX_JSON_BYTES)
+            .exchange(method, path, bearer, body, JSON, SMALL_REQUEST)
             .await?;
         serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
     }
@@ -197,7 +219,7 @@ impl Client {
             Some(bearer),
             Bytes::from(body),
             content_type,
-            MAX_JSON_BYTES,
+            SMALL_REQUEST,
         )
         .await
         .map(drop)
@@ -218,7 +240,7 @@ impl Client {
                 Some(bearer),
                 Bytes::from(body),
                 content_type,
-                MAX_JSON_BYTES,
+                PICTURE_UPLOAD,
             )
             .await?;
         serde_json::from_slice(&bytes).map_err(|e| ClientError::Protocol(e.to_string()))
@@ -232,12 +254,12 @@ impl Client {
             Some(bearer),
             Bytes::new(),
             JSON,
-            MAX_PICTURE_BYTES,
+            PICTURE_DOWNLOAD,
         )
         .await
     }
 
-    /// One request; the body of a success (at most `limit` bytes), or the API error.
+    /// One request; the body of a success (within `bounds`), or the API error.
     async fn exchange(
         &self,
         method: Method,
@@ -245,7 +267,7 @@ impl Client {
         bearer: Option<&str>,
         body: Bytes,
         content_type: &'static str,
-        limit: usize,
+        bounds: Bounds,
     ) -> Result<Bytes, ClientError> {
         let mut request = Request::builder()
             .method(method)
@@ -258,7 +280,7 @@ impl Client {
         let request = request
             .body(Full::new(body))
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let (status, _, bytes) = send(&self.authority, &self.trust, request, limit).await?;
+        let (status, _, bytes) = send(&self.authority, &self.trust, request, bounds).await?;
 
         if status.is_success() {
             Ok(bytes)

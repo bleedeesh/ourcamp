@@ -131,6 +131,8 @@ pub fn avatar_hash(bytes: &[u8]) -> String {
 pub const MAX_MESSAGE_CHARS: usize = 2000;
 /// The largest photo a camp keeps. The app sends one at most 1600 px on its long side.
 pub const MAX_PHOTO_BYTES: usize = 2 * 1024 * 1024;
+/// The largest GIF a camp keeps: it goes as it is, re-encoding would stop it moving (ADR-0076).
+pub const MAX_GIF_BYTES: usize = 8 * 1024 * 1024;
 /// The largest side a photo may claim, in pixels.
 pub const MAX_PHOTO_SIDE: u32 = 4096;
 /// The most messages one history request returns.
@@ -145,6 +147,8 @@ pub enum PhotoFormat {
     Png,
     /// `image/jpeg`.
     Jpeg,
+    /// `image/gif`.
+    Gif,
 }
 
 impl PhotoFormat {
@@ -155,6 +159,7 @@ impl PhotoFormat {
             Some(AvatarFormat::Webp) => Some(Self::Webp),
             Some(AvatarFormat::Png) => Some(Self::Png),
             None if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) => Some(Self::Jpeg),
+            None if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") => Some(Self::Gif),
             None => None,
         }
     }
@@ -166,6 +171,16 @@ impl PhotoFormat {
             Self::Webp => "image/webp",
             Self::Png => "image/png",
             Self::Jpeg => "image/jpeg",
+            Self::Gif => "image/gif",
+        }
+    }
+
+    /// The most bytes a camp keeps of a photo in this format.
+    #[must_use]
+    pub fn max_bytes(self) -> usize {
+        match self {
+            Self::Webp | Self::Png | Self::Jpeg => MAX_PHOTO_BYTES,
+            Self::Gif => MAX_GIF_BYTES,
         }
     }
 }
@@ -773,8 +788,14 @@ mod tests {
             PhotoFormat::sniff(b"RIFF\0\0\0\0WEBPVP8 "),
             Some(PhotoFormat::Webp)
         );
-        assert_eq!(PhotoFormat::sniff(b"GIF89a"), None);
+        assert_eq!(PhotoFormat::sniff(b"GIF87a"), Some(PhotoFormat::Gif));
+        assert_eq!(PhotoFormat::sniff(b"GIF89a"), Some(PhotoFormat::Gif));
+        assert_eq!(PhotoFormat::sniff(b"GIF88a"), None);
+        assert_eq!(PhotoFormat::sniff(b"BM...."), None);
         assert_eq!(PhotoFormat::Jpeg.mime(), "image/jpeg");
+        assert_eq!(PhotoFormat::Gif.mime(), "image/gif");
+        assert_eq!(PhotoFormat::Jpeg.max_bytes(), MAX_PHOTO_BYTES);
+        assert_eq!(PhotoFormat::Gif.max_bytes(), MAX_GIF_BYTES);
     }
 
     #[test]

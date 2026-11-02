@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fitWithin, photoType, sizeLabel } from "./photo.ts";
+import { fitWithin, gifRefusal, MAX_GIF_BYTES, photoType, sizeLabel } from "./photo.ts";
 
 test("photos shrink to 1600 px on their long side, never grow", () => {
   assert.deepEqual(fitWithin(4032, 3024), { width: 1600, height: 1200 });
@@ -14,7 +14,16 @@ test("the type comes from the bytes, as the camp sees it", () => {
   assert.equal(photoType(Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), "image/png");
   const webp = new TextEncoder().encode("RIFF\0\0\0\0WEBPVP8 ");
   assert.equal(photoType(webp), "image/webp");
-  assert.equal(photoType(new TextEncoder().encode("GIF89a")), null);
+  assert.equal(photoType(new TextEncoder().encode("GIF87a")), "image/gif");
+  assert.equal(photoType(new TextEncoder().encode("GIF89a")), "image/gif");
+  assert.equal(photoType(new TextEncoder().encode("GIF88a")), null);
+  assert.equal(photoType(new TextEncoder().encode("BM....")), null);
+});
+
+test("a GIF goes up to its limits and says which one it crossed", () => {
+  assert.equal(gifRefusal(MAX_GIF_BYTES, 4096, 4096), null);
+  assert.equal(gifRefusal(MAX_GIF_BYTES + 1, 480, 270), "GIF весит больше 8,0 МБ — такой отправить нельзя");
+  assert.equal(gifRefusal(1024, 4097, 10), "GIF слишком большой: можно до 4096 точек по длинной стороне");
 });
 
 test("sizes read like a person says them", () => {

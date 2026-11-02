@@ -214,7 +214,7 @@ pub fn router(state: AppState) -> Router {
         // Bodies above axum's 2 MB default are refused before the handler sees them.
         .route(
             "/api/v1/photos",
-            post(chat::put_photo).layer(DefaultBodyLimit::max(oc_proto::MAX_PHOTO_BYTES + 1)),
+            post(chat::put_photo).layer(DefaultBodyLimit::max(oc_proto::MAX_GIF_BYTES + 1)),
         )
         .route(
             "/api/v1/channels/{id}/messages/{seq}",

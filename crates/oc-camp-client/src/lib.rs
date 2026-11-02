@@ -423,7 +423,7 @@ impl CampClient {
     /// Uploads a photo for the message that will show it; its hash names it there.
     ///
     /// # Errors
-    /// [`ClientError::Protocol`] for anything but WebP, PNG or JPEG;
+    /// [`ClientError::Protocol`] for anything but WebP, PNG, JPEG or GIF;
     /// [`ErrorCode::BadRequest`] (too big), [`ErrorCode::Silenced`].
     pub async fn upload_photo(
         &self,
@@ -431,7 +431,7 @@ impl CampClient {
         photo: Vec<u8>,
     ) -> Result<String, ClientError> {
         let format = oc_proto::PhotoFormat::sniff(&photo)
-            .ok_or_else(|| ClientError::Protocol("a photo is WebP, PNG or JPEG".into()))?;
+            .ok_or_else(|| ClientError::Protocol("a photo is WebP, PNG, JPEG or GIF".into()))?;
         let PhotoUploaded { hash } = self
             .http
             .post_bytes("/api/v1/photos", &session.token, format.mime(), photo)
