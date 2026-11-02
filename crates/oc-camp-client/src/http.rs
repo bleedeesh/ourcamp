@@ -24,8 +24,8 @@ use crate::ClientError;
 /// Connect + TLS + request + response must finish within this.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// The largest JSON answer: a page of chat history (100 messages of up to 2000
-/// characters) is the biggest. Anything larger is refused.
-const MAX_JSON_BYTES: usize = 1024 * 1024;
+/// characters, each with a link card) is the biggest. Anything larger is refused.
+const MAX_JSON_BYTES: usize = 2 * 1024 * 1024;
 /// The largest picture: a GIF (other photos and avatars are smaller).
 const MAX_PICTURE_BYTES: usize = oc_proto::MAX_GIF_BYTES;
 /// A picture either way: the largest GIF still gets through a line of about 1 Mbit/s, and a

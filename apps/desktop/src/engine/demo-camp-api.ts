@@ -1,4 +1,5 @@
 import { DEMO_CAMP, DEMO_SELF_ID } from "../domain/demo-camp.ts";
+import { siteOf } from "../domain/links.ts";
 import type {
   CampApi,
   CampList,
@@ -8,6 +9,8 @@ import type {
   ChatMessage,
   ChatUpdate,
   OpenCamp,
+  LinkPreview,
+  OutgoingLink,
   OutgoingPhoto,
 } from "./camp-api.ts";
 
@@ -167,7 +170,22 @@ export class DemoCampApi implements CampApi {
     return Promise.resolve(older.slice(-limit));
   }
 
-  async send(_id: string, channelId: string, text: string, photo: OutgoingPhoto | null): Promise<ChatMessage> {
+  linkPreview(url: string): Promise<LinkPreview | null> {
+    return Promise.resolve({ title: `Страница на ${siteOf(url)}`, description: "Демо: настоящая придёт из приложения", picture: null });
+  }
+
+  openLink(url: string): Promise<void> {
+    window.open(url, "_blank", "noopener");
+    return Promise.resolve();
+  }
+
+  async send(
+    _id: string,
+    channelId: string,
+    text: string,
+    photo: OutgoingPhoto | null,
+    link: OutgoingLink | null,
+  ): Promise<ChatMessage> {
     await delay(150);
     const all = this.#messages.get(channelId) ?? [];
     const message: ChatMessage = {
@@ -178,6 +196,16 @@ export class DemoCampApi implements CampApi {
       sentAt: Date.now(),
       text: text.trimEnd(),
       ...(photo && { photo: { hash: this.#keep(photo.bytes), width: photo.width, height: photo.height } }),
+      ...(link && {
+        link: {
+          url: link.url,
+          title: link.title,
+          description: link.description,
+          ...(link.photo && {
+            photo: { hash: this.#keep(link.photo.bytes), width: link.photo.width, height: link.photo.height },
+          }),
+        },
+      }),
     };
     this.#messages.set(channelId, [...all, message]);
     this.#chat?.({ type: "message", campId: DEMO_ID, message });

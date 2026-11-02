@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fitWithin, gifRefusal, MAX_GIF_BYTES, photoType, sizeLabel } from "./photo.ts";
+import { fitWithin, gifRefusal, isMovingWebp, MAX_GIF_BYTES, photoType, sizeLabel } from "./photo.ts";
 
 test("photos shrink to 1600 px on their long side, never grow", () => {
   assert.deepEqual(fitWithin(4032, 3024), { width: 1600, height: 1200 });
@@ -18,6 +18,18 @@ test("the type comes from the bytes, as the camp sees it", () => {
   assert.equal(photoType(new TextEncoder().encode("GIF89a")), "image/gif");
   assert.equal(photoType(new TextEncoder().encode("GIF88a")), null);
   assert.equal(photoType(new TextEncoder().encode("BM....")), null);
+});
+
+test("a moving WebP is told from a still one", () => {
+  const webp = (chunk: string, flags: number) => {
+    const head = new TextEncoder().encode(`RIFF\0\0\0\0WEBP${chunk}\0\0\0\0\0`);
+    head[20] = flags;
+    return head;
+  };
+  assert.equal(isMovingWebp(webp("VP8X", 0x02)), true);
+  assert.equal(isMovingWebp(webp("VP8X", 0x10)), false, "extended, but still");
+  assert.equal(isMovingWebp(webp("VP8 ", 0x02)), false, "a simple one has no such flag");
+  assert.equal(isMovingWebp(new TextEncoder().encode("GIF89a")), false);
 });
 
 test("a GIF goes up to its limits and says which one it crossed", () => {

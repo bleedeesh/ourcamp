@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::voice::room::RoomAccess;
 
 mod chat;
-pub use chat::{ChatContext, ChatListener, ChatUpdate, OutgoingPhoto};
+pub use chat::{ChatContext, ChatListener, ChatUpdate, OutgoingLink, OutgoingPhoto};
 
 const KEY_FILE: &str = "device.key";
 const CAMPS_FILE: &str = "camps.json";
@@ -1381,7 +1381,7 @@ mod tests {
             let (bob_dir, dir) = (temp_dir("chat-bob"), temp_dir("chat-lena"));
             let bob = Camps::load(&bob_dir).unwrap();
             let bobs = bob.join(&link, "Боб").await.unwrap();
-            bob.send(&bobs.id, "c1", "Был тут раньше".into(), None)
+            bob.send(&bobs.id, "c1", "Был тут раньше".into(), None, None)
                 .await
                 .unwrap();
 
@@ -1408,7 +1408,7 @@ mod tests {
                 .expect("following");
 
             let sent = bob
-                .send(&bobs.id, "c1", "Привет, Лена".into(), None)
+                .send(&bobs.id, "c1", "Привет, Лена".into(), None, None)
                 .await
                 .unwrap();
             let live = (0..50).find_map(|_| {
@@ -1449,7 +1449,7 @@ mod tests {
                 height: 10,
             };
             let shown = lena
-                .send(&opened.id, "c1", String::new(), Some(photo))
+                .send(&opened.id, "c1", String::new(), Some(photo), None)
                 .await
                 .unwrap();
             let hash = shown.photo.expect("a photo").hash;

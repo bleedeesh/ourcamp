@@ -135,6 +135,12 @@ pub const MAX_PHOTO_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_GIF_BYTES: usize = 8 * 1024 * 1024;
 /// The largest side a photo may claim, in pixels.
 pub const MAX_PHOTO_SIDE: u32 = 4096;
+/// The longest address of a link card, in bytes.
+pub const MAX_LINK_URL_BYTES: usize = 2048;
+/// The longest title of a link card, in characters.
+pub const MAX_LINK_TITLE_CHARS: usize = 200;
+/// The longest description of a link card, in characters.
+pub const MAX_LINK_DESCRIPTION_CHARS: usize = 300;
 /// The most messages one history request returns.
 pub const MAX_HISTORY: u32 = 100;
 
@@ -196,6 +202,42 @@ pub struct Photo {
     pub height: u32,
 }
 
+/// A preview of a link in a message (ADR-0077). Its sender's app made it; apps show the
+/// site's name from `url`, never from what a page said about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkCard {
+    /// `http` or `https`, standing in the message's text ([`LinkCard::stands_in`]).
+    pub url: String,
+    /// Up to [`MAX_LINK_TITLE_CHARS`]; empty only with a picture.
+    pub title: String,
+    /// Up to [`MAX_LINK_DESCRIPTION_CHARS`]; may be empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// A picture uploaded with `POST /api/v1/photos` just before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo: Option<Photo>,
+}
+
+impl LinkCard {
+    /// Whether the address is one the card may name: of the web, within the limit.
+    #[must_use]
+    pub fn has_web_url(&self) -> bool {
+        self.url.len() <= MAX_LINK_URL_BYTES && Self::after_scheme(&self.url).is_some()
+    }
+
+    /// Whether the message's text shows this address, so a card cannot lead elsewhere than
+    /// what it is attached to. A link written as `www.…` has its scheme only in the card.
+    #[must_use]
+    pub fn stands_in(&self, text: &str) -> bool {
+        Self::after_scheme(&self.url).is_some_and(|rest| !rest.is_empty() && text.contains(rest))
+    }
+
+    fn after_scheme(url: &str) -> Option<&str> {
+        url.strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+    }
+}
+
 /// One message in a chat.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,6 +257,9 @@ pub struct ChatMessage {
     /// At most one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub photo: Option<Photo>,
+    /// A preview of a link in the text, at most one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkCard>,
     /// Removed (ADR-0048): the text and the photo are gone, the number stays taken.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
@@ -228,6 +273,9 @@ pub struct NewMessage {
     /// A photo uploaded with `POST /api/v1/photos` just before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub photo: Option<Photo>,
+    /// A preview of a link in `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkCard>,
 }
 
 /// `GET /api/v1/channels/{id}/messages`: oldest first.
@@ -746,6 +794,7 @@ mod tests {
             sent_at: 1_790_000_000_000,
             text: "Привет".into(),
             photo: None,
+            link: None,
             deleted: false,
         };
         let json = serde_json::to_value(CampEvent::Message(message.clone())).unwrap();
@@ -796,6 +845,29 @@ mod tests {
         assert_eq!(PhotoFormat::Gif.mime(), "image/gif");
         assert_eq!(PhotoFormat::Jpeg.max_bytes(), MAX_PHOTO_BYTES);
         assert_eq!(PhotoFormat::Gif.max_bytes(), MAX_GIF_BYTES);
+    }
+
+    #[test]
+    fn a_card_names_a_web_address_its_message_shows() {
+        let card = |url: &str| LinkCard {
+            url: url.into(),
+            title: "Заголовок".into(),
+            description: String::new(),
+            photo: None,
+        };
+        assert!(card("https://example.com/a").has_web_url());
+        assert!(card("http://example.com").has_web_url());
+        assert!(!card("javascript:alert(1)").has_web_url());
+        assert!(!card("file:///C:/x").has_web_url());
+        assert!(!card(&format!("https://e.com/{}", "a".repeat(MAX_LINK_URL_BYTES))).has_web_url());
+
+        assert!(card("https://example.com/a").stands_in("смотри https://example.com/a!"));
+        assert!(
+            card("https://www.example.com").stands_in("смотри www.example.com"),
+            "written without a scheme"
+        );
+        assert!(!card("https://evil.example").stands_in("смотри https://example.com"));
+        assert!(!card("https://").stands_in("https://example.com"));
     }
 
     #[test]

@@ -7,6 +7,7 @@ mod audio;
 mod camps;
 mod commands;
 mod levels;
+mod open_link;
 mod participants;
 mod stream;
 mod voice;
@@ -173,6 +174,8 @@ fn commands() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         commands::chat_history,
         commands::chat_send,
         commands::chat_photo,
+        commands::link_preview,
+        commands::open_link,
         commands::chat_delete,
         commands::chat_mark_read,
         commands::chat_context,

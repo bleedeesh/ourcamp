@@ -127,6 +127,12 @@ class FakeCampApi implements CampApi {
   history(): Promise<ChatMessage[]> {
     return Promise.resolve([]);
   }
+  linkPreview(): Promise<null> {
+    return Promise.resolve(null);
+  }
+  openLink(): Promise<void> {
+    return Promise.resolve();
+  }
   send(): Promise<ChatMessage> {
     return Promise.reject(new Error("not in these tests"));
   }

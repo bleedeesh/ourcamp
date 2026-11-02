@@ -7,8 +7,8 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use oc_proto::{
-    ErrorCode, History, NewMessage, Photo, PhotoFormat, PhotoUploaded, MAX_HISTORY,
-    MAX_MESSAGE_CHARS, MAX_PHOTO_SIDE,
+    ErrorCode, History, LinkCard, NewMessage, Photo, PhotoFormat, PhotoUploaded, MAX_HISTORY,
+    MAX_LINK_DESCRIPTION_CHARS, MAX_LINK_TITLE_CHARS, MAX_MESSAGE_CHARS, MAX_PHOTO_SIDE,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -76,15 +76,31 @@ pub(super) async fn history(
     Ok(Json(History { messages }))
 }
 
+fn sides_fit(photo: &Photo) -> bool {
+    (1..=MAX_PHOTO_SIDE).contains(&photo.width) && (1..=MAX_PHOTO_SIDE).contains(&photo.height)
+}
+
+/// Whether a card may stay with this text: its address stands there, within the limits, and it
+/// shows something. What a page said about itself is only ever shown as text.
+fn acceptable_card(card: &LinkCard, text: &str) -> bool {
+    card.has_web_url()
+        && card.stands_in(text)
+        && card.title.chars().count() <= MAX_LINK_TITLE_CHARS
+        && card.description.chars().count() <= MAX_LINK_DESCRIPTION_CHARS
+        && (!card.title.is_empty() || card.photo.is_some())
+        && card.photo.as_ref().is_none_or(sides_fit)
+}
+
 /// Whether a message may be kept as it is: some text or a photo, within the limits.
 fn acceptable(message: &NewMessage) -> bool {
     let chars = message.text.chars().count();
-    let sides = |p: &Photo| {
-        (1..=MAX_PHOTO_SIDE).contains(&p.width) && (1..=MAX_PHOTO_SIDE).contains(&p.height)
-    };
     chars <= MAX_MESSAGE_CHARS
         && (chars > 0 || message.photo.is_some())
-        && message.photo.as_ref().is_none_or(sides)
+        && message.photo.as_ref().is_none_or(sides_fit)
+        && message
+            .link
+            .as_ref()
+            .is_none_or(|card| acceptable_card(card, &message.text))
 }
 
 /// `POST /api/v1/channels/{id}/messages`: writes in a chat; everyone gets it as a
@@ -207,6 +223,7 @@ mod tests {
                 width,
                 height,
             }),
+            link: None,
         }
     }
 

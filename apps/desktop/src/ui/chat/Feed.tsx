@@ -7,6 +7,7 @@ import { avatarColor } from "../../domain/roster.ts";
 import type { ChatMessage, ChatPhoto } from "../../engine/camp-api.ts";
 import { Avatar } from "../Avatar.tsx";
 import { useChat, useChatController } from "./chat-context.tsx";
+import { LinkCardView, MessageText } from "./LinkParts.tsx";
 
 /** Closer to the bottom than this counts as "at the end": new messages keep it there. */
 const AT_END_PX = 48;
@@ -195,8 +196,14 @@ function MessageRow({
             </time>
           </div>
         )}
-        {message.text !== "" && <p className="message__text">{message.text}</p>}
+        {message.text !== "" && <MessageText text={message.text} />}
         {message.photo && <MessagePhoto photo={message.photo} onView={onView} />}
+        {message.link && (
+          <LinkCardView
+            card={message.link}
+            picture={message.link.photo && <MessagePhoto photo={message.link.photo} onView={onView} />}
+          />
+        )}
         {asking && (
           <div className="message__confirm" role="group" aria-label="Удалить сообщение">
             <span>Удалить для всех?</span>

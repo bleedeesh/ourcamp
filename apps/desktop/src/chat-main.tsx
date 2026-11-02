@@ -21,9 +21,10 @@ import { isTauri } from "./engine/tauri-engine.ts";
 import { AvatarSourceContext, type AvatarSource } from "./ui/avatar-url.ts";
 import { ChatApp } from "./ui/chat/ChatApp.tsx";
 import { ChatProvider } from "./ui/chat/chat-context.tsx";
+import { makePhoto } from "./ui/chat/make-photo.ts";
 
 const api: CampApi = isTauri() ? new TauriCampApi() : new DemoCampApi();
-const chat = new ChatController(api, window.localStorage);
+const chat = new ChatController(api, window.localStorage, (bytes) => makePhoto(new Blob([bytes as BlobPart])));
 void chat.start();
 const avatarSource: AvatarSource = (userId, hash) => chat.avatarOf(userId, hash);
 

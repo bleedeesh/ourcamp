@@ -1,0 +1,26 @@
+[package]
+name = "oc-link-preview"
+version = "0.1.0"
+description = "What a link leads to, for a card in a chat: a careful fetch and a small reader of HTML."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+oc-tls = { path = "../oc-tls" }
+oc-proto = { path = "../oc-proto" }
+# Joining a redirect to the page it came from, and international names: not worth a copy.
+url = "2"
+tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

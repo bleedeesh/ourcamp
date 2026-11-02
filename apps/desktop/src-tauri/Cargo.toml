@@ -30,6 +30,7 @@ deep_filter = { git = "https://github.com/Rikorose/DeepFilterNet", tag = "v0.5.6
 ndarray = "0.15"
 oc-camp-client = { path = "../../../crates/oc-camp-client" }
 oc-invite = { path = "../../../crates/oc-invite" }
+oc-link-preview = { path = "../../../crates/oc-link-preview" }
 oc-proto = { path = "../../../crates/oc-proto" }
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "rt", "time"] }
@@ -49,6 +50,7 @@ windows = { version = "0.62", features = [
   "Win32_System_LibraryLoader",
   "Win32_System_Variant",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Direct3D",

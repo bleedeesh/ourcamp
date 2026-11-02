@@ -1624,6 +1624,7 @@ fn text(s: &str) -> oc_proto::NewMessage {
     oc_proto::NewMessage {
         text: s.into(),
         photo: None,
+        link: None,
     }
 }
 
@@ -1708,6 +1709,7 @@ async fn only_chats_take_messages_and_only_sensible_ones() {
             width: 10,
             height: 10,
         }),
+        link: None,
     };
     assert_eq!(
         api_error(client.post_message(&lena, "c1", &unknown_photo).await),
@@ -1757,6 +1759,7 @@ async fn a_photo_goes_up_first_then_into_a_message() {
             width: 1600,
             height: 900,
         }),
+        link: None,
     };
     let sent = client.post_message(&lena, "c1", &message).await.unwrap();
     assert_eq!(sent.photo, message.photo);
@@ -1780,6 +1783,71 @@ async fn a_photo_goes_up_first_then_into_a_message() {
         client.upload_photo(&lena, bitmap).await,
         Err(ClientError::Protocol(_))
     ));
+    camp.stop().await;
+}
+
+#[tokio::test]
+async fn a_link_card_reaches_everyone_if_its_address_stands_in_the_text() {
+    let (camp, client, lena, bob) = camp_with_two().await;
+    let mut bobs = client.events(&bob).await.unwrap();
+    let card = oc_proto::LinkCard {
+        url: "https://example.com/a".into(),
+        title: "Заголовок".into(),
+        description: "Описание".into(),
+        photo: None,
+    };
+    let with_card = |text_: &str, card: oc_proto::LinkCard| oc_proto::NewMessage {
+        link: Some(card),
+        ..text(text_)
+    };
+
+    let sent = client
+        .post_message(
+            &lena,
+            "c1",
+            &with_card("смотри https://example.com/a", card.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sent.link.as_ref(), Some(&card));
+    assert_eq!(next_message(&mut bobs).await.link, Some(card.clone()));
+
+    for refused in [
+        with_card("смотри https://other.example", card.clone()),
+        with_card(
+            "javascript:alert(1)",
+            oc_proto::LinkCard {
+                url: "javascript:alert(1)".into(),
+                ..card.clone()
+            },
+        ),
+        with_card(
+            "https://example.com/a",
+            oc_proto::LinkCard {
+                title: String::new(),
+                ..card.clone()
+            },
+        ),
+        with_card(
+            "https://example.com/a",
+            oc_proto::LinkCard {
+                title: "щ".repeat(oc_proto::MAX_LINK_TITLE_CHARS + 1),
+                ..card.clone()
+            },
+        ),
+        with_card(
+            "https://example.com/a",
+            oc_proto::LinkCard {
+                description: "щ".repeat(oc_proto::MAX_LINK_DESCRIPTION_CHARS + 1),
+                ..card.clone()
+            },
+        ),
+    ] {
+        assert_eq!(
+            api_error(client.post_message(&lena, "c1", &refused).await),
+            ErrorCode::BadRequest
+        );
+    }
     camp.stop().await;
 }
 

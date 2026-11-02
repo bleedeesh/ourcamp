@@ -322,7 +322,7 @@ impl Manager {
                     user_id: &user_id,
                     name: &name,
                 };
-                Ok(s.post_message(&channel_id, author, &message.text, message.photo.as_ref())?)
+                Ok(s.post_message(&channel_id, author, message.clone())?)
             })
             .await?;
         if let Posted::Message(sent) = &posted {

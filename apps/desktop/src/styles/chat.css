@@ -231,6 +231,57 @@
   user-select: text;
 }
 
+.message__link {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+.message__link:hover {
+  text-decoration: underline;
+}
+
+/* ---------- A link's card ---------- */
+
+.link-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 340px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-s);
+  background: var(--bg-2);
+  overflow-wrap: anywhere;
+}
+
+.link-card__site {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.link-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.link-card__site:hover,
+.link-card__title:hover {
+  text-decoration: underline;
+}
+
+.link-card__description {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  user-select: text;
+}
+
 .message__photo {
   display: block;
   margin-top: 6px;
@@ -434,6 +485,22 @@
   flex: 1;
   font-size: 13px;
   color: var(--text-muted);
+}
+
+.attachment__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.attachment__title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attachment__remove {

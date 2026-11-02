@@ -493,19 +493,60 @@ pub async fn chat_send(
     channel_id: String,
     text: String,
     photo: Option<OutgoingPhotoDto>,
+    link: Option<OutgoingLinkDto>,
 ) -> Result<oc_proto::ChatMessage, String> {
-    let photo = photo
-        .map(|p| {
-            oc_proto::decode_bytes(&p.bytes)
-                .map(|bytes| crate::camps::OutgoingPhoto {
-                    bytes,
-                    width: p.width,
-                    height: p.height,
-                })
-                .ok_or_else(|| "Повреждённое фото".to_owned())
+    let photo = photo.map(OutgoingPhotoDto::decode).transpose()?;
+    let link = link
+        .map(|l| {
+            Ok::<_, String>(crate::camps::OutgoingLink {
+                url: l.url,
+                title: l.title,
+                description: l.description,
+                photo: l.photo.map(OutgoingPhotoDto::decode).transpose()?,
+            })
         })
         .transpose()?;
-    camps(&state)?.send(&id, &channel_id, text, photo).await
+    camps(&state)?
+        .send(&id, &channel_id, text, photo, link)
+        .await
+}
+
+/// A link's card as it crosses IPC.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutgoingLinkDto {
+    url: String,
+    title: String,
+    description: String,
+    photo: Option<OutgoingPhotoDto>,
+}
+
+/// What a link leads to, for its card (ADR-0077); `None` when it goes without one.
+#[tauri::command]
+pub async fn link_preview(url: String) -> Option<LinkPreviewDto> {
+    let found = oc_link_preview::preview(&url).await.ok()?;
+    Some(LinkPreviewDto {
+        title: found.title,
+        description: found.description,
+        picture: found.picture.map(|bytes| oc_proto::encode_bytes(&bytes)),
+    })
+}
+
+/// A preview as it crosses IPC: the picture in base64url, as it came.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkPreviewDto {
+    title: String,
+    description: String,
+    picture: Option<String>,
+}
+
+/// Opens a link of a chat in the system's browser (ADR-0077).
+#[tauri::command]
+pub async fn open_link(url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::open_link::open(&url))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// A photo of the open camp's chats as it crosses IPC: base64url bytes and its size.
@@ -515,6 +556,17 @@ pub struct OutgoingPhotoDto {
     bytes: String,
     width: u32,
     height: u32,
+}
+
+impl OutgoingPhotoDto {
+    fn decode(self) -> Result<crate::camps::OutgoingPhoto, String> {
+        let bytes = oc_proto::decode_bytes(&self.bytes).ok_or("Повреждённое фото")?;
+        Ok(crate::camps::OutgoingPhoto {
+            bytes,
+            width: self.width,
+            height: self.height,
+        })
+    }
 }
 
 /// Removes a message: your own, or that of someone of a lower rank (ADR-0048).

@@ -3860,6 +3860,21 @@ name = "oc-invite"
 version = "0.1.0"
 
 [[package]]
+name = "oc-link-preview"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "oc-proto",
+ "oc-tls",
+ "tokio",
+ "tokio-rustls",
+ "url",
+]
+
+[[package]]
 name = "oc-proto"
 version = "0.1.0"
 dependencies = [
@@ -4003,6 +4018,7 @@ dependencies = [
  "oc-audio",
  "oc-camp-client",
  "oc-invite",
+ "oc-link-preview",
  "oc-proto",
  "oc-server",
  "raw-window-handle",
