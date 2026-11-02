@@ -6,6 +6,7 @@
 mod audio;
 mod camps;
 mod commands;
+mod deep_link;
 mod levels;
 mod open_link;
 mod participants;
@@ -176,6 +177,7 @@ fn commands() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         commands::chat_photo,
         commands::link_preview,
         commands::open_link,
+        commands::take_link,
         commands::chat_delete,
         commands::chat_mark_read,
         commands::chat_context,
@@ -205,12 +207,17 @@ pub fn run() {
     // tray brings its window back instead of quietly exiting (ADR-0031). Debug profiles
     // (`OC_PROFILE`) are other people on the same PC and run side by side.
     if profile().is_none() {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            deep_link::deliver(app, args);
             show_window(app);
         }));
     }
     let app = builder
         .manage(engine)
+        // `args_os`: `args` panics on an argument that is not valid Unicode.
+        .manage(deep_link::PendingLink::from_args(
+            std::env::args_os().filter_map(|arg| arg.into_string().ok()),
+        ))
         .setup(move |app| {
             let dir = data_dir(app.path().app_data_dir());
             if let Ok(dir) = &dir {

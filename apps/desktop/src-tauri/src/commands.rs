@@ -541,6 +541,13 @@ pub struct LinkPreviewDto {
     picture: Option<String>,
 }
 
+/// The `ourcamp://` link that opened the app and was not taken yet (ADR-0078).
+#[tauri::command]
+#[must_use]
+pub fn take_link(pending: State<'_, crate::deep_link::PendingLink>) -> Option<String> {
+    pending.take()
+}
+
 /// Opens a link of a chat in the system's browser (ADR-0077).
 #[tauri::command]
 pub async fn open_link(url: String) -> Result<(), String> {
