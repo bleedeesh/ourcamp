@@ -384,6 +384,8 @@ pnpm server kick Боб
 
 | Команда | Что делает |
 |---|---|
+| `sh dev/check/all.sh` | вся проверка перед PR, около получаса (Windows, Git Bash) |
+| `sh dev/check/app.sh <сценарий>` | сценарий в настоящем приложении, образец — `dev/check/open-link.mjs` |
 | `pnpm livekit:fetch` | скачать закреплённый livekit-server в `dev/bin` (один раз) |
 | `pnpm livekit` / `pnpm livekit:down` | локальный LiveKit в Docker: запустить / остановить |
 | `pnpm server` | сервер лагеря без окна со своим LiveKit (данные в `target/camp-data`) |

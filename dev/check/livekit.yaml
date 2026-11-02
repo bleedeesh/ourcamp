@@ -1,0 +1,13 @@
+# LiveKit for the checks in this folder: loopback only, a known test key, and its own media
+# ports so that a real `pnpm server` keeping 7881/7882 is not in the way.
+port: 7880
+bind_addresses: ["127.0.0.1"]
+rtc:
+  tcp_port: 7891
+  udp_port: 7892
+  use_external_ip: false
+  node_ip: 127.0.0.1
+keys:
+  devkey: secret
+logging:
+  level: warn
